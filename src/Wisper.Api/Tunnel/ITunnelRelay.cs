@@ -8,8 +8,9 @@ namespace Wisper.Api.Tunnel;
 /// agent's correlated responses by <c>rid</c> (and <c>leaseId</c> for the unsolicited
 /// <c>lease.ready</c>). Wisper owns the id space, so leaseIds and rids are allocated here.
 /// <para>
-/// SCOPE: lease lifecycle + <b>synchronous</b> exec only. Interactive shell, streamed exec,
-/// and credit flow control are a later task.
+/// SCOPE: lease lifecycle, <b>synchronous</b> exec, and interactive <b>shell</b> streams with
+/// per-stream credit flow control (docs/TUNNEL.md §9). Streamed exec (<c>exec.open</c>/<c>exit</c>)
+/// is a later task and reuses this stream infrastructure.
 /// </para>
 /// </summary>
 public interface ITunnelRelay
@@ -38,6 +39,15 @@ public interface ITunnelRelay
     /// </summary>
     /// <exception cref="Wisper.Api.Infrastructure.ApiException"><c>host_offline</c> / <c>upstream_timeout</c>.</exception>
     Task ReleaseAsync(string hostId, string leaseId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Opens an interactive shell stream in <paramref name="leaseId"/> on <paramref name="hostId"/>:
+    /// allocates a <c>sid</c>, sends <c>shell.open</c>, and awaits <c>shell.opened</c> (by rid). The
+    /// returned <see cref="ITunnelShell"/> is a duplex, flow-controlled byte pipe (docs/TUNNEL.md
+    /// §6, §9). The relay routes inbound binary/credit/closed frames for the <c>sid</c> to it.
+    /// </summary>
+    /// <exception cref="Wisper.Api.Infrastructure.ApiException"><c>host_offline</c> / <c>upstream_timeout</c>.</exception>
+    Task<ITunnelShell> OpenShellAsync(string hostId, string leaseId, int cols, int rows, CancellationToken ct = default);
 
     /// <summary>
     /// Routes an inbound agent→server response frame (<c>lease.accepted</c>/<c>ready</c>/

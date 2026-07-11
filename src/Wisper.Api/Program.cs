@@ -52,6 +52,8 @@ var tunnelOptions = app.Services.GetRequiredService<IOptions<TunnelOptions>>().V
 if (tunnelOptions.EnableDevEndpoints)
 {
     app.MapDevLeaseEndpoints();
+    // Raw-WebSocket interactive shell harness (docs/API.md §7); replaced by WS /v1/leases/:id/shell.
+    app.MapDevShellEndpoints();
 }
 
 // Versioned API root (docs/API.md §1). Concrete consumer/host/admin endpoints are

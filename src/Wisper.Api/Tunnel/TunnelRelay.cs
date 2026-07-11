@@ -112,6 +112,53 @@ public sealed class TunnelRelay : ITunnelRelay
         }
     }
 
+    public async Task<ITunnelShell> OpenShellAsync(
+        string hostId, string leaseId, int cols, int rows, CancellationToken ct = default)
+    {
+        var connection = Resolve(hostId);
+        var rid = connection.NextRid();
+        var sid = connection.NextSid();
+        var opts = _options.CurrentValue;
+
+        // The stream owns per-stream credit flow control (docs/TUNNEL.md §9): it decrements the
+        // send window as it sends, blocks at 0, replenishes on stream.credit, and emits credit as
+        // received bytes drain. Overflow → stream.closed{flow_violation}.
+        var stream = new TunnelStream(
+            sid,
+            opts.InitialWindowBytes,
+            opts.MaxFrameBytes,
+            Math.Max(1, opts.InitialWindowBytes / 2),
+            (frame, c) => connection.SendBinaryAsync(frame, c),
+            (credit, c) => connection.SendControlAsync(credit, c),
+            (closed, c) => connection.SendControlAsync(closed, c),
+            _logger);
+        connection.Streams[sid] = stream;
+
+        var openedWaiter = RegisterRid(connection, rid);
+        try
+        {
+            await connection.SendControlAsync(
+                new ShellOpen { Rid = rid, Sid = sid, LeaseId = leaseId, Cols = cols, Rows = rows }, ct);
+
+            await AwaitResponseAsync(openedWaiter.Task, ct);
+
+            _logger.LogInformation(
+                "relay: shell stream {Sid} opened on host {HostId} (lease {LeaseId})", sid, hostId, leaseId);
+
+            return new TunnelShell(connection, stream);
+        }
+        catch
+        {
+            connection.Streams.TryRemove(sid, out _);
+            await stream.DisposeAsync();
+            throw;
+        }
+        finally
+        {
+            _ridWaiters.TryRemove((connection, rid), out _);
+        }
+    }
+
     public Task RouteAgentFrameAsync(TunnelConnection connection, string type, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
         switch (type)
@@ -119,7 +166,16 @@ public sealed class TunnelRelay : ITunnelRelay
             case FrameTypes.LeaseAccepted:
             case FrameTypes.LeaseReleased:
             case FrameTypes.ExecResult:
+            case FrameTypes.ShellOpened:
                 CompleteByRid(connection, payload);
+                break;
+
+            case FrameTypes.StreamCredit:
+                HandleStreamCredit(connection, payload);
+                break;
+
+            case FrameTypes.StreamClosed:
+                HandleStreamClosed(connection, payload);
                 break;
 
             case FrameTypes.LeaseReady:
@@ -145,6 +201,15 @@ public sealed class TunnelRelay : ITunnelRelay
     public void OnConnectionClosed(TunnelConnection connection)
     {
         var offline = new ApiException(ApiErrorCode.HostOffline, $"host {connection.HostId} tunnel closed");
+
+        // Tear down every open stream so bridged consumers unblock and close (docs/TUNNEL.md §8).
+        foreach (var sid in connection.Streams.Keys)
+        {
+            if (connection.Streams.TryRemove(sid, out var stream))
+            {
+                stream.OnPeerClosed("host_offline");
+            }
+        }
 
         foreach (var key in _ridWaiters.Keys)
         {
@@ -258,6 +323,41 @@ public sealed class TunnelRelay : ITunnelRelay
         if (!string.IsNullOrEmpty(failed.LeaseId) && _leaseWaiters.TryRemove((connection, failed.LeaseId), out var leaseTcs))
         {
             leaseTcs.TrySetException(ex);
+        }
+    }
+
+    private void HandleStreamCredit(TunnelConnection connection, ReadOnlyMemory<byte> payload)
+    {
+        var credit = TryDeserialize<StreamCredit>(payload);
+        if (credit is null || credit.Sid == 0)
+        {
+            return;
+        }
+
+        if (connection.Streams.TryGetValue(credit.Sid, out var stream))
+        {
+            stream.OnCreditGranted(credit.Bytes);
+        }
+        else
+        {
+            _logger.LogDebug("relay: stream.credit for unknown sid {Sid} dropped", credit.Sid);
+        }
+    }
+
+    private void HandleStreamClosed(TunnelConnection connection, ReadOnlyMemory<byte> payload)
+    {
+        var closed = TryDeserialize<StreamClosed>(payload);
+        if (closed is null || closed.Sid == 0)
+        {
+            return;
+        }
+
+        if (connection.Streams.TryRemove(closed.Sid, out var stream))
+        {
+            var reason = string.IsNullOrEmpty(closed.Reason) ? "peer_closed" : closed.Reason;
+            _logger.LogInformation(
+                "relay: host {HostId} closed stream {Sid} ({Reason})", connection.HostId, closed.Sid, reason);
+            stream.OnPeerClosed(reason);
         }
     }
 

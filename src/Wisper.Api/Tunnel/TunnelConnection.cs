@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -26,6 +27,7 @@ public class TunnelConnection
     private long _lastActivityTicks;
     private long _lastHeartbeatTicks;
     private int _ridCounter;
+    private int _sidCounter;
 
     public TunnelConnection(
         WebSocket socket,
@@ -47,6 +49,13 @@ public class TunnelConnection
     public string HostId { get; }
 
     /// <summary>
+    /// The open byte streams multiplexed over this connection, keyed by <c>sid</c> (docs/TUNNEL.md
+    /// §6, §9). The relay creates an entry on <c>shell.open</c> and removes it on teardown; the
+    /// receive loop routes inbound binary frames to the owning sink. Concurrent-safe.
+    /// </summary>
+    public ConcurrentDictionary<uint, ITunnelStreamSink> Streams { get; } = new();
+
+    /// <summary>
     /// Routes inbound control frames this connection does not own (lease/exec responses) to the
     /// relay. Set by the endpoint after construction; when null the default hook just logs.
     /// Wisper owns the id space, so responses are correlated by the <c>rid</c>/<c>leaseId</c>
@@ -59,6 +68,13 @@ public class TunnelConnection
     /// so it is never 0 — <see cref="ControlEnvelope.Rid"/> treats 0 as "omitted".
     /// </summary>
     public uint NextRid() => (uint)Interlocked.Increment(ref _ridCounter);
+
+    /// <summary>
+    /// Allocates the next monotonic per-connection stream id (docs/TUNNEL.md §1, §2 — Wisper owns
+    /// the id space). Starts at 1 so it is never 0 (<see cref="ControlEnvelope.Sid"/> treats 0 as
+    /// "omitted").
+    /// </summary>
+    public uint NextSid() => (uint)Interlocked.Increment(ref _sidCounter);
 
     /// <summary>The server-assigned session id (echoed to the agent in <c>hello.ack</c>).</summary>
     public string SessionId { get; }
@@ -272,15 +288,21 @@ public class TunnelConnection
     }
 
     /// <summary>
-    /// Hook for inbound binary (stream) frames. The default logs and ignores; the next task's
-    /// relay overrides this to route bytes onto the addressed <c>sid</c>.
+    /// Routes an inbound binary (stream) frame to the owning stream in <see cref="Streams"/>, which
+    /// does receive accounting and enqueues the bytes for downstream drain (docs/TUNNEL.md §6, §9).
+    /// A frame for an unknown <c>sid</c> is dropped with a debug log (late frame after teardown).
     /// </summary>
-    protected virtual Task OnBinaryFrameAsync(BinaryFrame frame, CancellationToken ct)
+    protected virtual ValueTask OnBinaryFrameAsync(BinaryFrame frame, CancellationToken ct)
     {
+        if (Streams.TryGetValue(frame.Sid, out var sink))
+        {
+            return sink.OnBinaryAsync(frame, ct);
+        }
+
         _logger.LogDebug(
-            "tunnel {SessionId}: unhandled binary frame sid={Sid} ch={Channel} bytes={Bytes}",
+            "tunnel {SessionId}: binary frame for unknown sid={Sid} ch={Channel} bytes={Bytes} dropped",
             SessionId, frame.Sid, frame.Channel, frame.Data.Length);
-        return Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     /// <summary>Hook invoked after a valid <c>host.heartbeat</c> is parsed (state reconciliation, §8).</summary>
