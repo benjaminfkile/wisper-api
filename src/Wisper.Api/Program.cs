@@ -1,4 +1,5 @@
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Tunnel;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,6 +13,13 @@ builder.Logging.AddJsonConsole(options =>
 });
 
 builder.Services.AddHealthChecks();
+
+// Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
+// (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
+// per host, superseded on reconnect).
+builder.Services.Configure<TunnelOptions>(builder.Configuration.GetSection(TunnelOptions.SectionName));
+builder.Services.AddSingleton<IHostTokenValidator, ConfigHostTokenValidator>();
+builder.Services.AddSingleton<IHostRegistry, InMemoryHostRegistry>();
 
 var app = builder.Build();
 
@@ -30,6 +38,9 @@ app.UseWebSockets();
 var health = () => Results.Json(new { status = "ok" });
 app.MapGet("/api/health", health);
 app.MapGet("/healthz", health);
+
+// The host agent tunnel (docs/TUNNEL.md §3). Unversioned, raw WebSocket, alongside /healthz.
+app.MapAgentTunnel();
 
 // Versioned API root (docs/API.md §1). Concrete consumer/host/admin endpoints are
 // added by later work; this proves the versioned surface is wired.
