@@ -1,0 +1,28 @@
+# .NET build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Test / coverage
+[Tt]est[Rr]esults/
+coverage/
+*.coverage
+*.trx
+
+# Local env / secrets (never commit)
+.env
+.env.*
+appsettings.*.local.json
+*.pfx
+
+# OS
+.DS_Store
+Thumbs.db
