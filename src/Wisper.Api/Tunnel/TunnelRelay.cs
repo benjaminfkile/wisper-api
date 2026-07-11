@@ -159,6 +159,55 @@ public sealed class TunnelRelay : ITunnelRelay
         }
     }
 
+    public async Task<ITunnelExec> OpenExecStreamAsync(
+        string hostId, string leaseId, string command, CancellationToken ct = default)
+    {
+        var connection = Resolve(hostId);
+        var rid = connection.NextRid();
+        var sid = connection.NextSid();
+        var opts = _options.CurrentValue;
+
+        // Streamed exec is unidirectional A→W: Wisper is the receiver, so the stream's receive
+        // accounting + credit flow control (docs/TUNNEL.md §9) is what matters — the send window
+        // goes unused. The exec wrapper reuses this stream as-is and layers channel preservation on
+        // top (stdout ch 1 vs stderr ch 2, which the byte pipe alone discards).
+        var stream = new TunnelStream(
+            sid,
+            opts.InitialWindowBytes,
+            opts.MaxFrameBytes,
+            Math.Max(1, opts.InitialWindowBytes / 2),
+            (frame, c) => connection.SendBinaryAsync(frame, c),
+            (credit, c) => connection.SendControlAsync(credit, c),
+            (closed, c) => connection.SendControlAsync(closed, c),
+            _logger);
+        var exec = new TunnelExec(connection, stream);
+        connection.Streams[sid] = exec;
+
+        var openedWaiter = RegisterRid(connection, rid);
+        try
+        {
+            await connection.SendControlAsync(
+                new ExecOpen { Rid = rid, Sid = sid, LeaseId = leaseId, Command = command }, ct);
+
+            await AwaitResponseAsync(openedWaiter.Task, ct);
+
+            _logger.LogInformation(
+                "relay: exec stream {Sid} opened on host {HostId} (lease {LeaseId})", sid, hostId, leaseId);
+
+            return exec;
+        }
+        catch
+        {
+            connection.Streams.TryRemove(sid, out _);
+            await exec.DisposeAsync();
+            throw;
+        }
+        finally
+        {
+            _ridWaiters.TryRemove((connection, rid), out _);
+        }
+    }
+
     public Task RouteAgentFrameAsync(TunnelConnection connection, string type, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
         switch (type)
@@ -167,7 +216,12 @@ public sealed class TunnelRelay : ITunnelRelay
             case FrameTypes.LeaseReleased:
             case FrameTypes.ExecResult:
             case FrameTypes.ShellOpened:
+            case FrameTypes.ExecOpened:
                 CompleteByRid(connection, payload);
+                break;
+
+            case FrameTypes.ExecExit:
+                HandleExecExit(connection, payload);
                 break;
 
             case FrameTypes.StreamCredit:
@@ -358,6 +412,31 @@ public sealed class TunnelRelay : ITunnelRelay
             _logger.LogInformation(
                 "relay: host {HostId} closed stream {Sid} ({Reason})", connection.HostId, closed.Sid, reason);
             stream.OnPeerClosed(reason);
+        }
+    }
+
+    private void HandleExecExit(TunnelConnection connection, ReadOnlyMemory<byte> payload)
+    {
+        var exit = TryDeserialize<ExecExit>(payload);
+        if (exit is null || exit.Sid == 0)
+        {
+            return;
+        }
+
+        // exec.exit terminates a streamed exec: hand the exit code to the owning exec stream so it
+        // completes its output and surfaces the code (docs/TUNNEL.md §5, §6). Only route it to an
+        // exec stream — a shell sid never sees exec.exit.
+        if (connection.Streams.TryGetValue(exit.Sid, out var sink) && sink is TunnelExec exec)
+        {
+            connection.Streams.TryRemove(exit.Sid, out _);
+            _logger.LogInformation(
+                "relay: host {HostId} exec stream {Sid} exited ({ExitCode})",
+                connection.HostId, exit.Sid, exit.ExitCode);
+            exec.OnExit(exit.ExitCode);
+        }
+        else
+        {
+            _logger.LogDebug("relay: exec.exit for unknown sid {Sid} dropped", exit.Sid);
         }
     }
 

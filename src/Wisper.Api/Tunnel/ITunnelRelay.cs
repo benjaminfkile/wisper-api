@@ -8,9 +8,9 @@ namespace Wisper.Api.Tunnel;
 /// agent's correlated responses by <c>rid</c> (and <c>leaseId</c> for the unsolicited
 /// <c>lease.ready</c>). Wisper owns the id space, so leaseIds and rids are allocated here.
 /// <para>
-/// SCOPE: lease lifecycle, <b>synchronous</b> exec, and interactive <b>shell</b> streams with
-/// per-stream credit flow control (docs/TUNNEL.md §9). Streamed exec (<c>exec.open</c>/<c>exit</c>)
-/// is a later task and reuses this stream infrastructure.
+/// SCOPE: lease lifecycle, <b>synchronous</b> exec, interactive <b>shell</b> streams, and
+/// <b>streamed</b> exec (<c>exec.open</c>/<c>exit</c>) — the last two share per-stream credit flow
+/// control over a <c>sid</c> (docs/TUNNEL.md §6, §9).
 /// </para>
 /// </summary>
 public interface ITunnelRelay
@@ -48,6 +48,17 @@ public interface ITunnelRelay
     /// </summary>
     /// <exception cref="Wisper.Api.Infrastructure.ApiException"><c>host_offline</c> / <c>upstream_timeout</c>.</exception>
     Task<ITunnelShell> OpenShellAsync(string hostId, string leaseId, int cols, int rows, CancellationToken ct = default);
+
+    /// <summary>
+    /// Opens a <b>streamed</b> exec of <paramref name="command"/> in <paramref name="leaseId"/> on
+    /// <paramref name="hostId"/>: allocates a <c>sid</c>, sends <c>exec.open</c>, and awaits
+    /// <c>exec.opened</c> (by rid). The returned <see cref="ITunnelExec"/> yields the command's live
+    /// stdout/stderr chunks and, finally, its exit code (docs/TUNNEL.md §5, §6). Output is
+    /// unidirectional A→W with per-stream credit flow control (docs/TUNNEL.md §9); the relay routes
+    /// inbound binary/credit/closed/<c>exec.exit</c> frames for the <c>sid</c> to it.
+    /// </summary>
+    /// <exception cref="Wisper.Api.Infrastructure.ApiException"><c>host_offline</c> / <c>upstream_timeout</c>.</exception>
+    Task<ITunnelExec> OpenExecStreamAsync(string hostId, string leaseId, string command, CancellationToken ct = default);
 
     /// <summary>
     /// Routes an inbound agent→server response frame (<c>lease.accepted</c>/<c>ready</c>/
