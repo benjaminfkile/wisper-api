@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Tunnel;
 
@@ -20,6 +21,9 @@ builder.Services.AddHealthChecks();
 builder.Services.Configure<TunnelOptions>(builder.Configuration.GetSection(TunnelOptions.SectionName));
 builder.Services.AddSingleton<IHostTokenValidator, ConfigHostTokenValidator>();
 builder.Services.AddSingleton<IHostRegistry, InMemoryHostRegistry>();
+// The server-side relay that drives a connected host (lease lifecycle + sync exec),
+// correlating agent responses by rid/leaseId (docs/TUNNEL.md §5, §11).
+builder.Services.AddSingleton<ITunnelRelay, TunnelRelay>();
 
 var app = builder.Build();
 
@@ -41,6 +45,14 @@ app.MapGet("/healthz", health);
 
 // The host agent tunnel (docs/TUNNEL.md §3). Unversioned, raw WebSocket, alongside /healthz.
 app.MapAgentTunnel();
+
+// DEV-ONLY, money-free lease drive endpoints (Phase-1 test harness). Only mapped when
+// Tunnel:EnableDevEndpoints is true; replaced by the real /v1/leases surface once accounts land.
+var tunnelOptions = app.Services.GetRequiredService<IOptions<TunnelOptions>>().Value;
+if (tunnelOptions.EnableDevEndpoints)
+{
+    app.MapDevLeaseEndpoints();
+}
 
 // Versioned API root (docs/API.md §1). Concrete consumer/host/admin endpoints are
 // added by later work; this proves the versioned surface is wired.

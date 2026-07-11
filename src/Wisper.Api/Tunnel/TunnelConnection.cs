@@ -25,6 +25,7 @@ public class TunnelConnection
 
     private long _lastActivityTicks;
     private long _lastHeartbeatTicks;
+    private int _ridCounter;
 
     public TunnelConnection(
         WebSocket socket,
@@ -44,6 +45,20 @@ public class TunnelConnection
 
     /// <summary>The stable host id this connection authenticated as.</summary>
     public string HostId { get; }
+
+    /// <summary>
+    /// Routes inbound control frames this connection does not own (lease/exec responses) to the
+    /// relay. Set by the endpoint after construction; when null the default hook just logs.
+    /// Wisper owns the id space, so responses are correlated by the <c>rid</c>/<c>leaseId</c>
+    /// the relay allocated (docs/TUNNEL.md §1, §5).
+    /// </summary>
+    public Func<TunnelConnection, string, ReadOnlyMemory<byte>, CancellationToken, Task>? ControlFrameRouter { get; set; }
+
+    /// <summary>
+    /// Allocates the next monotonic per-connection request id (docs/TUNNEL.md §2). Starts at 1
+    /// so it is never 0 — <see cref="ControlEnvelope.Rid"/> treats 0 as "omitted".
+    /// </summary>
+    public uint NextRid() => (uint)Interlocked.Increment(ref _ridCounter);
 
     /// <summary>The server-assigned session id (echoed to the agent in <c>hello.ack</c>).</summary>
     public string SessionId { get; }
@@ -247,6 +262,11 @@ public class TunnelConnection
     /// </summary>
     protected virtual Task OnControlFrameAsync(string type, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
+        if (ControlFrameRouter is not null)
+        {
+            return ControlFrameRouter(this, type, payload, ct);
+        }
+
         _logger.LogDebug("tunnel {SessionId}: unhandled control frame {FrameType}", SessionId, type);
         return Task.CompletedTask;
     }

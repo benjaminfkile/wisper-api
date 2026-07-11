@@ -30,6 +30,21 @@ public sealed class TunnelOptions
     public int LivenessTimeoutMs { get; set; }
 
     /// <summary>
+    /// Per-request relay deadline in milliseconds (docs/TUNNEL.md §12): how long the relay
+    /// waits for the agent's correlated response (<c>lease.accepted</c>+<c>ready</c>,
+    /// <c>exec.result</c>, <c>lease.released</c>) before failing with an upstream timeout.
+    /// </summary>
+    public int RelayRequestTimeoutMs { get; set; } = 120000;
+
+    /// <summary>
+    /// When <c>true</c>, maps the money-free, DEV-ONLY lease drive endpoints
+    /// (<c>POST /dev/leases</c>, <c>POST /dev/leases/{id}/exec</c>, <c>DELETE /dev/leases/{id}</c>)
+    /// used as a Phase-1 test harness. Off by default — these have no auth/accounts/billing
+    /// and are replaced by the real <c>/v1/leases</c> surface once accounts land.
+    /// </summary>
+    public bool EnableDevEndpoints { get; set; }
+
+    /// <summary>
     /// Phase-1 host-token allow-list: maps an opaque Bearer host token to a stable host id.
     /// If empty, the tunnel <b>fails closed</b> (rejects every connection). A later DB-backed
     /// validator replaces this (docs/TUNNEL.md §13).

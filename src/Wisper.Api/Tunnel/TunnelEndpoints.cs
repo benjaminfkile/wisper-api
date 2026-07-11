@@ -40,6 +40,7 @@ public static class TunnelEndpoints
         var options = context.RequestServices.GetRequiredService<IOptions<TunnelOptions>>().Value;
         var validator = context.RequestServices.GetRequiredService<IHostTokenValidator>();
         var registry = context.RequestServices.GetRequiredService<IHostRegistry>();
+        var relay = context.RequestServices.GetRequiredService<ITunnelRelay>();
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync(new WebSocketAcceptContext
         {
@@ -96,7 +97,12 @@ public static class TunnelEndpoints
         // (c) Establish the session: register (superseding any prior tunnel) and ack.
         var sessionId = "sess_" + Guid.NewGuid().ToString("N");
         var maxReceiveBytes = Math.Max(HandshakeMaxBytes, options.MaxFrameBytes + BinaryFrame.HeaderSize);
-        var connection = new TunnelConnection(socket, hostId, sessionId, maxReceiveBytes, logger);
+        var connection = new TunnelConnection(socket, hostId, sessionId, maxReceiveBytes, logger)
+        {
+            // Route agent→server response frames (lease/exec) into the relay so pending
+            // rid/leaseId awaiters complete (docs/TUNNEL.md §5, §11).
+            ControlFrameRouter = relay.RouteAgentFrameAsync,
+        };
 
         logger.LogInformation(
             "agent tunnel: host {HostId} connected, session {SessionId}, agentVersion {AgentVersion}",
@@ -130,6 +136,7 @@ public static class TunnelEndpoints
         finally
         {
             registry.Unregister(connection);
+            relay.OnConnectionClosed(connection);
             logger.LogInformation(
                 "agent tunnel: host {HostId} disconnected, session {SessionId}", hostId, sessionId);
         }
