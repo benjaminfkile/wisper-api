@@ -28,6 +28,16 @@ public interface ILeaseService
     Task<LeaseView?> GetAsync(Guid consumerUserId, Guid leaseId, CancellationToken ct = default);
 
     /// <summary>
+    /// Resolves the caller's lease into the tunnel target its exec/shell ops address (docs/API.md §5, §7):
+    /// the host id and the <c>lease_&lt;guid&gt;</c> token the relay's exec paths use. Returns <c>null</c>
+    /// when there is no such lease the caller can see (→ <c>404</c>, ownership is never revealed), and
+    /// throws <see cref="Infrastructure.ApiException"/> <c>lease_not_ready</c> when the lease exists but is
+    /// not <c>active</c> — exec is only permitted against a ready lease.
+    /// </summary>
+    Task<LeaseExecTarget?> ResolveExecTargetAsync(
+        Guid consumerUserId, Guid leaseId, CancellationToken ct = default);
+
+    /// <summary>
     /// Releases the caller's lease: sends <c>lease.release</c> over the tunnel and marks the row
     /// <c>ended</c> (<c>released</c>). Idempotent and safe to retry — an already-ended lease returns
     /// unchanged, and a host with no live tunnel is treated as already released. Returns <c>null</c> if

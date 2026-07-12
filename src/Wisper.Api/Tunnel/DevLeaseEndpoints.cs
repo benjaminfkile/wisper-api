@@ -1,8 +1,5 @@
-using System.Text;
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Features;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Tunnel.Messages;
 
@@ -66,86 +63,12 @@ public static class DevLeaseEndpoints
         // ?stream=1 → streamed exec over SSE (docs/API.md §7); anything else is the sync exec.
         if (context.Request.Query["stream"] == "1")
         {
-            await StreamExecAsync(context, relay, request.HostId, leaseId, command, ct);
+            await ExecStreamSse.RelayAsync(context, relay, request.HostId, leaseId, command, ct);
             return Results.Empty;
         }
 
         var result = await relay.ExecAsync(request.HostId, leaseId, command, ct);
         return Results.Json(new { stdout = result.Stdout, stderr = result.Stderr, exit_code = result.ExitCode });
-    }
-
-    /// <summary>
-    /// Runs <paramref name="command"/> as a streamed exec and relays its live output as Server-Sent
-    /// Events (docs/API.md §7): an <c>event: chunk</c> per stdout/stderr chunk
-    /// (<c>{"stream":"stdout"|"stderr","data":"…"}</c>), a terminal <c>event: exit</c>
-    /// (<c>{"exit_code":N}</c>), or an <c>event: error</c> (<c>{"error":"…"}</c>) on failure. Each
-    /// event is flushed immediately, and credit flows back to the agent as chunks are drained
-    /// (docs/TUNNEL.md §9).
-    /// </summary>
-    private static async Task StreamExecAsync(
-        HttpContext context, ITunnelRelay relay, string hostId, string leaseId, string command, CancellationToken ct)
-    {
-        var response = context.Response;
-        response.StatusCode = StatusCodes.Status200OK;
-        response.ContentType = "text/event-stream";
-        response.Headers.CacheControl = "no-cache";
-        // SSE must reach the client event-by-event, not batched by the server's response buffer.
-        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
-
-        ITunnelExec exec;
-        try
-        {
-            exec = await relay.OpenExecStreamAsync(hostId, leaseId, command, ct);
-        }
-        catch (ApiException ex)
-        {
-            // host_offline / upstream_timeout etc. — the exec never opened; report a terminal error.
-            var (_, wire) = ApiErrors.Map(ex.Code);
-            await WriteEventAsync(response, "error", new { error = wire }, ct);
-            return;
-        }
-
-        try
-        {
-            await foreach (var chunk in exec.Output.ReadAllAsync(ct))
-            {
-                var stream = chunk.Channel == Channels.Stderr ? "stderr" : "stdout";
-                // JSON-encode the bytes as a UTF-8 string so embedded newlines survive SSE framing.
-                var text = Encoding.UTF8.GetString(chunk.Data);
-                await WriteEventAsync(response, "chunk", new { stream, data = text }, ct);
-                // Credit is granted only as the bytes are actually drained (docs/TUNNEL.md §9).
-                await exec.AckDrainedAsync(chunk.Data.Length, ct);
-            }
-
-            await exec.Completion;
-
-            if (exec.ExitCode is { } code)
-            {
-                await WriteEventAsync(response, "exit", new { exit_code = code }, ct);
-            }
-            else
-            {
-                var reason = exec.ClosedReason ?? "stream_closed";
-                await WriteEventAsync(response, "error", new { error = reason }, ct);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // The consumer went away — nothing more to write.
-        }
-        finally
-        {
-            await exec.CloseAsync("consumer_closed", CancellationToken.None);
-        }
-    }
-
-    /// <summary>Writes one SSE event (<c>event:</c> + JSON <c>data:</c> + blank line) and flushes it.</summary>
-    private static async Task WriteEventAsync(HttpResponse response, string eventName, object data, CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(data);
-        var frame = $"event: {eventName}\ndata: {json}\n\n";
-        await response.WriteAsync(frame, ct);
-        await response.Body.FlushAsync(ct);
     }
 
     private static async Task<IResult> ReleaseAsync(

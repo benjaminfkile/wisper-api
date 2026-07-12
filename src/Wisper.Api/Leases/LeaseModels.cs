@@ -136,3 +136,19 @@ public sealed record LeaseListQuery
 /// <see cref="HoldCents"/> the wallet gate authorized, which the 201 body echoes.
 /// </summary>
 public sealed record LeaseCreationResult(Lease Lease, long HoldCents);
+
+/// <summary>
+/// Where a ready lease's exec/shell ops are driven on the tunnel (docs/API.md §7): the host id and the
+/// <c>lease_&lt;guid&gt;</c> token the <see cref="Wisper.Api.Tunnel.ITunnelRelay"/> exec paths address.
+/// </summary>
+public sealed record LeaseExecTarget(string HostId, string LeaseId);
+
+/// <summary>Body of <c>POST /v1/leases/:id/exec</c> (docs/API.md §5, §7): the command line to run.</summary>
+public sealed record ExecRequest(
+    [property: JsonPropertyName("command")] string? Command);
+
+/// <summary>The sync <c>POST /v1/leases/:id/exec</c> response (docs/API.md §7): buffered output + exit code.</summary>
+public sealed record ExecResponse(
+    [property: JsonPropertyName("stdout")] string Stdout,
+    [property: JsonPropertyName("stderr")] string Stderr,
+    [property: JsonPropertyName("exit_code")] int ExitCode);

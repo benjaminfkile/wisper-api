@@ -177,6 +177,29 @@ public sealed class LeaseService : ILeaseService
         return lease is null ? null : LeaseView.From(lease);
     }
 
+    public async Task<LeaseExecTarget?> ResolveExecTargetAsync(
+        Guid consumerUserId, Guid leaseId, CancellationToken ct = default)
+    {
+        var lease = await OwnedLeaseOrNullAsync(consumerUserId, leaseId, ct);
+        if (lease is null)
+        {
+            // No such lease the caller can see — 404, never revealing another user's lease (docs/API.md §3).
+            return null;
+        }
+
+        // Exec/shell are only valid against a ready lease; anything not yet (or no longer) active is
+        // lease_not_ready (docs/API.md §7 — 409 unless active).
+        if (lease.Status != LeaseStatus.Active)
+        {
+            throw new ApiException(
+                ApiErrorCode.LeaseNotReady,
+                "The lease is not ready — exec requires an active lease.",
+                new { status = PgEnum.ToLabel(lease.Status) });
+        }
+
+        return new LeaseExecTarget(lease.HostId.ToString(), TunnelLeaseId.Format(lease.Id));
+    }
+
     public async Task<LeaseView?> ReleaseAsync(
         Guid consumerUserId, Guid leaseId, CancellationToken ct = default)
     {

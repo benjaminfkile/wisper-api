@@ -5,6 +5,7 @@ using Wisper.Api.Auth;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Infrastructure.Idempotency;
+using Wisper.Api.Tunnel;
 
 namespace Wisper.Api.Leases;
 
@@ -36,6 +37,7 @@ public static class LeaseEndpoints
         endpoints.MapGet("/v1/leases", ListLeasesAsync).RequireConsumer();
         endpoints.MapGet("/v1/leases/{id}", GetLeaseAsync).RequireConsumer();
         endpoints.MapDelete("/v1/leases/{id}", ReleaseLeaseAsync).RequireConsumer();
+        endpoints.MapPost("/v1/leases/{id}/exec", ExecLeaseAsync).RequireConsumer();
     }
 
     private static async Task<IResult> CreateLeaseAsync(
@@ -128,6 +130,47 @@ public static class LeaseEndpoints
         return Results.Json(view);
     }
 
+    /// <summary>
+    /// Runs a command in the caller's lease over the tunnel relay (docs/API.md §5, §7). Ownership + ready
+    /// state are checked first (404 / 409 <c>lease_not_ready</c> via the envelope) — before any response
+    /// body — so those errors stay JSON. <c>?stream=1</c> then streams the live output as SSE
+    /// (<c>chunk</c>/<c>exit</c>/<c>error</c>); otherwise the buffered <c>{stdout,stderr,exit_code}</c> is
+    /// returned. Both drive the same relay exec paths built for the dev harness.
+    /// </summary>
+    private static async Task<IResult> ExecLeaseAsync(
+        string id,
+        HttpContext http,
+        ILeaseService leases,
+        IUserAccountService accounts,
+        ITunnelRelay relay,
+        CancellationToken ct)
+    {
+        var leaseId = RequireLeaseId(id);
+        var user = await accounts.BootstrapAsync(http.User, ct);
+
+        // Resolve + validate the lease BEFORE touching the response: null → 404, not-active → 409
+        // lease_not_ready. Both must reach the client as the uniform error envelope, which the SSE path
+        // (a 200 text/event-stream once started) can no longer produce.
+        var target = await leases.ResolveExecTargetAsync(user.Id, leaseId, ct);
+        if (target is null)
+        {
+            throw new ApiException(ApiErrorCode.NotFound, $"No such lease '{id}'.");
+        }
+
+        var command = await ReadCommandAsync(http.Request, ct);
+
+        // ?stream=1 → streamed exec over SSE (docs/API.md §7); anything else is the sync exec, whose
+        // host_offline / upstream_timeout surface from the relay as the uniform error envelope.
+        if (http.Request.Query["stream"] == "1")
+        {
+            await ExecStreamSse.RelayAsync(http, relay, target.HostId, target.LeaseId, command, ct);
+            return Results.Empty;
+        }
+
+        var result = await relay.ExecAsync(target.HostId, target.LeaseId, command, ct);
+        return Results.Json(new ExecResponse(result.Stdout, result.Stderr, result.ExitCode));
+    }
+
     /// <summary>Parses the <c>lease_&lt;guid&gt;</c> route id, 404ing anything malformed (docs/API.md §3).</summary>
     private static Guid RequireLeaseId(string id)
     {
@@ -203,6 +246,30 @@ public static class LeaseEndpoints
     {
         using var reader = new StreamReader(request.Body, Encoding.UTF8, leaveOpen: true);
         return await reader.ReadToEndAsync(ct);
+    }
+
+    /// <summary>
+    /// Reads the exec command from the request body. An empty body runs an empty command (matching the
+    /// tunnel harness); a present-but-malformed body is a <c>validation_error</c> so it flows through the
+    /// uniform envelope rather than a framework 400.
+    /// </summary>
+    private static async Task<string> ReadCommandAsync(HttpRequest request, CancellationToken ct)
+    {
+        var body = await ReadBodyAsync(request, ct);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var exec = JsonSerializer.Deserialize<ExecRequest>(body, Json);
+            return exec?.Command ?? string.Empty;
+        }
+        catch (JsonException)
+        {
+            throw new ApiException(ApiErrorCode.ValidationError, "The request body is not valid JSON.");
+        }
     }
 
     private static CreateLeaseRequest Deserialize(string body)
