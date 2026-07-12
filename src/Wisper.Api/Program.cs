@@ -46,6 +46,12 @@ builder.Services.AddSingleton<ICatalogService, CatalogService>();
 builder.Services.AddSingleton<ILeaseWalletGate, AllowAllLeaseWalletGate>();
 builder.Services.AddSingleton<ILeaseService, LeaseService>();
 
+// Consumer interactive shell (docs/API.md §7, P4.4): the store that mints the single-use, ~30s,
+// (user,lease)-bound WS tickets behind POST /v1/leases/:id/shell-ticket. In-memory for now (a shell
+// ticket only needs to survive the seconds until the handshake on the same instance); a Redis-backed
+// store lands with the multi-instance backplane (P8.1).
+builder.Services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
+
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
 // per host, superseded on reconnect).
@@ -124,6 +130,11 @@ app.MapCatalogEndpoints();
 // Consumer lease surface (docs/API.md §5): POST/GET/DELETE /v1/leases, gated on the consumer role. The
 // canonical, authenticated, billed replacement for the /dev/leases Phase-1 harness above.
 app.MapLeaseEndpoints();
+
+// Consumer interactive shell surface (docs/API.md §7): POST /v1/leases/:id/shell-ticket (consumer-gated,
+// mints a one-time WS ticket) and WS /v1/leases/:id/shell?ticket=… (ticket-authenticated, bridges to the
+// tunnel shell stream). The JWT never lands in a URL — the single-use, short-TTL ticket does.
+app.MapShellEndpoints();
 
 // Any unmatched route returns the uniform error envelope (docs/API.md §3) rather
 // than an empty 404, so clients always get a consistent error shape.
