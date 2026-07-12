@@ -28,9 +28,10 @@ public interface IUserRepository : IRepository
     Task<User> CreateAsync(User user, CancellationToken ct = default);
 
     /// <summary>
-    /// Updates the mutable columns (status, stripe_customer_id, connect_account_id, connect_status,
-    /// updated_at) of the user identified by <see cref="User.Id"/> and returns the stored row. Throws
-    /// when the user does not exist or a unique column would collide.
+    /// Updates the mutable columns (email, status, stripe_customer_id, connect_account_id,
+    /// connect_status, updated_at) of the user identified by <see cref="User.Id"/> and returns the stored
+    /// row. <c>cognito_sub</c> is immutable identity and is never written. Throws when the user does not
+    /// exist or a unique column (email, stripe_customer_id, connect_account_id) would collide.
     /// </summary>
     Task<User> UpdateAsync(User user, CancellationToken ct = default);
 }
