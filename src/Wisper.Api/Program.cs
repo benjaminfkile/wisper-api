@@ -9,6 +9,7 @@ using Wisper.Api.Infrastructure;
 using Wisper.Api.Leases;
 using Wisper.Api.Metering;
 using Wisper.Api.Payments;
+using Wisper.Api.Payouts;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
 
@@ -82,6 +83,12 @@ builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
 // dispatch to idempotent, order-independent handlers with retry-safe failure recording. The payment/
 // account/transfer handlers are stubs here; later billing tasks (P6.2+) fill in the ledger effects.
 builder.Services.AddWisperPayments(builder.Configuration);
+
+// Scheduled host payouts (docs/PAYMENTS.md §6, P6.5): a background loop (default daily) that, per host whose
+// accrued host_earnings clears the minimum and whose Connect account is enabled, makes a Stripe Transfer
+// (idempotency key = payouts.id), writes a payouts row, and posts the `payout` ledger txn (host_earnings →
+// platform_cash). A failed transfer retains earnings and retries next run. No-op on a DB-less boot.
+builder.Services.AddHostedService<PayoutHostedService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
@@ -177,6 +184,11 @@ app.MapBillingEndpoints();
 // continue Stripe Connect Express onboarding → onboarding_url) and GET /v1/hosts/connect/status
 // (connect_status + requirements), both host-gated. account.updated (webhook below) gates going online.
 app.MapHostConnectEndpoints();
+
+// Host earnings + payout surface (docs/API.md §6, docs/PAYMENTS.md §6): GET /v1/earnings (accrued + paid),
+// GET /v1/earnings/payouts (payout history → Stripe transfer ids), and POST /v1/payouts (on-demand payout,
+// Idempotency-Key required, connect_incomplete → 403). Host-gated; the same path the scheduled run uses.
+app.MapHostEarningsEndpoints();
 
 // Stripe webhook (docs/API.md §4, docs/PAYMENTS.md §8): POST /stripe/webhook, unauthenticated but
 // signature-verified (no JWT), sitting alongside /healthz. Verifies the Stripe-Signature, dedupes via the

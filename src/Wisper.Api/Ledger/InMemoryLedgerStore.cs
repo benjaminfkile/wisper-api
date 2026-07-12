@@ -62,6 +62,18 @@ public sealed class InMemoryLedgerStore : ILedgerStore
         }
     }
 
+    public Task<IReadOnlyList<LedgerAccount>> ListAccountsByKindAsync(
+        LedgerAccountKind kind, string currency = "usd", CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            var list = _accounts.Values
+                .Where(a => a.Kind == kind && a.Currency == currency)
+                .ToList();
+            return Task.FromResult<IReadOnlyList<LedgerAccount>>(list);
+        }
+    }
+
     public Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
         string idempotencyKey, CancellationToken ct = default)
     {

@@ -75,6 +75,17 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<IReadOnlyList<LedgerAccount>> ListAccountsByKindAsync(
+        LedgerAccountKind kind, string currency = "usd", CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<AccountRow>(new CommandDefinition(
+            $"SELECT {AccountColumns} FROM ledger_accounts " +
+            "WHERE kind = @Kind::ledger_account_kind AND currency = @Currency",
+            new { Kind = PgEnum.ToSnakeLabel(kind), Currency = currency }, cancellationToken: ct));
+        return rows.Select(r => r.ToEntity()).ToList();
+    }
+
     public async Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
         string idempotencyKey, CancellationToken ct = default)
     {

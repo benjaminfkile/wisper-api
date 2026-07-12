@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Wisper.Api.Billing;
 using Wisper.Api.Hosts;
 using Wisper.Api.Payments.Handlers;
+using Wisper.Api.Payouts;
 
 namespace Wisper.Api.Payments;
 
@@ -30,9 +31,9 @@ public static class PaymentsServiceCollectionExtensions
         services.AddSingleton<IStripeBillingGateway, StripeBillingGateway>();
         services.AddSingleton<IStripeConnectGateway, StripeConnectGateway>();
 
-        // Webhook handler registry (docs/PAYMENTS.md §8.5). The top-up handler is live (P6.2): it posts the
-        // `topup` ledger txn keyed by the Stripe event id, crediting the wallet exactly once. Account/
-        // transfer/refund-dispute handlers stay stubs until their tasks. The dispatcher routes by event type.
+        // Webhook handler registry (docs/PAYMENTS.md §8.5). The top-up (P6.2), account (P6.4) and transfer
+        // (P6.5) handlers are live; the refund/dispute handler stays a stub until P6.6. The dispatcher routes
+        // by event type. The transfer handler updates payouts.status from transfer.created/failed/reversed.
         services.AddSingleton<IStripeWebhookHandler, TopupWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, PaymentWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, AccountWebhookHandler>();
@@ -50,6 +51,12 @@ public static class PaymentsServiceCollectionExtensions
         // Connect account + Account Link, and read/derive connect_status. Depends on the connect gateway and
         // the user repository (registered above / by AddWisperPersistence).
         services.AddSingleton<HostConnectService>();
+
+        // Host payout surface (docs/API.md §6, docs/PAYMENTS.md §6): scheduled + on-demand payouts drain accrued
+        // host_earnings via Connect transfers (idempotency key = payouts.id) and post the `payout` ledger txn;
+        // GET /v1/earnings + /earnings/payouts read the position. The background run cadence + minimum are config.
+        services.Configure<PayoutOptions>(configuration.GetSection(PayoutOptions.SectionName));
+        services.AddSingleton<PayoutService>();
 
         return services;
     }

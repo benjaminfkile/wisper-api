@@ -62,6 +62,30 @@ public sealed class LedgerService
     }
 
     /// <summary>
+    /// A host's accrued, not-yet-paid earnings in cents (docs/DATA_MODEL.md §7, docs/PAYMENTS.md §6) — the
+    /// maintained balance of their singleton <c>host_earnings</c> account, get-or-created so a host who has
+    /// never earned reads a clean <c>0</c>. This is what a payout drains (<c>host_earnings → platform_cash</c>).
+    /// Backs <c>GET /v1/earnings</c> and the payout guard.
+    /// </summary>
+    public async Task<long> GetHostEarningsCentsAsync(
+        Guid hostUserId, string currency = "usd", CancellationToken ct = default)
+    {
+        var earnings = await _store.GetOrCreateAccountAsync(
+            LedgerAccountKind.HostEarnings, hostUserId, currency, ct);
+        return earnings.BalanceCents;
+    }
+
+    /// <summary>
+    /// Every <c>host_earnings</c> account in <paramref name="currency"/> (docs/PAYMENTS.md §6) — the payout run
+    /// walks these to find hosts whose accrued balance clears the payout minimum. Each account's
+    /// <see cref="LedgerAccount.OwnerUserId"/> is the host being paid and its
+    /// <see cref="LedgerAccount.BalanceCents"/> the amount waiting.
+    /// </summary>
+    public Task<IReadOnlyList<LedgerAccount>> ListHostEarningsAccountsAsync(
+        string currency = "usd", CancellationToken ct = default) =>
+        _store.ListAccountsByKindAsync(LedgerAccountKind.HostEarnings, currency, ct);
+
+    /// <summary>
     /// The consumer's wallet statement (docs/API.md §5) — every transaction that touched their
     /// <c>user_wallet</c> (top-ups, holds, releases, refunds, chargebacks), each with the signed amount it
     /// moved, newest-first. Backs <c>GET /v1/billing/transactions</c>; the endpoint paginates it.

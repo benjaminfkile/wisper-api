@@ -46,6 +46,14 @@ public interface ILedgerStore : IRepository
     /// <summary>A snapshot of every ledger account (used by the reconciler, §7e).</summary>
     Task<IReadOnlyList<LedgerAccount>> ListAccountsAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Every ledger account of <paramref name="kind"/> in <paramref name="currency"/> (docs/DATA_MODEL.md §7).
+    /// The payout run enumerates the <c>host_earnings</c> singletons this way to find hosts whose accrued
+    /// balance clears the payout minimum (docs/PAYMENTS.md §6).
+    /// </summary>
+    Task<IReadOnlyList<LedgerAccount>> ListAccountsByKindAsync(
+        LedgerAccountKind kind, string currency = "usd", CancellationToken ct = default);
+
     /// <summary>The posted transaction carrying <paramref name="idempotencyKey"/>, or <c>null</c> if none.</summary>
     Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
         string idempotencyKey, CancellationToken ct = default);
