@@ -13,6 +13,13 @@ public sealed class FakeStripeConnectGateway : IStripeConnectGateway
     public List<ConnectAccountRequest> AccountCalls { get; } = new();
     public List<AccountLinkRequest> LinkCalls { get; } = new();
     public List<string> AccountFetches { get; } = new();
+    public List<TransferRequest> TransferCalls { get; } = new();
+
+    /// <summary>When set, <see cref="CreateTransferAsync"/> throws it — to exercise the failed-transfer path.</summary>
+    public Exception? TransferError { get; set; }
+
+    /// <summary>The transfer id handed back from <see cref="CreateTransferAsync"/> (per call, suffixed).</summary>
+    public string TransferId { get; set; } = "tr_fake";
 
     /// <summary>The account id handed back from <see cref="CreateExpressAccountAsync"/>.</summary>
     public string AccountId { get; set; } = "acct_fake";
@@ -47,5 +54,17 @@ public sealed class FakeStripeConnectGateway : IStripeConnectGateway
     {
         AccountFetches.Add(accountId);
         return Task.FromResult(Snapshot);
+    }
+
+    public Task<StripeTransfer> CreateTransferAsync(TransferRequest request, CancellationToken ct = default)
+    {
+        TransferCalls.Add(request);
+        if (TransferError is not null)
+        {
+            return Task.FromException<StripeTransfer>(TransferError);
+        }
+
+        // A stable per-payout id so a retried run (same payouts.id) can be told apart in assertions.
+        return Task.FromResult(new StripeTransfer($"{TransferId}_{TransferCalls.Count}"));
     }
 }
