@@ -238,4 +238,39 @@ public static class LedgerFlows
             Entries = entries,
         };
     }
+
+    /// <summary>
+    /// <b>chargeback</b> — a consumer disputes a top-up and the card network claws the money back
+    /// (docs/DATA_MODEL.md §8, docs/PAYMENTS.md §7, on Stripe <c>charge.dispute.created</c>). Debit
+    /// <c>user_wallet</c> the disputed gross (the consumer loses those credits) and credit
+    /// <c>platform_cash</c> the same (the money left the platform to the network). This is the <b>one</b>
+    /// documented case a wallet may go <b>negative</b> — a genuine debt, when the consumer already spent the
+    /// credits (the ledger's non-negative guard makes an explicit exception for <see cref="LedgerTxnKind.Chargeback"/>).
+    /// Keyed by the Stripe event id so a re-delivered dispute is a no-op. The platform absorbs already-paid
+    /// host earnings (§7) — no host clawback is posted here.
+    /// </summary>
+    public static TransactionDraft Chargeback(
+        Guid walletAccountId,
+        Guid platformCashAccountId,
+        long amountCents,
+        string idempotencyKey,
+        string? externalRef = null,
+        string? memo = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amountCents);
+
+        return new TransactionDraft
+        {
+            Kind = LedgerTxnKind.Chargeback,
+            ExternalRef = externalRef,
+            IdempotencyKey = idempotencyKey,
+            Memo = memo,
+            Entries = new List<EntryDraft>(2)
+            {
+                EntryDraft.Debit(walletAccountId, amountCents),
+                EntryDraft.Credit(platformCashAccountId, amountCents),
+            },
+        };
+    }
 }

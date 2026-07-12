@@ -42,11 +42,16 @@ public class WalletLeaseGateTests
         {
             Ledger = new LedgerService(LedgerStore);
             Policy = new PlatformPolicyService(Policies, Clock);
-            Gate = new WalletLeaseGate(Ledger, Leases, Policy, NullLogger<WalletLeaseGate>.Instance);
+            var fraud = new FraudGuardService(
+                Ledger, Leases, Policy, Clock, NullLogger<FraudGuardService>.Instance);
+            Gate = new WalletLeaseGate(Ledger, Leases, Policy, fraud, NullLogger<WalletLeaseGate>.Instance);
         }
 
         public Task PublishCapAsync(int cap) =>
             Policy.PublishAsync(new PlatformPolicy { FeeBps = 1500, MaxConcurrentLeasesPerUser = cap, EffectiveFrom = T0 });
+
+        public Task PublishSpendCapAsync(long capCents) =>
+            Policy.PublishAsync(new PlatformPolicy { FeeBps = 1500, MaxSpendCentsPerDay = capCents, EffectiveFrom = T0 });
 
         public async Task FundWalletAsync(long cents)
         {
@@ -162,6 +167,35 @@ public class WalletLeaseGateTests
         await fx.SeedLeaseAsync(LeaseStatus.Ended); // terminal — does not count against the cap
 
         var decision = await fx.Gate.AuthorizeHoldAsync(fx.ConsumerId, holdCents: 300, "usd");
+
+        Assert.True(decision.Allowed);
+    }
+
+    [Fact]
+    public async Task Authorize_throws_limit_exceeded_when_the_daily_spend_cap_is_reached()
+    {
+        var fx = new Fixture();
+        await fx.PublishSpendCapAsync(capCents: 10_000);
+        await fx.FundWalletAsync(1_000_000);
+        // A 60s @ 8000¢/min lease commits a hold of 8000 today.
+        await fx.SeedLeaseAsync(ttlSeconds: 60, price: 8000);
+
+        // Another lease committing 3000 would push the day's committed spend to 11000 > 10000.
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Gate.AuthorizeHoldAsync(fx.ConsumerId, holdCents: 3000, "usd"));
+
+        Assert.Equal(ApiErrorCode.LimitExceeded, ex.Code);
+    }
+
+    [Fact]
+    public async Task Authorize_allows_under_the_daily_spend_cap()
+    {
+        var fx = new Fixture();
+        await fx.PublishSpendCapAsync(capCents: 10_000);
+        await fx.FundWalletAsync(1_000_000);
+        await fx.SeedLeaseAsync(ttlSeconds: 60, price: 4000); // 4000 committed today
+
+        var decision = await fx.Gate.AuthorizeHoldAsync(fx.ConsumerId, holdCents: 3000, "usd"); // 7000 ≤ 10000
 
         Assert.True(decision.Allowed);
     }

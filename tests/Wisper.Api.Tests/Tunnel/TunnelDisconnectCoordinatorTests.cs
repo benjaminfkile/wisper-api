@@ -66,8 +66,10 @@ public class TunnelDisconnectCoordinatorTests
             var policy = new PlatformPolicyService(Policies, Clock);
             var meter = new MeteringService(
                 Leases, Usage, Hosts, ledger, policy, Clock, NullLogger<MeteringService>.Instance);
+            var fraud = new FraudGuardService(
+                ledger, Leases, policy, Clock, NullLogger<FraudGuardService>.Instance);
             var walletGate = new WalletLeaseGate(
-                ledger, Leases, policy, NullLogger<WalletLeaseGate>.Instance);
+                ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             var reconciler = new LeaseReconciliationService(
                 Leases, meter, walletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
             var options = new StaticOptionsMonitor<TunnelOptions>(new TunnelOptions { GraceSeconds = 90 });

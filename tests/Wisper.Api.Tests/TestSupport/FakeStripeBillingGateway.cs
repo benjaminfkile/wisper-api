@@ -12,6 +12,7 @@ public sealed class FakeStripeBillingGateway : IStripeBillingGateway
     public List<StripeCustomerRequest> CustomerCalls { get; } = new();
     public List<StripePaymentIntentRequest> PaymentIntentCalls { get; } = new();
     public List<StripeSetupIntentRequest> SetupIntentCalls { get; } = new();
+    public List<StripeRefundRequest> RefundCalls { get; } = new();
 
     /// <summary>The customer id handed back from <see cref="CreateCustomerAsync"/>.</summary>
     public string CustomerId { get; set; } = "cus_fake";
@@ -40,5 +41,12 @@ public sealed class FakeStripeBillingGateway : IStripeBillingGateway
     {
         SetupIntentCalls.Add(request);
         return Task.FromResult(new StripeSetupIntent($"seti_{SetupIntentCalls.Count}", SetupIntentClientSecret));
+    }
+
+    public Task<StripeRefund> CreateRefundAsync(StripeRefundRequest request, CancellationToken ct = default)
+    {
+        RefundCalls.Add(request);
+        // Echo the requested amount back; a stable, per-call refund id lets tests key the ledger effect.
+        return Task.FromResult(new StripeRefund($"re_{RefundCalls.Count}", request.AmountCents));
     }
 }

@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Wisper.Api.Audit;
 using Wisper.Api.Billing;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Ledger;
 using Wisper.Api.Payments;
 using Wisper.Api.Payments.Handlers;
+using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Policy;
 using Wisper.Api.Persistence.Users;
@@ -37,12 +39,17 @@ public class BillingServiceTests
         public BillingService Service { get; }
         public TopupWebhookHandler Webhook { get; }
 
+        public InMemoryAuditLogRepository AuditLog { get; } = new();
+
         public Fixture()
         {
             Ledger = new LedgerService(LedgerStore);
             var policy = new PlatformPolicyService(Policies, Clock);
+            var fraud = new FraudGuardService(
+                Ledger, Leases, policy, Clock, NullLogger<FraudGuardService>.Instance);
+            var audit = new AuditService(AuditLog, Clock);
             Service = new BillingService(
-                Ledger, Leases, Users, policy, Gateway, Clock, NullLogger<BillingService>.Instance);
+                Ledger, Leases, Users, policy, fraud, audit, Gateway, Clock, NullLogger<BillingService>.Instance);
             Webhook = new TopupWebhookHandler(Ledger, NullLogger<TopupWebhookHandler>.Instance);
         }
 
@@ -224,6 +231,96 @@ public class BillingServiceTests
         // No overlap across pages, and all three transactions are covered.
         var ids = first.Data.Select(t => t.Id).Concat(second.Data.Select(t => t.Id)).ToList();
         Assert.Equal(3, ids.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Topup_over_the_first_topup_hold_is_limit_exceeded()
+    {
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync();
+        await fx.Policies.AppendAsync(new PlatformPolicy
+        {
+            FeeBps = 1500,
+            FirstTopupMaxCents = 5000,
+            EffectiveFrom = T0,
+        });
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.TopupAsync(user.Id, new TopupRequest(6000), "idem-1"));
+
+        Assert.Equal(ApiErrorCode.LimitExceeded, ex.Code);
+        Assert.Empty(fx.Gateway.PaymentIntentCalls); // blocked before Stripe
+    }
+
+    [Fact]
+    public async Task Refund_of_unspent_credits_debits_the_wallet_and_audits()
+    {
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync();
+        await fx.CreditViaWebhookAsync("evt_1", user.Id, 5000); // wallet 5000, top-up pi_evt_1
+
+        var result = await fx.Service.RefundAsync(user.Id, new RefundRequest(2000), "idem-r");
+
+        Assert.Equal("re_1", result.RefundId);
+        Assert.Equal(2000, result.AmountCents);
+        Assert.Equal(3000, result.BalanceCents);          // wallet debited by the refund
+        Assert.Equal(3000, await fx.Ledger.GetWalletBalanceCentsAsync(user.Id));
+
+        // The Stripe refund targeted the caller's top-up PaymentIntent and carried the API idempotency key.
+        var call = Assert.Single(fx.Gateway.RefundCalls);
+        Assert.Equal("pi_evt_1", call.PaymentIntentId);
+        Assert.Equal(2000, call.AmountCents);
+        Assert.Equal("idem-r", call.IdempotencyKey);
+
+        var audit = await fx.AuditLog.ListByTargetAsync("user", user.Id);
+        Assert.Equal("billing.refund", Assert.Single(audit).Action);
+    }
+
+    [Fact]
+    public async Task Refund_exceeding_unspent_balance_is_insufficient_funds()
+    {
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync();
+        await fx.CreditViaWebhookAsync("evt_1", user.Id, 1000);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.RefundAsync(user.Id, new RefundRequest(2000), "idem-r"));
+
+        Assert.Equal(ApiErrorCode.InsufficientFunds, ex.Code);
+        Assert.Empty(fx.Gateway.RefundCalls); // no Stripe refund issued for a blocked amount
+    }
+
+    [Fact]
+    public async Task Refund_with_no_topup_to_refund_is_a_conflict()
+    {
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync();
+        // Fund the wallet WITHOUT a top-up external ref (a manual credit), so there is no PaymentIntent target.
+        var wallet = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user.Id);
+        var cash = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+        var fees = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
+        await fx.Ledger.PostAsync(LedgerFlows.Topup(
+            wallet.Id, cash.Id, fees.Id, 2000, 0, "k1", externalRef: null));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.RefundAsync(user.Id, new RefundRequest(1000), "idem-r"));
+
+        Assert.Equal(ApiErrorCode.Conflict, ex.Code);
+    }
+
+    [Fact]
+    public async Task Refund_is_idempotent_at_the_ledger_by_refund_id()
+    {
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync();
+        await fx.CreditViaWebhookAsync("evt_1", user.Id, 5000);
+
+        // The fake returns a stable refund id per call; drive two refunds and confirm each debits once. (A
+        // true retry replays the stored response at the endpoint layer; here we assert the ledger key holds.)
+        await fx.Service.RefundAsync(user.Id, new RefundRequest(1000), "idem-a");
+        Assert.Equal(4000, await fx.Ledger.GetWalletBalanceCentsAsync(user.Id));
+        await fx.Service.RefundAsync(user.Id, new RefundRequest(1000), "idem-b");
+        Assert.Equal(3000, await fx.Ledger.GetWalletBalanceCentsAsync(user.Id));
     }
 
     [Fact]

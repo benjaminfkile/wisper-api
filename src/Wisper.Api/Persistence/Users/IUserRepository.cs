@@ -29,6 +29,13 @@ public interface IUserRepository : IRepository
     Task<User?> GetByConnectAccountIdAsync(string connectAccountId, CancellationToken ct = default);
 
     /// <summary>
+    /// Gets a user by their Stripe customer id (<c>cus_…</c>), or <c>null</c> if none. The refund/dispute
+    /// webhooks resolve the consumer whose wallet a disputed/refunded charge belongs to this way, so the
+    /// <c>refund</c>/<c>chargeback</c> effect is a pure function of the event (docs/PAYMENTS.md §7, §8).
+    /// </summary>
+    Task<User?> GetByStripeCustomerIdAsync(string stripeCustomerId, CancellationToken ct = default);
+
+    /// <summary>
     /// Inserts a new user and returns the stored row (with any DB-generated id). Throws when a unique
     /// column (cognito_sub, email, stripe_customer_id, connect_account_id) collides with an existing row.
     /// </summary>

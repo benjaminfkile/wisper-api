@@ -87,6 +87,11 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<PlatformPolicyService>();
         services.AddSingleton<AuditService>();
 
+        // The day-one fraud guards (docs/PAYMENTS.md §7): first-top-up hold + new-account top-up velocity +
+        // per-user daily spend cap, all read from platform_policy and enforced at top-up (BillingService) and
+        // lease start (WalletLeaseGate). Depends on the ledger, lease repo, active policy, and the clock.
+        services.AddSingleton<FraudGuardService>();
+
         // Extend the health surface with the DB probe (degrades gracefully when no DB — see DbHealthCheck).
         services.AddHealthChecks().AddCheck<DbHealthCheck>(DbHealthCheck.Name);
 

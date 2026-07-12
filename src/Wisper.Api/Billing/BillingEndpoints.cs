@@ -30,6 +30,7 @@ public static class BillingEndpoints
         endpoints.MapGet("/v1/billing", GetBillingAsync).RequireConsumer();
         endpoints.MapGet("/v1/billing/transactions", ListTransactionsAsync).RequireConsumer();
         endpoints.MapPost("/v1/billing/topup", TopupAsync).RequireConsumer();
+        endpoints.MapPost("/v1/billing/refund", RefundAsync).RequireConsumer();
         endpoints.MapPost("/v1/billing/payment-methods", CreatePaymentMethodAsync).RequireConsumer();
     }
 
@@ -54,7 +55,7 @@ public static class BillingEndpoints
         // Read the raw body once so a same-key replay (return the stored response) is told apart from a
         // same-key/different-body reuse (409 conflict), docs/API.md §9.
         var body = await ReadBodyAsync(http.Request, ct);
-        var request = Deserialize(body);
+        var request = Deserialize<TopupRequest>(body);
 
         var user = await accounts.BootstrapAsync(http.User, ct);
 
@@ -74,6 +75,56 @@ public static class BillingEndpoints
         try
         {
             var result = await billing.TopupAsync(user.Id, request, key, ct);
+            var json = JsonSerializer.Serialize(result, Json);
+            await idempotency.CompleteAsync(key, StatusCodes.Status200OK, json, ct);
+            return Results.Text(json, JsonContentType, statusCode: StatusCodes.Status200OK);
+        }
+        catch
+        {
+            await idempotency.AbandonAsync(key, CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task<IResult> RefundAsync(
+        HttpContext http,
+        BillingService billing,
+        IUserAccountService accounts,
+        IdempotencyService idempotency,
+        CancellationToken ct)
+    {
+        // A refund moves money, so the Idempotency-Key is REQUIRED — a retry must never refund twice
+        // (docs/API.md §9, docs/PAYMENTS.md §7).
+        var key = http.Request.Headers[IdempotencyKeyHeader].ToString();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                $"The {IdempotencyKeyHeader} header is required.",
+                new { header = IdempotencyKeyHeader });
+        }
+
+        var body = await ReadBodyAsync(http.Request, ct);
+        var request = Deserialize<RefundRequest>(body);
+
+        var user = await accounts.BootstrapAsync(http.User, ct);
+
+        var begun = await idempotency.BeginAsync(user.Id, key, RequestHash.Compute(body), ct);
+        switch (begun.Outcome)
+        {
+            case IdempotencyOutcome.Replay:
+                return Results.Text(begun.ResponseBody ?? string.Empty, JsonContentType, statusCode: begun.ResponseStatus);
+            case IdempotencyOutcome.Conflict:
+            case IdempotencyOutcome.InProgress:
+                throw new ApiException(ApiErrorCode.Conflict, begun.Message ?? "Idempotency-Key conflict.");
+        }
+
+        // We hold the lock. Run the refund; store the response so a retry replays it verbatim. On failure,
+        // release the lock so the same key can be retried. The Stripe idempotency key = this API key, so a
+        // retried Stripe refund returns the same object rather than refunding twice (§7).
+        try
+        {
+            var result = await billing.RefundAsync(user.Id, request, key, ct);
             var json = JsonSerializer.Serialize(result, Json);
             await idempotency.CompleteAsync(key, StatusCodes.Status200OK, json, ct);
             return Results.Text(json, JsonContentType, statusCode: StatusCodes.Status200OK);
@@ -151,7 +202,7 @@ public static class BillingEndpoints
         return await reader.ReadToEndAsync(ct);
     }
 
-    private static TopupRequest Deserialize(string body)
+    private static T Deserialize<T>(string body)
     {
         if (string.IsNullOrWhiteSpace(body))
         {
@@ -160,7 +211,7 @@ public static class BillingEndpoints
 
         try
         {
-            return JsonSerializer.Deserialize<TopupRequest>(body, Json)
+            return JsonSerializer.Deserialize<T>(body, Json)
                 ?? throw new ApiException(ApiErrorCode.ValidationError, "A request body is required.");
         }
         catch (JsonException)

@@ -292,8 +292,14 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 | `min_topup_cents` | `bigint` | |
 | `max_concurrent_leases_per_user` | `int` | |
 | `max_ttl_seconds_cap` | `int` | global ceiling over host limits |
+| `first_topup_max_cents` | `bigint` | fraud guard — first-top-up hold cap (`PAYMENTS.md` §7) |
+| `new_account_window_hours` | `int` | fraud guard — how long an account counts as "new" |
+| `new_account_max_topup_cents_per_day` | `bigint` | fraud guard — new-account top-up velocity (rolling 24h) |
+| `max_spend_cents_per_day` | `bigint` | fraud guard — per-user daily spend cap (by lease holds) |
 | `effective_from` | `timestamptz` NOT NULL | |
 | `created_by` | `uuid` → `users(id)` | admin |
+
+The four fraud-guard columns are all NULL-able (NULL = "no limit"); they carry the day-one, deterministic fraud controls (`PAYMENTS.md` §7, §13) the billing paths enforce at top-up and lease start.
 
 ## 12. Audit — `audit_log`
 

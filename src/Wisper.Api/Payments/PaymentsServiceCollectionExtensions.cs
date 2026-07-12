@@ -31,9 +31,9 @@ public static class PaymentsServiceCollectionExtensions
         services.AddSingleton<IStripeBillingGateway, StripeBillingGateway>();
         services.AddSingleton<IStripeConnectGateway, StripeConnectGateway>();
 
-        // Webhook handler registry (docs/PAYMENTS.md §8.5). The top-up (P6.2), account (P6.4) and transfer
-        // (P6.5) handlers are live; the refund/dispute handler stays a stub until P6.6. The dispatcher routes
-        // by event type. The transfer handler updates payouts.status from transfer.created/failed/reversed.
+        // Webhook handler registry (docs/PAYMENTS.md §8.5). The top-up (P6.2), account (P6.4), transfer (P6.5)
+        // and refund/dispute (P6.6) handlers are all live. The dispatcher routes by event type. The payment
+        // handler posts refund/chargeback + suspends on dispute; the transfer handler updates payouts.status.
         services.AddSingleton<IStripeWebhookHandler, TopupWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, PaymentWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, AccountWebhookHandler>();

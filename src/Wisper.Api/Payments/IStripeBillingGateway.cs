@@ -30,6 +30,15 @@ public interface IStripeBillingGateway
     /// </summary>
     Task<StripeSetupIntent> CreateSetupIntentAsync(
         StripeSetupIntentRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a Stripe <b>Refund</b> against the top-up PaymentIntent in <paramref name="request"/> and
+    /// returns its id (<c>re_…</c>) + amount (docs/PAYMENTS.md §3, §7 — refund of unspent credits). The
+    /// idempotency key is passed to Stripe so a retried refund returns the same object rather than refunding
+    /// twice; the caller posts the <c>refund</c> ledger txn keyed by the returned refund id, which the
+    /// <c>charge.refunded</c> webhook dedupes against.
+    /// </summary>
+    Task<StripeRefund> CreateRefundAsync(StripeRefundRequest request, CancellationToken ct = default);
 }
 
 /// <summary>Inputs for creating a Stripe customer — the consumer's identity for card-on-file/receipts.</summary>
@@ -51,6 +60,18 @@ public sealed record StripePaymentIntent(string Id, string ClientSecret);
 
 /// <summary>A created SetupIntent — its id (<c>seti_…</c>) and the client secret the browser confirms with.</summary>
 public sealed record StripeSetupIntent(string Id, string ClientSecret);
+
+/// <summary>
+/// Inputs for a refund of unspent credits (docs/PAYMENTS.md §3, §7): the <see cref="UserId"/> whose wallet is
+/// debited (stamped into refund metadata so the <c>charge.refunded</c> webhook is a pure function of the
+/// event), the <see cref="PaymentIntentId"/> (<c>pi_…</c>) of the top-up being refunded, the amount, and the
+/// API idempotency key forwarded as the Stripe idempotency key.
+/// </summary>
+public sealed record StripeRefundRequest(
+    Guid UserId, string PaymentIntentId, long AmountCents, string IdempotencyKey);
+
+/// <summary>A created Refund — its Stripe id (<c>re_…</c>) and the amount refunded, in cents.</summary>
+public sealed record StripeRefund(string Id, long AmountCents);
 
 /// <summary>
 /// The <see cref="Stripe.PaymentIntent.Metadata"/> keys Wisper stamps on a top-up intent so the

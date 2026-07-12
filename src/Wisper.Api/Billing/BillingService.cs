@@ -1,3 +1,4 @@
+using Wisper.Api.Audit;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Ledger;
@@ -30,6 +31,8 @@ public sealed class BillingService
     private readonly ILeaseRepository _leases;
     private readonly IUserRepository _users;
     private readonly PlatformPolicyService _policy;
+    private readonly FraudGuardService _fraud;
+    private readonly AuditService _audit;
     private readonly IStripeBillingGateway _stripe;
     private readonly TimeProvider _time;
     private readonly ILogger<BillingService> _logger;
@@ -39,6 +42,8 @@ public sealed class BillingService
         ILeaseRepository leases,
         IUserRepository users,
         PlatformPolicyService policy,
+        FraudGuardService fraud,
+        AuditService audit,
         IStripeBillingGateway stripe,
         TimeProvider time,
         ILogger<BillingService> logger)
@@ -47,6 +52,8 @@ public sealed class BillingService
         _leases = leases;
         _users = users;
         _policy = policy;
+        _fraud = fraud;
+        _audit = audit;
         _stripe = stripe;
         _time = time;
         _logger = logger;
@@ -87,6 +94,10 @@ public sealed class BillingService
         var user = await _users.GetByIdAsync(userId, ct)
             ?? throw new ApiException(ApiErrorCode.NotFound, "The account no longer exists.");
 
+        // Fraud guards (docs/PAYMENTS.md §7): the first-top-up hold + new-account top-up velocity, checked
+        // BEFORE Stripe so a limited request never creates a PaymentIntent. Throws limit_exceeded (429).
+        await _fraud.EnforceTopupAllowedAsync(user, amountCents, ct);
+
         var customerId = await EnsureCustomerAsync(user, ct);
 
         var intent = await _stripe.CreatePaymentIntentAsync(
@@ -111,6 +122,98 @@ public sealed class BillingService
         var customerId = await EnsureCustomerAsync(user, ct);
         var intent = await _stripe.CreateSetupIntentAsync(new StripeSetupIntentRequest(user.Id, customerId), ct);
         return new SetupIntentResponse(intent.ClientSecret);
+    }
+
+    /// <summary>
+    /// Refunds unspent wallet credits (docs/API.md §5, docs/PAYMENTS.md §3, §7): validates the amount, checks
+    /// the wallet currently holds at least that much (so only <b>unspent</b> credits are refundable — refunding
+    /// spent credits is a clawback question), issues a Stripe <b>Refund</b> against a top-up PaymentIntent
+    /// (the named one, else the most recent), then posts the <c>refund</c> ledger txn (<c>user_wallet →
+    /// platform_cash</c>) keyed by the Stripe <b>refund id</b>, so the <c>charge.refunded</c> webhook dedupes
+    /// against it (exactly-once). The refund is audited (docs/PAYMENTS.md §10, §12). The API idempotency key is
+    /// forwarded to Stripe so a retried request cannot refund twice.
+    /// </summary>
+    public async Task<RefundResponse> RefundAsync(
+        Guid userId, RefundRequest request, string idempotencyKey, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
+
+        if (request.AmountCents is not { } amountCents || amountCents <= 0)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'amount_cents' must be a positive integer.",
+                new { field = "amount_cents" });
+        }
+
+        var user = await _users.GetByIdAsync(userId, ct)
+            ?? throw new ApiException(ApiErrorCode.NotFound, "The account no longer exists.");
+
+        // Only UNSPENT credits are refundable: the wallet must currently hold at least the refund amount
+        // (docs/PAYMENTS.md §3, §7). Refunding spent credits would drive the wallet negative — that is a
+        // clawback/admin-adjustment question, not a self-serve refund. Blocked with 402.
+        var balance = await _ledger.GetWalletBalanceCentsAsync(userId, Currency, ct);
+        if (balance < amountCents)
+        {
+            throw new ApiException(
+                ApiErrorCode.InsufficientFunds,
+                "The refund exceeds the unspent wallet balance.",
+                new { available_cents = balance, requested_cents = amountCents });
+        }
+
+        // Which top-up to refund against: the caller may name a PaymentIntent, else the most recent top-up.
+        var paymentIntentId = await ResolveRefundTargetAsync(userId, request.PaymentIntent, ct);
+
+        // Issue the Stripe refund (idempotency key = the API key), then post the ledger effect keyed by the
+        // returned refund id — the same key the charge.refunded webhook uses, so they dedupe (docs/PAYMENTS.md §8).
+        var refund = await _stripe.CreateRefundAsync(
+            new StripeRefundRequest(userId, paymentIntentId, amountCents, idempotencyKey), ct);
+
+        var wallet = await _ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, userId, Currency, ct);
+        var platformCash = await _ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null, Currency, ct);
+        var stripeFees = await _ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null, Currency, ct);
+
+        try
+        {
+            var posted = await _ledger.PostAsync(
+                LedgerFlows.Refund(
+                    wallet.Id, platformCash.Id, stripeFees.Id,
+                    grossAmountCents: refund.AmountCents,
+                    stripeFeeCents: 0, // platform returns the full credit; the original processing fee is absorbed
+                    idempotencyKey: RefundIdempotencyKey(refund.Id),
+                    externalRef: refund.Id,
+                    memo: $"refund {refund.Id} for user {userId} (pi {paymentIntentId})"),
+                ct);
+            _logger.LogInformation(
+                "refunded {Amount}¢ to user {User} via refund {Refund} (pi {Intent}){Replay}",
+                refund.AmountCents, userId, refund.Id, paymentIntentId,
+                posted.WasDeduplicated ? " [ledger replay]" : string.Empty);
+        }
+        catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
+        {
+            // Wallet drained between the balance check and the post (a rare race). The Stripe refund was
+            // already issued and is idempotent by refund id; the charge.refunded webhook is the backstop —
+            // flag for reconciliation rather than silently drive the wallet negative.
+            _logger.LogError(
+                ex, "refund {Refund} for user {User} could not post (wallet raced below balance); reconciliation required",
+                refund.Id, userId);
+            throw new ApiException(
+                ApiErrorCode.InsufficientFunds,
+                "The refund exceeds the unspent wallet balance.",
+                new { requested_cents = amountCents });
+        }
+
+        await _audit.RecordAsync(
+            "billing.refund",
+            actorUserId: userId,
+            targetType: "user",
+            targetId: userId,
+            meta: new { refund_id = refund.Id, amount_cents = refund.AmountCents, payment_intent = paymentIntentId },
+            ct);
+
+        var newBalance = await _ledger.GetWalletBalanceCentsAsync(userId, Currency, ct);
+        return new RefundResponse(refund.Id, refund.AmountCents, Currency, newBalance);
     }
 
     /// <summary>
@@ -178,6 +281,43 @@ public sealed class BillingService
 
     /// <summary>The maximum page size a caller may request (docs/API.md §10).</summary>
     public static int MaxLimit => MaxPageLimit;
+
+    /// <summary>The <c>refund</c> ledger idempotency key — stable per Stripe refund id, shared with the webhook.</summary>
+    public static string RefundIdempotencyKey(string refundId) => $"refund:{refundId}";
+
+    /// <summary>
+    /// Resolves the top-up PaymentIntent (<c>pi_…</c>) a refund is issued against: the caller-named one when
+    /// present (validated to be one of the user's own top-ups), else the caller's most recent top-up. A
+    /// top-up's <c>pi_</c> id is carried on its <c>topup</c> ledger transaction's external ref. Throws a
+    /// validation error when the user has no top-up to refund, or names one that isn't theirs.
+    /// </summary>
+    private async Task<string> ResolveRefundTargetAsync(
+        Guid userId, string? requestedPaymentIntent, CancellationToken ct)
+    {
+        var txns = await _ledger.ListWalletTransactionsAsync(userId, Currency, ct);
+        // Newest-first already; a top-up's external ref is its PaymentIntent id.
+        var topupIntents = txns
+            .Where(t => t.Transaction.Kind == LedgerTxnKind.Topup && !string.IsNullOrWhiteSpace(t.Transaction.ExternalRef))
+            .Select(t => t.Transaction.ExternalRef!)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(requestedPaymentIntent))
+        {
+            if (!topupIntents.Contains(requestedPaymentIntent))
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "The named payment_intent is not a top-up on this account.",
+                    new { field = "payment_intent" });
+            }
+
+            return requestedPaymentIntent;
+        }
+
+        return topupIntents.FirstOrDefault()
+            ?? throw new ApiException(
+                ApiErrorCode.Conflict, "There is no top-up to refund against.");
+    }
 
     private async Task<string> EnsureCustomerAsync(User user, CancellationToken ct)
     {
