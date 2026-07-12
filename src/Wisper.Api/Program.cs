@@ -1,5 +1,7 @@
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -13,7 +15,9 @@ builder.Logging.AddJsonConsole(options =>
     options.UseUtcTimestamp = true;
 });
 
-builder.Services.AddHealthChecks();
+// PostgreSQL persistence (docs/DATA_MODEL.md §1): pooled data source from ConnectionStrings:Wisper,
+// the DbUp migration runner, and the DB health probe. Boots DB-less (tunnel-only) when unset.
+builder.Services.AddWisperPersistence(builder.Configuration);
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
@@ -27,6 +31,10 @@ builder.Services.AddSingleton<ITunnelRelay, TunnelRelay>();
 
 var app = builder.Build();
 
+// Apply pending DB migrations before serving (docs/DATA_MODEL.md §1). Idempotent; a no-op when
+// no database is configured, so the app still boots for the tunnel.
+app.ApplyDatabaseMigrations();
+
 // Order is deliberate: the request id is assigned first so it tags every log line
 // and every error envelope; the exception handler wraps the whole pipeline.
 app.UseMiddleware<RequestIdMiddleware>();
@@ -37,9 +45,26 @@ app.UseMiddleware<ExceptionHandlingMiddleware>();
 // later work only has to map endpoints.
 app.UseWebSockets();
 
-// Liveness. `/api/health` is the fleet convention the gateway's aggregated health
-// check calls; `/healthz` is the name used in docs/API.md §4. Both are unauthenticated.
-var health = () => Results.Json(new { status = "ok" });
+// Liveness + readiness. `/api/health` is the fleet convention the gateway's aggregated health
+// check calls; `/healthz` is the name used in docs/API.md §4. Both are unauthenticated. The
+// report includes the DB probe (docs/DATA_MODEL.md §1), which degrades gracefully when no
+// database is configured, so a tunnel-only boot still reports `ok`. Unhealthy → 503.
+var healthService = app.Services.GetRequiredService<HealthCheckService>();
+var health = async (CancellationToken ct) =>
+{
+    var report = await healthService.CheckHealthAsync(ct);
+    var status = report.Status switch
+    {
+        HealthStatus.Healthy => "ok",
+        HealthStatus.Degraded => "degraded",
+        _ => "error",
+    };
+    var checks = report.Entries.ToDictionary(
+        e => e.Key,
+        e => new { status = e.Value.Status.ToString().ToLowerInvariant(), description = e.Value.Description });
+    var httpStatus = report.Status == HealthStatus.Unhealthy ? 503 : 200;
+    return Results.Json(new { status, checks }, statusCode: httpStatus);
+};
 app.MapGet("/api/health", health);
 app.MapGet("/healthz", health);
 
