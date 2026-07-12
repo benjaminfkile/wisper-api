@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Wisper.Api.Domain;
+using Wisper.Api.Leases;
 using Wisper.Api.Persistence.Leases;
 
 namespace Wisper.Api.Metering;
@@ -28,17 +29,20 @@ public sealed class LeaseReconciliationService
 {
     private readonly ILeaseRepository _leases;
     private readonly MeteringService _meter;
+    private readonly ILeaseWalletGate _walletGate;
     private readonly TimeProvider _time;
     private readonly ILogger<LeaseReconciliationService> _logger;
 
     public LeaseReconciliationService(
         ILeaseRepository leases,
         MeteringService meter,
+        ILeaseWalletGate walletGate,
         TimeProvider time,
         ILogger<LeaseReconciliationService> logger)
     {
         _leases = leases;
         _meter = meter;
+        _walletGate = walletGate;
         _time = time;
         _logger = logger;
     }
@@ -164,10 +168,16 @@ public sealed class LeaseReconciliationService
         return suspended.Count;
     }
 
-    private Task EndSuspendedAsync(
-        Lease lease, LeaseEndReason reason, DateTimeOffset lastHealthyAt, CancellationToken ct) =>
-        _leases.TransitionStateAsync(
+    private async Task EndSuspendedAsync(
+        Lease lease, LeaseEndReason reason, DateTimeOffset lastHealthyAt, CancellationToken ct)
+    {
+        // The lease was already flushed to last-healthy when it suspended, so its charged total is final;
+        // end it, then return the unused hold remainder to the wallet (docs/PAYMENTS.md §4). Release is
+        // keyed by lease id, so a repeated grace/reconnect flap converges on a single hold_release.
+        await _leases.TransitionStateAsync(
             lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: lastHealthyAt, ct: ct);
+        await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+    }
 }
 
 /// <summary>

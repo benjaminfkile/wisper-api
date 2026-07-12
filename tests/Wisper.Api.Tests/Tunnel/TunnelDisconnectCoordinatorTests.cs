@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Wisper.Api.Domain;
+using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Hosts;
@@ -65,8 +66,10 @@ public class TunnelDisconnectCoordinatorTests
             var policy = new PlatformPolicyService(Policies, Clock);
             var meter = new MeteringService(
                 Leases, Usage, Hosts, ledger, policy, Clock, NullLogger<MeteringService>.Instance);
+            var walletGate = new WalletLeaseGate(
+                ledger, Leases, policy, NullLogger<WalletLeaseGate>.Instance);
             var reconciler = new LeaseReconciliationService(
-                Leases, meter, Clock, NullLogger<LeaseReconciliationService>.Instance);
+                Leases, meter, walletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
             var options = new StaticOptionsMonitor<TunnelOptions>(new TunnelOptions { GraceSeconds = 90 });
             Coordinator = new TunnelDisconnectCoordinator(
                 reconciler, options, Clock, NullLogger<TunnelDisconnectCoordinator>.Instance, Grace.Delay);

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Wisper.Api.Domain;
+using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Hosts;
@@ -50,8 +51,10 @@ public class LeaseReconciliationServiceTests
             Policy = new PlatformPolicyService(Policies, Clock);
             Meter = new MeteringService(
                 Leases, Usage, Hosts, Ledger, Policy, Clock, NullLogger<MeteringService>.Instance);
+            var walletGate = new WalletLeaseGate(
+                Ledger, Leases, Policy, NullLogger<WalletLeaseGate>.Instance);
             Reconciler = new LeaseReconciliationService(
-                Leases, Meter, Clock, NullLogger<LeaseReconciliationService>.Instance);
+                Leases, Meter, walletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
         }
 
         public async Task SeedAsync()
