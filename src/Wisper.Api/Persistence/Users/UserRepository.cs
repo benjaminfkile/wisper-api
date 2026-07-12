@@ -62,7 +62,8 @@ public sealed class UserRepository : RepositoryBase, IUserRepository
     {
         const string sql = $"""
             UPDATE users
-               SET status             = @Status::user_status,
+               SET email              = @Email,
+                   status             = @Status::user_status,
                    stripe_customer_id = @StripeCustomerId,
                    connect_account_id = @ConnectAccountId,
                    connect_status     = @ConnectStatus::connect_status,

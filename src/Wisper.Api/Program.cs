@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
+using Wisper.Api.Accounts;
 using Wisper.Api.Auth;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Persistence;
@@ -24,6 +25,11 @@ builder.Services.AddWisperPersistence(builder.Configuration);
 // IJwtValidator, and provides the RequireRole/RequireConsumer/RequireHost/RequireAdmin route-group
 // gates. Config-driven (Auth section); fails closed when unconfigured. Endpoints land in P3.2+.
 builder.Services.AddWisperAuth(builder.Configuration);
+
+// Accounts (docs/API.md §2, §5, P3.2): the service that bootstraps the users row from the JWT on
+// first authenticated call and backs the /v1/me identity/profile endpoints. Depends on the users
+// repository (P2.2) and the shared clock, both registered by AddWisperPersistence above.
+builder.Services.AddSingleton<IUserAccountService, UserAccountService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
@@ -91,6 +97,10 @@ if (tunnelOptions.EnableDevEndpoints)
 // added by later work; this proves the versioned surface is wired.
 var v1 = app.MapGroup("/v1");
 v1.MapGet("/", () => Results.Json(new { service = "wisper-api", version = "v1" }));
+
+// Consumer account surface (docs/API.md §5): GET/PATCH /v1/me, gated on the consumer role, which
+// bootstraps the caller's users row on first authenticated call.
+app.MapMeEndpoints();
 
 // Any unmatched route returns the uniform error envelope (docs/API.md §3) rather
 // than an empty 404, so clients always get a consistent error shape.
