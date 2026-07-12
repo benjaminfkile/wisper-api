@@ -152,3 +152,11 @@ public sealed record ExecResponse(
     [property: JsonPropertyName("stdout")] string Stdout,
     [property: JsonPropertyName("stderr")] string Stderr,
     [property: JsonPropertyName("exit_code")] int ExitCode);
+
+/// <summary>
+/// The <c>POST /v1/leases/:id/shell-ticket</c> response (docs/API.md §7): the single-use <c>tkt_…</c> the
+/// client puts on the <c>WS /v1/leases/:id/shell?ticket=…</c> handshake, plus its TTL in seconds.
+/// </summary>
+public sealed record ShellTicketResponse(
+    [property: JsonPropertyName("ticket")] string Ticket,
+    [property: JsonPropertyName("expires_in")] int ExpiresIn);
