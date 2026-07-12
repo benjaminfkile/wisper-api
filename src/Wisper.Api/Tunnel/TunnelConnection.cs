@@ -64,6 +64,13 @@ public class TunnelConnection
     public Func<TunnelConnection, string, ReadOnlyMemory<byte>, CancellationToken, Task>? ControlFrameRouter { get; set; }
 
     /// <summary>
+    /// Routes each parsed <c>host.heartbeat</c> (with its live lease list) to the disconnect coordinator,
+    /// which reconciles the reported leases against the suspended set after a reconnect (docs/TUNNEL.md §8).
+    /// Set by the endpoint after construction; when null heartbeats only update the liveness clock.
+    /// </summary>
+    public Func<TunnelConnection, HostHeartbeat, CancellationToken, Task>? HeartbeatRouter { get; set; }
+
+    /// <summary>
     /// Allocates the next monotonic per-connection request id (docs/TUNNEL.md §2). Starts at 1
     /// so it is never 0 — <see cref="ControlEnvelope.Rid"/> treats 0 as "omitted".
     /// </summary>
@@ -221,7 +228,7 @@ public class TunnelConnection
         switch (type)
         {
             case FrameTypes.HostHeartbeat:
-                HandleHeartbeat(data);
+                await HandleHeartbeatAsync(data, ct);
                 break;
 
             case FrameTypes.Hello:
@@ -236,22 +243,30 @@ public class TunnelConnection
         }
     }
 
-    private void HandleHeartbeat(byte[] data)
+    private async Task HandleHeartbeatAsync(byte[] data, CancellationToken ct)
     {
+        HostHeartbeat? heartbeat;
         try
         {
-            var heartbeat = ControlJson.Deserialize<HostHeartbeat>(Encoding.UTF8.GetString(data));
-            if (heartbeat is null)
-            {
-                return;
-            }
-
-            Interlocked.Exchange(ref _lastHeartbeatTicks, DateTime.UtcNow.Ticks);
-            OnHeartbeat(heartbeat);
+            heartbeat = ControlJson.Deserialize<HostHeartbeat>(Encoding.UTF8.GetString(data));
         }
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "tunnel {SessionId}: dropping malformed host.heartbeat", SessionId);
+            return;
+        }
+
+        if (heartbeat is null)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _lastHeartbeatTicks, DateTime.UtcNow.Ticks);
+        OnHeartbeat(heartbeat);
+
+        if (HeartbeatRouter is { } router)
+        {
+            await router(this, heartbeat, ct);
         }
     }
 
