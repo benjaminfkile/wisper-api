@@ -6,6 +6,7 @@ using Wisper.Api.Catalog;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Leases;
 using Wisper.Api.Metering;
+using Wisper.Api.Payments;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
 
@@ -71,6 +72,13 @@ builder.Services.AddHostedService<MeteringHostedService>();
 // grace expiry ends the rest (host_disconnect). The pure set-diff/metering logic lives in the reconciler.
 builder.Services.AddSingleton<LeaseReconciliationService>();
 builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
+
+// Stripe integration (docs/PAYMENTS.md §1, §8, P6.1): the config-driven Stripe client wrapper + webhook
+// signature verifier (both behind interfaces, keys from the Stripe config section / secrets manager), and
+// the POST /stripe/webhook ingest pipeline — persist-then-process into stripe_events (PK dedupe), then
+// dispatch to idempotent, order-independent handlers with retry-safe failure recording. The payment/
+// account/transfer handlers are stubs here; later billing tasks (P6.2+) fill in the ledger effects.
+builder.Services.AddWisperPayments(builder.Configuration);
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
@@ -155,6 +163,11 @@ app.MapLeaseEndpoints();
 // mints a one-time WS ticket) and WS /v1/leases/:id/shell?ticket=… (ticket-authenticated, bridges to the
 // tunnel shell stream). The JWT never lands in a URL — the single-use, short-TTL ticket does.
 app.MapShellEndpoints();
+
+// Stripe webhook (docs/API.md §4, docs/PAYMENTS.md §8): POST /stripe/webhook, unauthenticated but
+// signature-verified (no JWT), sitting alongside /healthz. Verifies the Stripe-Signature, dedupes via the
+// stripe_events PK, and dispatches to the idempotent handler registry.
+app.MapStripeWebhookEndpoints();
 
 // Any unmatched route returns the uniform error envelope (docs/API.md §3) rather
 // than an empty 404, so clients always get a consistent error shape.
