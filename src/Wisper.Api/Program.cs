@@ -13,6 +13,7 @@ using Wisper.Api.Payments;
 using Wisper.Api.Payouts;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -100,14 +101,15 @@ builder.Services.Configure<TunnelOptions>(builder.Configuration.GetSection(Tunne
 // only as a dev/bootstrap fallback for a DB-less boot (it is empty, and thus fail-closed, in production).
 builder.Services.AddSingleton<ConfigHostTokenValidator>();
 builder.Services.AddSingleton<IHostTokenValidator, DbHostTokenValidator>();
-builder.Services.AddSingleton<IHostRegistry, InMemoryHostRegistry>();
+// The live host registry + server-side relay (docs/TUNNEL.md §5, §11). AddTunnelBackplane registers the
+// in-memory registry + relay directly for a single instance (the default), or — when Tunnel:Backplane is
+// enabled (docs/DESIGN.md §7, P8.1) — fronts them with the Redis pub/sub backplane so a host tunnel pinned
+// to one instance can be driven from any other. Consumers see the same IHostRegistry/ITunnelRelay either way.
+builder.Services.AddTunnelBackplane(builder.Configuration);
 // Reads a host's live advertised wisp capability (hello.capability) and force-closes its tunnel — the host
 // API validates its priced allow-list against the former and revokes-on-rotate via the latter (§6, §13).
 builder.Services.AddSingleton<IHostCapabilitySource, RegistryHostCapabilitySource>();
 builder.Services.AddSingleton<IAgentTunnelCloser, RegistryAgentTunnelCloser>();
-// The server-side relay that drives a connected host (lease lifecycle + sync exec),
-// correlating agent responses by rid/leaseId (docs/TUNNEL.md §5, §11).
-builder.Services.AddSingleton<ITunnelRelay, TunnelRelay>();
 
 // Host registration + pricing surface (docs/API.md §6, P7.1): register a wisp host and issue its agent token
 // once (hash-at-rest), list the caller's hosts with live presence + earnings, rotate the token (revoking the
