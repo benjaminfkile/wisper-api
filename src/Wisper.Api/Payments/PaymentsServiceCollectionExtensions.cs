@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Wisper.Api.Billing;
 using Wisper.Api.Payments.Handlers;
 
 namespace Wisper.Api.Payments;
@@ -21,18 +22,27 @@ public static class PaymentsServiceCollectionExtensions
         // this self-contained if payments are ever wired independently).
         services.TryAddSingleton(TimeProvider.System);
 
-        // Config-driven SDK wrapper + signature verifier (real impls; fakes back the unit suite).
+        // Config-driven SDK wrapper + signature verifier + the higher-level billing gateway (real impls;
+        // fakes back the unit suite — Grunt has no Stripe).
         services.AddSingleton<IStripeClient, StripeClient>();
         services.AddSingleton<IStripeSignatureVerifier, StripeSignatureVerifier>();
+        services.AddSingleton<IStripeBillingGateway, StripeBillingGateway>();
 
-        // Webhook handler registry (docs/PAYMENTS.md §8.5) — payment/account/transfer stubs. Adding a real
-        // handler later is a one-line registration; the dispatcher routes by the event types it claims.
+        // Webhook handler registry (docs/PAYMENTS.md §8.5). The top-up handler is live (P6.2): it posts the
+        // `topup` ledger txn keyed by the Stripe event id, crediting the wallet exactly once. Account/
+        // transfer/refund-dispute handlers stay stubs until their tasks. The dispatcher routes by event type.
+        services.AddSingleton<IStripeWebhookHandler, TopupWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, PaymentWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, AccountWebhookHandler>();
         services.AddSingleton<IStripeWebhookHandler, TransferWebhookHandler>();
 
         services.AddSingleton<StripeEventDispatcher>();
         services.AddSingleton<StripeWebhookService>();
+
+        // Consumer billing surface (docs/API.md §5, docs/PAYMENTS.md §3): top-up create + balance/usage +
+        // ledger view. Depends on the ledger, lease + user repositories, active policy, and the Stripe
+        // gateway — all registered above / by AddWisperPersistence.
+        services.AddSingleton<BillingService>();
 
         return services;
     }

@@ -50,6 +50,30 @@ public sealed class LedgerService
     }
 
     /// <summary>
+    /// The consumer's spendable wallet balance in cents (docs/DATA_MODEL.md §7, §8) — the maintained
+    /// balance of their singleton <c>user_wallet</c> account, get-or-created so a never-funded wallet
+    /// reads a clean <c>0</c>. Backs <c>GET /v1/billing</c>.
+    /// </summary>
+    public async Task<long> GetWalletBalanceCentsAsync(
+        Guid userId, string currency = "usd", CancellationToken ct = default)
+    {
+        var wallet = await _store.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, userId, currency, ct);
+        return wallet.BalanceCents;
+    }
+
+    /// <summary>
+    /// The consumer's wallet statement (docs/API.md §5) — every transaction that touched their
+    /// <c>user_wallet</c> (top-ups, holds, releases, refunds, chargebacks), each with the signed amount it
+    /// moved, newest-first. Backs <c>GET /v1/billing/transactions</c>; the endpoint paginates it.
+    /// </summary>
+    public async Task<IReadOnlyList<AccountTransaction>> ListWalletTransactionsAsync(
+        Guid userId, string currency = "usd", CancellationToken ct = default)
+    {
+        var wallet = await _store.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, userId, currency, ct);
+        return await _store.ListAccountTransactionsAsync(wallet.Id, ct);
+    }
+
+    /// <summary>
     /// Reconciliation (docs/DATA_MODEL.md §7e): for every account, re-derive its balance from the
     /// immutable journal (<c>Σ</c> of each entry's signed delta) and compare it to the maintained
     /// <see cref="LedgerAccount.BalanceCents"/>. Any non-zero <see cref="AccountReconciliation.DriftCents"/>

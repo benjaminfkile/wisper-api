@@ -81,6 +81,33 @@ public sealed class InMemoryLedgerStore : ILedgerStore
         }
     }
 
+    public Task<IReadOnlyList<AccountTransaction>> ListAccountTransactionsAsync(
+        Guid accountId, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            if (!_accounts.TryGetValue(accountId, out var account))
+            {
+                return Task.FromResult<IReadOnlyList<AccountTransaction>>(Array.Empty<AccountTransaction>());
+            }
+
+            // Sum each transaction's signed delta against this account (by its normal side, §7c).
+            var byTxn = new Dictionary<Guid, long>();
+            foreach (var entry in _entries.Where(e => e.AccountId == accountId))
+            {
+                var delta = LedgerAccountKinds.SignedDelta(account.Kind, entry.DebitCents, entry.CreditCents);
+                byTxn[entry.TransactionId] = byTxn.GetValueOrDefault(entry.TransactionId) + delta;
+            }
+
+            var list = byTxn
+                .Select(kv => new AccountTransaction(_transactions[kv.Key], kv.Value))
+                .OrderByDescending(t => t.Transaction.CreatedAt)
+                .ThenByDescending(t => t.Transaction.Id)
+                .ToList();
+            return Task.FromResult<IReadOnlyList<AccountTransaction>>(list);
+        }
+    }
+
     public Task<PostedTransaction> PostAsync(TransactionDraft draft, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(draft);

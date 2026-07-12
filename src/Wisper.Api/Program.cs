@@ -2,6 +2,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Accounts;
 using Wisper.Api.Auth;
+using Wisper.Api.Billing;
 using Wisper.Api.Catalog;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Leases;
@@ -163,6 +164,12 @@ app.MapLeaseEndpoints();
 // mints a one-time WS ticket) and WS /v1/leases/:id/shell?ticket=… (ticket-authenticated, bridges to the
 // tunnel shell stream). The JWT never lands in a URL — the single-use, short-TTL ticket does.
 app.MapShellEndpoints();
+
+// Consumer billing surface (docs/API.md §5, docs/PAYMENTS.md §3): POST /v1/billing/topup (create a
+// PaymentIntent, Idempotency-Key required), GET /v1/billing (balance + usage summary), GET
+// /v1/billing/transactions (the caller's ledger view, paginated), and POST /v1/billing/payment-methods
+// (SetupIntent). Consumer-gated; the wallet is credited only on the payment_intent.succeeded webhook below.
+app.MapBillingEndpoints();
 
 // Stripe webhook (docs/API.md §4, docs/PAYMENTS.md §8): POST /stripe/webhook, unauthenticated but
 // signature-verified (no JWT), sitting alongside /healthz. Verifies the Stripe-Signature, dedupes via the
