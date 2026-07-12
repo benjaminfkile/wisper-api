@@ -1,10 +1,19 @@
 using Dapper;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
+using Wisper.Api.Audit;
+using Wisper.Api.Infrastructure.Idempotency;
 using Wisper.Api.Ledger;
+using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Idempotency;
 using Wisper.Api.Persistence.Leases;
+using Wisper.Api.Persistence.Payouts;
+using Wisper.Api.Persistence.Policy;
+using Wisper.Api.Persistence.Stripe;
 using Wisper.Api.Persistence.Users;
+using Wisper.Api.Policy;
 
 namespace Wisper.Api.Persistence;
 
@@ -61,6 +70,22 @@ public static class PersistenceServiceCollectionExtensions
         // invariants in C# and is what billing (P6) posts through. Unit tests use the in-memory store.
         services.AddSingleton<ILedgerStore, LedgerStore>();
         services.AddSingleton<LedgerService>();
+
+        // Stripe/idempotency/policy/audit infra (docs/DATA_MODEL.md §9–§12). The webhook dedupe store, host
+        // payouts, API idempotency, the versioned platform policy, and the append-only audit log. A shared
+        // clock backs the TTL/versioning/timestamp logic and is swappable in tests.
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<IStripeEventRepository, StripeEventRepository>();
+        services.AddSingleton<IPayoutRepository, PayoutRepository>();
+        services.AddSingleton<IIdempotencyKeyRepository, IdempotencyKeyRepository>();
+        services.AddSingleton<IPlatformPolicyRepository, PlatformPolicyRepository>();
+        services.AddSingleton<IAuditLogRepository, AuditLogRepository>();
+
+        // The helpers over those repos: Idempotency-Key replay/conflict/lock (§10), the active-policy reader
+        // (§11), and the audit recorder (§12). Wired now; the money-mutating endpoints call them in P6+.
+        services.AddSingleton<IdempotencyService>();
+        services.AddSingleton<PlatformPolicyService>();
+        services.AddSingleton<AuditService>();
 
         // Extend the health surface with the DB probe (degrades gracefully when no DB — see DbHealthCheck).
         services.AddHealthChecks().AddCheck<DbHealthCheck>(DbHealthCheck.Name);
