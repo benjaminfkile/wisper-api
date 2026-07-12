@@ -92,6 +92,41 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<IReadOnlyList<AccountTransaction>> ListAccountTransactionsAsync(
+        Guid accountId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+
+        // The account's normal side decides how a (debit, credit) sum signs into a balance delta (§7c);
+        // resolve the kind first, then aggregate its entries per transaction in the DB.
+        var accountRow = await conn.QuerySingleOrDefaultAsync<AccountRow>(new CommandDefinition(
+            $"SELECT {AccountColumns} FROM ledger_accounts WHERE id = @accountId",
+            new { accountId }, cancellationToken: ct));
+        if (accountRow is null)
+        {
+            return Array.Empty<AccountTransaction>();
+        }
+
+        var kind = PgEnum.ParseSnake<LedgerAccountKind>(accountRow.Kind);
+        const string sql = """
+            SELECT t.id, t.kind::text AS kind, t.lease_id, t.external_ref, t.idempotency_key, t.memo,
+                   t.created_at,
+                   COALESCE(SUM(e.debit_cents), 0) AS debit_cents,
+                   COALESCE(SUM(e.credit_cents), 0) AS credit_cents
+            FROM ledger_transactions t
+            JOIN ledger_entries e ON e.transaction_id = t.id
+            WHERE e.account_id = @accountId
+            GROUP BY t.id
+            ORDER BY t.created_at DESC, t.id DESC
+            """;
+        var rows = await conn.QueryAsync<TransactionAggRow>(new CommandDefinition(
+            sql, new { accountId }, cancellationToken: ct));
+        return rows
+            .Select(r => new AccountTransaction(
+                r.ToEntity(), LedgerAccountKinds.SignedDelta(kind, r.DebitCents, r.CreditCents)))
+            .ToList();
+    }
+
     public async Task<PostedTransaction> PostAsync(TransactionDraft draft, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(draft);
@@ -263,6 +298,30 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
         public string? IdempotencyKey { get; init; }
         public string? Memo { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
+
+        public LedgerTransaction ToEntity() => new()
+        {
+            Id = Id,
+            Kind = PgEnum.ParseSnake<LedgerTxnKind>(Kind),
+            LeaseId = LeaseId,
+            ExternalRef = ExternalRef,
+            IdempotencyKey = IdempotencyKey,
+            Memo = Memo,
+            CreatedAt = CreatedAt,
+        };
+    }
+
+    private sealed class TransactionAggRow
+    {
+        public Guid Id { get; init; }
+        public string Kind { get; init; } = string.Empty;
+        public Guid? LeaseId { get; init; }
+        public string? ExternalRef { get; init; }
+        public string? IdempotencyKey { get; init; }
+        public string? Memo { get; init; }
+        public DateTimeOffset CreatedAt { get; init; }
+        public long DebitCents { get; init; }
+        public long CreditCents { get; init; }
 
         public LedgerTransaction ToEntity() => new()
         {
