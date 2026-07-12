@@ -123,6 +123,33 @@ public class TunnelShellTests
         Assert.True(close.GetProperty("sid").GetUInt32() > 0);
     }
 
+    [Fact]
+    public async Task Shell_exit_drains_trailing_output_then_closes_the_consumer_with_a_clean_1000()
+    {
+        using var factory = CreateFactory();
+        var ct = Token();
+        var agent = await FakeAgent.ConnectAsync(factory, ct);
+        agent.StartEcho(ct);
+
+        var consumer = await ConnectShellAsync(factory, ct);
+
+        // Wait for the shell to open so the agent has the sid; then push trailing PTY output and end the
+        // stream the way a PTY exit does (stream.closed). The consumer must still receive that trailing
+        // output AND a clean 1000 close — not an abrupt 1006 from a mid-drain teardown.
+        var open = await agent.WaitForControlAsync(FrameTypes.ShellOpen, ct);
+        var sid = open.GetProperty("sid").GetUInt32();
+
+        var tail = Encoding.UTF8.GetBytes("goodbye\n");
+        await agent.SendStdoutAsync(sid, tail, ct);
+        await agent.CloseStreamAsync(sid, "peer_exit", ct);
+
+        var echoed = await ReceiveBinaryAsync(consumer, ct);
+        Assert.Equal(tail, echoed);
+
+        var close = await ReceiveCloseAsync(consumer, ct);
+        Assert.Equal(WebSocketCloseStatus.NormalClosure, close);
+    }
+
     // ---------- unit: TunnelStream flow control ----------
 
     [Fact]
@@ -247,6 +274,20 @@ public class TunnelShellTests
         return buffer.AsSpan(0, result.Count).ToArray();
     }
 
+    /// <summary>Reads until a WebSocket Close frame arrives and returns its close status.</summary>
+    private static async Task<WebSocketCloseStatus?> ReceiveCloseAsync(WebSocket socket, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, ct);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                return result.CloseStatus;
+            }
+        }
+    }
+
     // A per-test deadline so a hung relay/bridge fails the test instead of hanging the run.
     private static CancellationToken Token() => new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token;
 
@@ -339,6 +380,15 @@ public class TunnelShellTests
 
             _control.Writer.TryWrite(element);
         }
+
+        /// <summary>Pushes a stdout (ch 1) binary frame on <paramref name="sid"/> — PTY output A→W.</summary>
+        public Task SendStdoutAsync(uint sid, byte[] data, CancellationToken ct) =>
+            _socket.SendAsync(
+                new BinaryFrame(Channels.Stdout, sid, data).Encode(), WebSocketMessageType.Binary, true, ct);
+
+        /// <summary>Ends the stream the way a PTY exit does: <c>stream.closed{sid, reason}</c> (A→W).</summary>
+        public Task CloseStreamAsync(uint sid, string reason, CancellationToken ct) =>
+            SendRawAsync($"{{\"t\":\"stream.closed\",\"sid\":{sid},\"reason\":\"{reason}\"}}", ct);
 
         private async Task EchoBinaryAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
         {

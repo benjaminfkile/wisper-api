@@ -150,6 +150,44 @@ public class TunnelRelayTests
     }
 
     [Fact]
+    public async Task Create_right_after_connect_waits_for_readiness_instead_of_racing_to_host_offline()
+    {
+        using var factory = CreateFactory();
+        var ct = Token();
+
+        // Issue the create BEFORE the agent has finished connecting/handshaking. The relay must wait
+        // briefly for the host to become ready (registered + hello.ack sent, docs/TUNNEL.md §3) rather
+        // than immediately returning host_offline on a freshly-connecting host.
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"image\":\"alpine\",\"network\":\"none\"," +
+                   "\"resources\":{\"cpus\":2,\"memory_mb\":1024,\"pids\":256},\"ttl_seconds\":3600}";
+        var createTask = factory.CreateClient().PostAsync("/dev/leases", JsonContent(body), ct);
+
+        // Give the create a beat to reach the relay and start waiting on readiness, then bring the
+        // agent up and answer the lease.create the relay sends once the host is ready.
+        await Task.Delay(100, ct);
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.LeaseCreate, req.GetProperty("t").GetString());
+            var rid = req.GetProperty("rid").GetUInt32();
+            var leaseId = req.GetProperty("leaseId").GetString();
+            await SendRawAsync(socket,
+                $"{{\"t\":\"lease.accepted\",\"rid\":{rid},\"leaseId\":\"{leaseId}\"," +
+                "\"wispContractId\":\"wc_race\",\"status\":\"provisioning\"}", ct);
+            await SendRawAsync(socket, $"{{\"t\":\"lease.ready\",\"leaseId\":\"{leaseId}\"}}", ct);
+        }, ct);
+
+        var response = await createTask;
+        await responder;
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var json = await ReadJsonAsync(response, ct);
+        Assert.Equal("wc_race", json.GetProperty("wispContractId").GetString());
+    }
+
+    [Fact]
     public async Task Unknown_host_is_host_offline()
     {
         using var factory = CreateFactory();

@@ -39,7 +39,13 @@ public static class ShellBridge
         var consumerToShell = PumpConsumerToShellAsync(socket, shell, logger, linked);
         var shellToConsumer = PumpShellToConsumerAsync(socket, shell, linked);
 
-        await Task.WhenAny(consumerToShell, shellToConsumer, shell.Completion);
+        // Wait on the two pumps only — NOT shell.Completion directly. When the PTY exits the host
+        // closes the stream, which completes shell.Output; the shell→consumer pump then drains any
+        // trailing output and ends on its own. Racing shell.Completion here would cancel mid-drain and
+        // abort the socket's in-flight send, so the consumer would see an abrupt 1006 instead of the
+        // clean 1000 the teardown below sends (docs/API.md §7). Whichever pump ends first cancels the
+        // other; the close code is then chosen from why the shell ended.
+        await Task.WhenAny(consumerToShell, shellToConsumer);
         linked.Cancel();
 
         await Swallow(consumerToShell);
