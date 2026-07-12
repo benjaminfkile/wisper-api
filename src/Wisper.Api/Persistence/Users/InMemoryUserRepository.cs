@@ -15,6 +15,37 @@ public sealed class InMemoryUserRepository : InMemoryRepositoryBase<Guid, User>,
     public Task<User?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
         Task.FromResult(Find(id));
 
+    public Task<IReadOnlyList<User>> SearchAsync(
+        string? query, int limit, int offset, CancellationToken ct = default)
+    {
+        var matches = All().Where(u => MatchesQuery(u, query))
+            .OrderByDescending(u => u.CreatedAt)
+            .ThenByDescending(u => u.Id)
+            .Skip(Math.Max(0, offset))
+            .Take(Math.Max(0, limit))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<User>>(matches);
+    }
+
+    public Task<int> CountAsync(CancellationToken ct = default) => Task.FromResult(Count);
+
+    /// <summary>Matches a user against an email substring (case-insensitive) or an exact id; blank matches all.</summary>
+    private static bool MatchesQuery(User user, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return true;
+        }
+
+        var trimmed = query.Trim();
+        if (Guid.TryParse(trimmed, out var id) && user.Id == id)
+        {
+            return true;
+        }
+
+        return user.Email.Contains(trimmed, StringComparison.OrdinalIgnoreCase);
+    }
+
     public Task<User?> GetByCognitoSubAsync(string cognitoSub, CancellationToken ct = default) =>
         Task.FromResult(FindBy(u => u.CognitoSub == cognitoSub));
 

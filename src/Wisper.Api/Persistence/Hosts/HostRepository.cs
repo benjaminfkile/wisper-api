@@ -36,6 +36,36 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
         return rows.ToList();
     }
 
+    public async Task<IReadOnlyList<Host>> SearchAsync(
+        string? query, int limit, int offset, CancellationToken ct = default)
+    {
+        // A blank query lists all; else match a name/label substring (case-insensitive) or an exact host id.
+        var trimmed = query?.Trim();
+        Guid? id = Guid.TryParse(trimmed, out var parsed) ? parsed : null;
+
+        const string sql = $"""
+            SELECT {Columns} FROM hosts
+             WHERE (@query IS NULL OR @query = ''
+                    OR name ILIKE '%' || @query || '%' OR label ILIKE '%' || @query || '%' OR id = @id)
+             ORDER BY created_at DESC, id DESC
+             LIMIT @limit OFFSET @offset
+            """;
+
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<Host>(new CommandDefinition(
+            sql,
+            new { query = trimmed, id, limit = Math.Max(0, limit), offset = Math.Max(0, offset) },
+            cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    public async Task<int> CountAsync(CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<int>(
+            new CommandDefinition("SELECT count(*) FROM hosts", cancellationToken: ct));
+    }
+
     public async Task<IReadOnlyList<Host>> ListOnlineAsync(CancellationToken ct = default)
     {
         await using var conn = await OpenConnectionAsync(ct);

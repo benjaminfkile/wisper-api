@@ -61,6 +61,37 @@ public sealed class AuditLogRepository : RepositoryBase, IAuditLogRepository
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<IReadOnlyList<AuditLogEntry>> ListAsync(AuditLogQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        // Every filter is optional (NULL matches all); the keyset cursor pages by descending id.
+        const string sql = $"""
+            SELECT {SelectColumns} FROM audit_log
+             WHERE (@ActorUserId IS NULL OR actor_user_id = @ActorUserId)
+               AND (@TargetType  IS NULL OR target_type   = @TargetType)
+               AND (@TargetId    IS NULL OR target_id     = @TargetId)
+               AND (@Action      IS NULL OR action        = @Action)
+               AND (@BeforeId    IS NULL OR id            < @BeforeId)
+             ORDER BY id DESC
+             LIMIT @Limit
+            """;
+
+        var parameters = new
+        {
+            query.ActorUserId,
+            query.TargetType,
+            query.TargetId,
+            query.Action,
+            query.BeforeId,
+            Limit = Math.Max(0, query.Limit),
+        };
+
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<Row>(new CommandDefinition(sql, parameters, cancellationToken: ct));
+        return rows.Select(r => r.ToEntity()).ToList();
+    }
+
     /// <summary>Dapper projection of an <c>audit_log</c> row (jsonb <c>meta</c> arrives as text).</summary>
     private sealed class Row
     {

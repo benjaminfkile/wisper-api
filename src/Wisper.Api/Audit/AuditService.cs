@@ -51,4 +51,12 @@ public sealed class AuditService
 
         return _repo.AppendAsync(entry, ct);
     }
+
+    /// <summary>
+    /// Reads a page of the audit trail for the admin audit view (docs/API.md §8) — entries matching
+    /// <paramref name="query"/>'s optional actor/target/action filters, newest first, keyset-paginated.
+    /// </summary>
+    public Task<IReadOnlyList<AuditLogEntry>> QueryAsync(
+        AuditLogQuery query, CancellationToken ct = default) =>
+        _repo.ListAsync(query, ct);
 }

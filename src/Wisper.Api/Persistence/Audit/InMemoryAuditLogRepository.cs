@@ -34,4 +34,20 @@ public sealed class InMemoryAuditLogRepository
     public Task<IReadOnlyList<AuditLogEntry>> ListByActorAsync(Guid actorUserId, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<AuditLogEntry>>(
             Where(e => e.ActorUserId == actorUserId).OrderByDescending(e => e.Id).ToList());
+
+    public Task<IReadOnlyList<AuditLogEntry>> ListAsync(AuditLogQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var matches = Where(e =>
+                (query.ActorUserId is not { } actor || e.ActorUserId == actor)
+                && (query.TargetType is null || e.TargetType == query.TargetType)
+                && (query.TargetId is not { } target || e.TargetId == target)
+                && (query.Action is null || e.Action == query.Action)
+                && (query.BeforeId is not { } before || e.Id < before))
+            .OrderByDescending(e => e.Id)
+            .Take(Math.Max(0, query.Limit))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<AuditLogEntry>>(matches);
+    }
 }

@@ -17,6 +17,17 @@ public interface IHostRepository : IRepository
     /// <summary>All hosts owned by <paramref name="ownerUserId"/>, newest first.</summary>
     Task<IReadOnlyList<Host>> ListByOwnerAsync(Guid ownerUserId, CancellationToken ct = default);
 
+    /// <summary>
+    /// The admin host search (docs/API.md §8, <c>GET /v1/admin/hosts</c>): a page of hosts, newest first,
+    /// optionally narrowed by <paramref name="query"/> — a name/label substring (case-insensitive) or an
+    /// exact host id. A blank query lists all. <paramref name="limit"/>/<paramref name="offset"/> paginate.
+    /// </summary>
+    Task<IReadOnlyList<Host>> SearchAsync(
+        string? query, int limit, int offset, CancellationToken ct = default);
+
+    /// <summary>The total number of registered hosts (docs/API.md §8 overview counts).</summary>
+    Task<int> CountAsync(CancellationToken ct = default);
+
     /// <summary>The online hosts — the consumer catalog set (docs/DATA_MODEL.md §4, §13).</summary>
     Task<IReadOnlyList<Host>> ListOnlineAsync(CancellationToken ct = default);
 

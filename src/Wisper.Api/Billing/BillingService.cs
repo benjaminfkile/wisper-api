@@ -133,8 +133,32 @@ public sealed class BillingService
     /// against it (exactly-once). The refund is audited (docs/PAYMENTS.md §10, §12). The API idempotency key is
     /// forwarded to Stripe so a retried request cannot refund twice.
     /// </summary>
-    public async Task<RefundResponse> RefundAsync(
-        Guid userId, RefundRequest request, string idempotencyKey, CancellationToken ct = default)
+    public Task<RefundResponse> RefundAsync(
+        Guid userId, RefundRequest request, string idempotencyKey, CancellationToken ct = default) =>
+        RefundInternalAsync(
+            actorUserId: userId, targetUserId: userId, request, idempotencyKey, "billing.refund", ct);
+
+    /// <summary>
+    /// The admin manual refund (docs/API.md §8, <c>POST /v1/admin/refunds</c>): refunds unspent wallet credits
+    /// of <paramref name="targetUserId"/> exactly as the self-serve path does — same Stripe refund + same
+    /// <c>refund</c> ledger txn (<c>user_wallet → platform_cash</c>) keyed by the refund id — but recorded with
+    /// the acting <paramref name="actorUserId"/> (admin) as the audit actor under <c>admin.refund</c>.
+    /// </summary>
+    public Task<RefundResponse> AdminRefundAsync(
+        Guid actorUserId,
+        Guid targetUserId,
+        RefundRequest request,
+        string idempotencyKey,
+        CancellationToken ct = default) =>
+        RefundInternalAsync(actorUserId, targetUserId, request, idempotencyKey, "admin.refund", ct);
+
+    private async Task<RefundResponse> RefundInternalAsync(
+        Guid actorUserId,
+        Guid targetUserId,
+        RefundRequest request,
+        string idempotencyKey,
+        string auditAction,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
@@ -147,6 +171,7 @@ public sealed class BillingService
                 new { field = "amount_cents" });
         }
 
+        var userId = targetUserId;
         var user = await _users.GetByIdAsync(userId, ct)
             ?? throw new ApiException(ApiErrorCode.NotFound, "The account no longer exists.");
 
@@ -205,8 +230,8 @@ public sealed class BillingService
         }
 
         await _audit.RecordAsync(
-            "billing.refund",
-            actorUserId: userId,
+            auditAction,
+            actorUserId: actorUserId,
             targetType: "user",
             targetId: userId,
             meta: new { refund_id = refund.Id, amount_cents = refund.AmountCents, payment_intent = paymentIntentId },

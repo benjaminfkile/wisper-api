@@ -19,6 +19,38 @@ public sealed class InMemoryHostRepository : InMemoryRepositoryBase<Guid, Host>,
         Task.FromResult<IReadOnlyList<Host>>(
             Where(h => h.OwnerUserId == ownerUserId).OrderByDescending(h => h.CreatedAt).ToList());
 
+    public Task<IReadOnlyList<Host>> SearchAsync(
+        string? query, int limit, int offset, CancellationToken ct = default)
+    {
+        var matches = All().Where(h => MatchesQuery(h, query))
+            .OrderByDescending(h => h.CreatedAt)
+            .ThenByDescending(h => h.Id)
+            .Skip(Math.Max(0, offset))
+            .Take(Math.Max(0, limit))
+            .ToList();
+        return Task.FromResult<IReadOnlyList<Host>>(matches);
+    }
+
+    public Task<int> CountAsync(CancellationToken ct = default) => Task.FromResult(Count);
+
+    /// <summary>Matches a host against a name/label substring (case-insensitive) or an exact id; blank matches all.</summary>
+    private static bool MatchesQuery(Host host, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return true;
+        }
+
+        var trimmed = query.Trim();
+        if (Guid.TryParse(trimmed, out var id) && host.Id == id)
+        {
+            return true;
+        }
+
+        return (host.Name?.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (host.Label?.Contains(trimmed, StringComparison.OrdinalIgnoreCase) ?? false);
+    }
+
     public Task<IReadOnlyList<Host>> ListOnlineAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<Host>>(Where(h => h.Status == HostStatus.Online));
 

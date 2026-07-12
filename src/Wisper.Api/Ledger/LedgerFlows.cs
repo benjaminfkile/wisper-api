@@ -240,6 +240,45 @@ public static class LedgerFlows
     }
 
     /// <summary>
+    /// <b>adjustment</b> — the <b>only</b> hand-correction of money (docs/DATA_MODEL.md §7, §12): an admin
+    /// posts a balanced two-legged transaction moving <paramref name="amountCents"/> from
+    /// <paramref name="debitAccountId"/> to <paramref name="creditAccountId"/>. A single debit + single
+    /// credit of the same amount balances by construction (<c>Σ debit = Σ credit</c>) regardless of the two
+    /// accounts' normal sides, so a correction can shift value between any two buckets. The earmarked-liability
+    /// non-negative guard (§7d) still applies, so an adjustment can't silently over-draw a wallet or a hold.
+    /// Keyed by the admin's <c>Idempotency-Key</c> so a retried request can't double-post; always audited.
+    /// </summary>
+    public static TransactionDraft Adjustment(
+        Guid debitAccountId,
+        Guid creditAccountId,
+        long amountCents,
+        string idempotencyKey,
+        string? externalRef = null,
+        string? memo = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(idempotencyKey);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amountCents);
+        if (debitAccountId == creditAccountId)
+        {
+            throw new ArgumentException(
+                "an adjustment must move between two distinct accounts", nameof(creditAccountId));
+        }
+
+        return new TransactionDraft
+        {
+            Kind = LedgerTxnKind.Adjustment,
+            ExternalRef = externalRef,
+            IdempotencyKey = idempotencyKey,
+            Memo = memo,
+            Entries = new List<EntryDraft>(2)
+            {
+                EntryDraft.Debit(debitAccountId, amountCents),
+                EntryDraft.Credit(creditAccountId, amountCents),
+            },
+        };
+    }
+
+    /// <summary>
     /// <b>chargeback</b> — a consumer disputes a top-up and the card network claws the money back
     /// (docs/DATA_MODEL.md §8, docs/PAYMENTS.md §7, on Stripe <c>charge.dispute.created</c>). Debit
     /// <c>user_wallet</c> the disputed gross (the consumer loses those credits) and credit
