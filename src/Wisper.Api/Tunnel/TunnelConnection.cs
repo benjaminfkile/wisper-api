@@ -49,6 +49,13 @@ public class TunnelConnection
     public string HostId { get; }
 
     /// <summary>
+    /// The wisp capability this host advertised in its handshake <c>hello</c> (images/limits/networks,
+    /// docs/TUNNEL.md §5). Set by the endpoint after the hello is read; the host API validates a priced
+    /// allow-list against this live snapshot (docs/API.md §6). Null until the hello has been consumed.
+    /// </summary>
+    public Messages.HelloCapability? Capability { get; init; }
+
+    /// <summary>
     /// The open byte streams multiplexed over this connection, keyed by <c>sid</c> (docs/TUNNEL.md
     /// §6, §9). The relay creates an entry on <c>shell.open</c> and removes it on teardown; the
     /// receive loop routes inbound binary frames to the owning sink. Concurrent-safe.
