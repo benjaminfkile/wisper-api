@@ -42,6 +42,7 @@ public static class DevLeaseEndpoints
             },
             TtlSeconds = request.TtlSeconds,
             Userdata = request.Userdata,
+            Env = request.Env,
         };
 
         var lease = await relay.CreateLeaseAsync(request.HostId, spec, ct);
@@ -99,7 +100,8 @@ public sealed record DevCreateLeaseRequest(
     [property: JsonPropertyName("network")] string? Network,
     [property: JsonPropertyName("resources")] DevResources? Resources,
     [property: JsonPropertyName("ttl_seconds")] int TtlSeconds,
-    [property: JsonPropertyName("userdata")] string? Userdata);
+    [property: JsonPropertyName("userdata")] string? Userdata,
+    [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null);
 
 /// <summary>Resource request block (snake_case, forwarded to wisp).</summary>
 public sealed record DevResources(

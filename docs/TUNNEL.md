@@ -95,7 +95,7 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| W→A | `lease.create` | `rid, leaseId, image, network, resources{cpus,memory_mb,pids}, ttlSeconds, userdata?` | Wisper has already authorized + billing-gated |
+| W→A | `lease.create` | `rid, leaseId, image, network, resources{cpus,memory_mb,pids}, ttlSeconds, userdata?, env?` | Wisper has already authorized + billing-gated. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
 | A→W | `lease.accepted` | `rid, leaseId, wispContractId, status:"provisioning"` | agent called wisp `POST /contracts` |
 | A→W | `lease.ready` | `leaseId` | wisp reached `ready`; **Wisper starts the meter here** |
 | A→W | `lease.failed` | `rid, leaseId, error` | provisioning/pull failed; nothing billed |
@@ -210,6 +210,7 @@ The consumer never touches the tunnel; Wisper relays (routing across instances v
 - The **relay is mandatory** — consumers never get a wisp contract token or a host address, so they cannot bypass metering (`DESIGN.md` §2, §15).
 - TLS end-to-end (terminated at the load balancer). The agent also holds the local wisp app token; per-contract tokens never leave the agent.
 - Wisper authorizes + wallet-gates **before** emitting `lease.create`; wisp `WISP_CONFIG` independently caps each lease on the host (defense in depth).
+- **TODO (harden):** `env` is plaintext v1 for local/trusted use; production must deliver secret env as a secret (e.g. tmpfs+stdin at the wisp/docker layer) and must never log values.
 
 ## 14. Worked example — lease → shell → release
 

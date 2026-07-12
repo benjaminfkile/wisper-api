@@ -6,7 +6,7 @@ namespace Wisper.Api.Tunnel.Messages;
 /// <c>lease.create</c> (W→A) — Wisper asks the agent to provision a lease
 /// (docs/TUNNEL.md §5, §10). Wisper has already authorized + billing-gated and owns
 /// the id space, so it carries the server-assigned <c>rid</c> (inherited) and
-/// <c>leaseId</c>. The agent forwards <c>image/network/resources/ttl_seconds/userdata</c>
+/// <c>leaseId</c>. The agent forwards <c>image/network/resources/ttl_seconds/userdata/env</c>
 /// to wisp's <c>POST /contracts</c> unchanged — hence the snake_case
 /// <c>ttl_seconds</c>/<c>memory_mb</c> (mirrors wisp's API), even though tunnel ids stay
 /// camelCase.
@@ -32,6 +32,15 @@ public record LeaseCreate : ControlEnvelope
 
     [JsonPropertyName("userdata")]
     public string? Userdata { get; init; }
+
+    /// <summary>
+    /// Optional, opaque create-time environment variables forwarded down the tunnel with the
+    /// lease (generic key→value; never provider-specific). Omitted from the wire when null
+    /// (<see cref="ControlJson.Options"/> ignores null). Values are secrets-in-transit — never log
+    /// them (docs/TUNNEL.md §13).
+    /// </summary>
+    [JsonPropertyName("env")]
+    public Dictionary<string, string>? Env { get; init; }
 }
 
 /// <summary>
