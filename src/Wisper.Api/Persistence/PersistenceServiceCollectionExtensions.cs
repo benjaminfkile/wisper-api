@@ -1,5 +1,6 @@
 using Dapper;
 using Npgsql;
+using Wisper.Api.Ledger;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
@@ -54,6 +55,12 @@ public static class PersistenceServiceCollectionExtensions
         // Lease + metering repositories (docs/DATA_MODEL.md §5, §6).
         services.AddSingleton<ILeaseRepository, LeaseRepository>();
         services.AddSingleton<ILeaseUsageRepository, LeaseUsageRepository>();
+
+        // The double-entry ledger — the money source of truth (docs/DATA_MODEL.md §7, §8). The Dapper
+        // store leans on the schema's triggers as defense-in-depth; the LedgerService enforces the same
+        // invariants in C# and is what billing (P6) posts through. Unit tests use the in-memory store.
+        services.AddSingleton<ILedgerStore, LedgerStore>();
+        services.AddSingleton<LedgerService>();
 
         // Extend the health surface with the DB probe (degrades gracefully when no DB — see DbHealthCheck).
         services.AddHealthChecks().AddCheck<DbHealthCheck>(DbHealthCheck.Name);

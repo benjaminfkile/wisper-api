@@ -34,4 +34,32 @@ public class PgEnumTests
         Assert.Equal(label, PgEnum.ToSnakeLabel(reason));
         Assert.Equal(reason, PgEnum.ParseSnake<LeaseEndReason>(label));
     }
+
+    [Theory]
+    [InlineData(LedgerAccountKind.UserWallet, "user_wallet")]
+    [InlineData(LedgerAccountKind.HostEarnings, "host_earnings")]
+    [InlineData(LedgerAccountKind.LeaseHolds, "lease_holds")]
+    [InlineData(LedgerAccountKind.PlatformRevenue, "platform_revenue")]
+    [InlineData(LedgerAccountKind.PlatformCash, "platform_cash")]
+    [InlineData(LedgerAccountKind.StripeFees, "stripe_fees")]
+    public void Ledger_account_kind_round_trips_through_snake_case_labels(LedgerAccountKind kind, string label)
+    {
+        Assert.Equal(label, PgEnum.ToSnakeLabel(kind));
+        Assert.Equal(kind, PgEnum.ParseSnake<LedgerAccountKind>(label));
+    }
+
+    [Theory]
+    [InlineData(LedgerTxnKind.Topup, "topup")]
+    [InlineData(LedgerTxnKind.LeaseHold, "lease_hold")]
+    [InlineData(LedgerTxnKind.LeaseCharge, "lease_charge")]
+    [InlineData(LedgerTxnKind.HoldRelease, "hold_release")]
+    [InlineData(LedgerTxnKind.Payout, "payout")]
+    [InlineData(LedgerTxnKind.Refund, "refund")]
+    [InlineData(LedgerTxnKind.Chargeback, "chargeback")]
+    [InlineData(LedgerTxnKind.Adjustment, "adjustment")]
+    public void Ledger_txn_kind_round_trips_through_snake_case_labels(LedgerTxnKind kind, string label)
+    {
+        Assert.Equal(label, PgEnum.ToSnakeLabel(kind));
+        Assert.Equal(kind, PgEnum.ParseSnake<LedgerTxnKind>(label));
+    }
 }

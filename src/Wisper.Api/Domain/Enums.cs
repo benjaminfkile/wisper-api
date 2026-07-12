@@ -79,6 +79,43 @@ public enum LeaseEndReason
 }
 
 /// <summary>
+/// The kind of a <c>ledger_account</c> (docs/DATA_MODEL.md §2, §7, <c>ledger_account_kind</c>). The
+/// <b>normal side</b> of each — how a positive balance accrues — is fixed:
+/// <see cref="UserWallet"/>, <see cref="HostEarnings"/>, <see cref="LeaseHolds"/> and
+/// <see cref="PlatformRevenue"/> are <i>credit-normal</i>; <see cref="PlatformCash"/> and
+/// <see cref="StripeFees"/> are <i>debit-normal</i>. The two earmarked liabilities
+/// (<see cref="UserWallet"/>, <see cref="LeaseHolds"/>) are guarded non-negative (§7d).
+/// </summary>
+public enum LedgerAccountKind
+{
+    UserWallet,
+    HostEarnings,
+    LeaseHolds,
+    PlatformRevenue,
+    PlatformCash,
+    StripeFees,
+}
+
+/// <summary>
+/// The kind of a <c>ledger_transaction</c> (docs/DATA_MODEL.md §2, §8, <c>ledger_txn_kind</c>) — the
+/// money flow a balanced set of entries represents. <see cref="Topup"/>/<see cref="Refund"/> pair with
+/// Stripe; the lease inner loop (<see cref="LeaseHold"/> → <see cref="LeaseCharge"/> →
+/// <see cref="HoldRelease"/>) is pure internal ledger; <see cref="Payout"/> drains host earnings;
+/// <see cref="Chargeback"/>/<see cref="Adjustment"/> are admin-initiated corrections (§7).
+/// </summary>
+public enum LedgerTxnKind
+{
+    Topup,
+    LeaseHold,
+    LeaseCharge,
+    HoldRelease,
+    Payout,
+    Refund,
+    Chargeback,
+    Adjustment,
+}
+
+/// <summary>
 /// Maps the domain enums to and from their PostgreSQL native-enum labels (docs/DATA_MODEL.md §2).
 /// Single-word labels are the lowercase enum name (<see cref="ToLabel{TEnum}"/>); multi-word enums
 /// (e.g. <c>lease_end_reason</c>'s <c>host_disconnect</c>) use the snake_case pair
