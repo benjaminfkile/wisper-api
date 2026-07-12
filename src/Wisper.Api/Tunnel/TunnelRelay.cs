@@ -37,11 +37,15 @@ public sealed class TunnelRelay : ITunnelRelay
         _logger = logger;
     }
 
+    // How often the readiness wait re-checks the registry for a host that is not registered yet (its
+    // agent may still be mid-connect). Small enough to be responsive, coarse enough to not spin.
+    private static readonly TimeSpan ReadinessPollInterval = TimeSpan.FromMilliseconds(25);
+
     private TimeSpan Timeout => TimeSpan.FromMilliseconds(_options.CurrentValue.RelayRequestTimeoutMs);
 
     public async Task<LeaseResult> CreateLeaseAsync(string hostId, LeaseCreate spec, CancellationToken ct = default)
     {
-        var connection = Resolve(hostId);
+        var connection = await ResolveAsync(hostId, ct);
         var rid = connection.NextRid();
         var leaseId = "lease_" + Guid.NewGuid().ToString("N");
 
@@ -75,7 +79,7 @@ public sealed class TunnelRelay : ITunnelRelay
 
     public async Task<ExecResult> ExecAsync(string hostId, string leaseId, string command, CancellationToken ct = default)
     {
-        var connection = Resolve(hostId);
+        var connection = await ResolveAsync(hostId, ct);
         var rid = connection.NextRid();
 
         var waiter = RegisterRid(connection, rid);
@@ -95,7 +99,7 @@ public sealed class TunnelRelay : ITunnelRelay
 
     public async Task ReleaseAsync(string hostId, string leaseId, CancellationToken ct = default)
     {
-        var connection = Resolve(hostId);
+        var connection = await ResolveAsync(hostId, ct);
         var rid = connection.NextRid();
 
         var waiter = RegisterRid(connection, rid);
@@ -115,7 +119,7 @@ public sealed class TunnelRelay : ITunnelRelay
     public async Task<ITunnelShell> OpenShellAsync(
         string hostId, string leaseId, int cols, int rows, CancellationToken ct = default)
     {
-        var connection = Resolve(hostId);
+        var connection = await ResolveAsync(hostId, ct);
         var rid = connection.NextRid();
         var sid = connection.NextSid();
         var opts = _options.CurrentValue;
@@ -162,7 +166,7 @@ public sealed class TunnelRelay : ITunnelRelay
     public async Task<ITunnelExec> OpenExecStreamAsync(
         string hostId, string leaseId, string command, CancellationToken ct = default)
     {
-        var connection = Resolve(hostId);
+        var connection = await ResolveAsync(hostId, ct);
         var rid = connection.NextRid();
         var sid = connection.NextSid();
         var opts = _options.CurrentValue;
@@ -282,11 +286,46 @@ public sealed class TunnelRelay : ITunnelRelay
         }
     }
 
-    private TunnelConnection Resolve(string hostId)
+    /// <summary>
+    /// Resolves a host's live, <b>ready</b> tunnel (docs/TUNNEL.md §3). A ready tunnel returns on the
+    /// fast path. A freshly-connected agent that is still completing its hello handshake — either not
+    /// registered yet, or registered but not yet ready — is waited on for up to
+    /// <see cref="TunnelOptions.HostReadinessTimeoutMs"/>, closing the connection-readiness race so a
+    /// create right after connect does not spuriously fail. A host that never becomes ready in that
+    /// window (or is genuinely absent) surfaces the typed, retryable <c>host_offline</c> (409).
+    /// </summary>
+    private async Task<TunnelConnection> ResolveAsync(string hostId, CancellationToken ct)
     {
-        if (_registry.TryGet(hostId, out var connection) && connection is not null)
+        var timeout = TimeSpan.FromMilliseconds(Math.Max(0, _options.CurrentValue.HostReadinessTimeoutMs));
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (true)
         {
-            return connection;
+            if (_registry.TryGet(hostId, out var connection) && connection is not null)
+            {
+                if (connection.IsReady)
+                {
+                    return connection;
+                }
+
+                // Registered but still completing its hello handshake — wait briefly for readiness
+                // instead of racing to host_offline. Returns false on timeout or if the tunnel was
+                // abandoned before it became ready; either way fall through and re-evaluate.
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining > TimeSpan.Zero && await connection.WaitUntilReadyAsync(remaining, ct))
+                {
+                    return connection;
+                }
+            }
+
+            if (DateTime.UtcNow >= deadline)
+            {
+                break;
+            }
+
+            // Not registered yet (the agent may still be mid-connect), or the connection we just saw
+            // was abandoned — a superseding one may register. Re-check after a short beat.
+            await Task.Delay(ReadinessPollInterval, ct);
         }
 
         throw new ApiException(ApiErrorCode.HostOffline, $"host {hostId} has no live tunnel");

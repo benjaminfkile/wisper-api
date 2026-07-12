@@ -138,6 +138,11 @@ public static class TunnelEndpoints
                 GraceSeconds = options.GraceSeconds,
             }, ct);
 
+            // The handshake is fully complete now — registered AND hello.ack sent — so the host is
+            // available to the relay (docs/TUNNEL.md §3). Until this point a create for this host waits
+            // briefly for readiness rather than racing to host_offline on a freshly-connected agent.
+            connection.MarkReady();
+
             // (d) Steady state until close/cancel/liveness timeout.
             var livenessTimeout = TimeSpan.FromMilliseconds(options.EffectiveLivenessTimeoutMs);
             await connection.RunAsync(livenessTimeout, ct);
@@ -151,6 +156,11 @@ public static class TunnelEndpoints
         }
         finally
         {
+            // Unblock any relay caller still waiting on this tunnel's readiness: if we reach here before
+            // the handshake completed (MarkReady), the tunnel will never become ready, so waiters should
+            // give up now instead of waiting out their deadline. A no-op once MarkReady has fired.
+            connection.MarkUnavailable();
+
             // Was this connection superseded by a newer tunnel for the same host? If the registry now
             // points elsewhere, a fresh connection already took over — do NOT suspend/arm grace (the host
             // is still connected). Only a genuine disconnect of the live tunnel triggers the §8 policy.

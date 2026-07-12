@@ -44,6 +44,16 @@ public sealed class TunnelOptions
     public int RelayRequestTimeoutMs { get; set; } = 120000;
 
     /// <summary>
+    /// How long a relay lookup waits for a host's tunnel to become <b>ready</b> (registered +
+    /// <c>hello.ack</c> sent, docs/TUNNEL.md §3) before failing with <c>host_offline</c>. This closes
+    /// the connection-readiness race: a create arriving in the brief window while a freshly-connected
+    /// agent is still completing its hello handshake waits this long for readiness instead of racing to
+    /// a spurious <c>host_offline</c>. Kept short — the handshake is milliseconds — so a genuinely
+    /// offline host still fails fast with a retryable 409.
+    /// </summary>
+    public int HostReadinessTimeoutMs { get; set; } = 2000;
+
+    /// <summary>
     /// When <c>true</c>, maps the money-free, DEV-ONLY lease drive endpoints
     /// (<c>POST /dev/leases</c>, <c>POST /dev/leases/{id}/exec</c>, <c>DELETE /dev/leases/{id}</c>)
     /// used as a Phase-1 test harness. Off by default — these have no auth/accounts/billing

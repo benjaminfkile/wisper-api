@@ -29,6 +29,14 @@ public class TunnelConnection
     private int _ridCounter;
     private int _sidCounter;
 
+    // Readiness gate (docs/TUNNEL.md §3): a host is only usable AFTER its hello handshake fully
+    // completes — the connection registered AND hello.ack sent. Completes with true on
+    // MarkReady, or false on MarkUnavailable (the handshake aborted / the tunnel tore down first).
+    // The relay awaits this before resolving a host, so a create right after the agent connects
+    // waits briefly for readiness instead of racing to host_offline.
+    private readonly TaskCompletionSource<bool> _ready =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public TunnelConnection(
         WebSocket socket,
         string hostId,
@@ -92,6 +100,48 @@ public class TunnelConnection
 
     /// <summary>The server-assigned session id (echoed to the agent in <c>hello.ack</c>).</summary>
     public string SessionId { get; }
+
+    /// <summary>
+    /// Whether the hello handshake has fully completed (registered + <c>hello.ack</c> sent) and this
+    /// tunnel is ready to serve relay requests (docs/TUNNEL.md §3). False until <see cref="MarkReady"/>.
+    /// </summary>
+    public bool IsReady => _ready.Task.IsCompletedSuccessfully && _ready.Task.Result;
+
+    /// <summary>
+    /// Marks the handshake complete: the tunnel is now available to the relay (docs/TUNNEL.md §3).
+    /// Called by the endpoint once the connection is registered and <c>hello.ack</c> has been sent.
+    /// Idempotent — the first of <see cref="MarkReady"/>/<see cref="MarkUnavailable"/> wins.
+    /// </summary>
+    public void MarkReady() => _ready.TrySetResult(true);
+
+    /// <summary>
+    /// Signals the tunnel will never become ready (handshake aborted, or the connection tore down
+    /// before it completed), so a relay caller waiting on readiness unblocks immediately rather than
+    /// waiting out its deadline. Idempotent; a no-op once <see cref="MarkReady"/> has fired.
+    /// </summary>
+    public void MarkUnavailable() => _ready.TrySetResult(false);
+
+    /// <summary>
+    /// Waits until the handshake completes (<see cref="MarkReady"/>) or the tunnel is abandoned
+    /// (<see cref="MarkUnavailable"/>), bounded by <paramref name="timeout"/>. Returns whether the
+    /// tunnel became ready; a timeout or an abandoned tunnel returns <c>false</c>.
+    /// </summary>
+    public async Task<bool> WaitUntilReadyAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        if (_ready.Task.IsCompleted)
+        {
+            return _ready.Task.Result;
+        }
+
+        try
+        {
+            return await _ready.Task.WaitAsync(timeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>When the connection was accepted (UTC).</summary>
     public DateTime ConnectedAtUtc { get; }
