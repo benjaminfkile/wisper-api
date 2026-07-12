@@ -80,6 +80,14 @@ public sealed class IdempotencyService
         string key, int responseStatus, string responseBody, CancellationToken ct = default) =>
         _repo.CompleteAsync(key, responseStatus, responseBody, ct);
 
+    /// <summary>
+    /// Releases the in-progress lock for <paramref name="key"/> without storing a response, so a request
+    /// that <b>failed</b> after <see cref="BeginAsync"/> doesn't wedge the key until its TTL — the client
+    /// can retry the same key. Used only on the error path; a successful op calls <see cref="CompleteAsync"/>.
+    /// </summary>
+    public Task<bool> AbandonAsync(string key, CancellationToken ct = default) =>
+        _repo.DeleteAsync(key, ct);
+
     /// <summary>Sweeps every expired idempotency record (the TTL cleanup, §10). Returns the count removed.</summary>
     public Task<int> SweepExpiredAsync(CancellationToken ct = default) =>
         _repo.DeleteExpiredAsync(_clock.GetUtcNow(), ct);
