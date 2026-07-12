@@ -40,6 +40,29 @@ public sealed class LedgerService
         LedgerAccountKind kind, Guid? ownerUserId, string currency = "usd", CancellationToken ct = default) =>
         _store.GetOrCreateAccountAsync(kind, ownerUserId, currency, ct);
 
+    /// <summary>
+    /// Gets a ledger account by id, or <c>null</c> if none (docs/DATA_MODEL.md §7) — the read behind the
+    /// admin forensics view (<c>GET /v1/admin/ledger/accounts/:id</c>) and the adjustment account checks.
+    /// </summary>
+    public Task<LedgerAccount?> GetAccountAsync(Guid accountId, CancellationToken ct = default) =>
+        _store.GetAccountAsync(accountId, ct);
+
+    /// <summary>
+    /// Every entry posted against <paramref name="accountId"/>, the immutable journal behind the admin
+    /// forensics view (docs/API.md §8, docs/DATA_MODEL.md §7). Empty when the account has no postings.
+    /// </summary>
+    public Task<IReadOnlyList<LedgerEntry>> ListEntriesForAccountAsync(
+        Guid accountId, CancellationToken ct = default) =>
+        _store.ListEntriesForAccountAsync(accountId, ct);
+
+    /// <summary>
+    /// The transactions that touch <paramref name="accountId"/>, each with the signed net change it made to
+    /// that account, newest-first (docs/DATA_MODEL.md §7) — the statement view for admin forensics.
+    /// </summary>
+    public Task<IReadOnlyList<AccountTransaction>> ListAccountTransactionsAsync(
+        Guid accountId, CancellationToken ct = default) =>
+        _store.ListAccountTransactionsAsync(accountId, ct);
+
     /// <summary>The maintained balance of an account. Throws if the account does not exist.</summary>
     public async Task<long> GetBalanceAsync(Guid accountId, CancellationToken ct = default)
     {
@@ -84,6 +107,14 @@ public sealed class LedgerService
     public Task<IReadOnlyList<LedgerAccount>> ListHostEarningsAccountsAsync(
         string currency = "usd", CancellationToken ct = default) =>
         _store.ListAccountsByKindAsync(LedgerAccountKind.HostEarnings, currency, ct);
+
+    /// <summary>
+    /// Every ledger account of <paramref name="kind"/> in <paramref name="currency"/> (docs/DATA_MODEL.md §7).
+    /// The admin overview sums these to report the outstanding wallet liability and unpaid host earnings.
+    /// </summary>
+    public Task<IReadOnlyList<LedgerAccount>> ListAccountsByKindAsync(
+        LedgerAccountKind kind, string currency = "usd", CancellationToken ct = default) =>
+        _store.ListAccountsByKindAsync(kind, currency, ct);
 
     /// <summary>
     /// The consumer's wallet statement (docs/API.md §5) — every transaction that touched their

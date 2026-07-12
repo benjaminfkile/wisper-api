@@ -28,6 +28,35 @@ public sealed class UserRepository : RepositoryBase, IUserRepository
             new CommandDefinition($"SELECT {Columns} FROM users WHERE id = @id", new { id }, cancellationToken: ct));
     }
 
+    public async Task<IReadOnlyList<User>> SearchAsync(
+        string? query, int limit, int offset, CancellationToken ct = default)
+    {
+        // A blank query lists all; else match an email substring (case-insensitive) or an exact user id.
+        var trimmed = query?.Trim();
+        Guid? id = Guid.TryParse(trimmed, out var parsed) ? parsed : null;
+
+        const string sql = $"""
+            SELECT {Columns} FROM users
+             WHERE (@query IS NULL OR @query = '' OR email ILIKE '%' || @query || '%' OR id = @id)
+             ORDER BY created_at DESC, id DESC
+             LIMIT @limit OFFSET @offset
+            """;
+
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<User>(new CommandDefinition(
+            sql,
+            new { query = trimmed, id, limit = Math.Max(0, limit), offset = Math.Max(0, offset) },
+            cancellationToken: ct));
+        return rows.ToList();
+    }
+
+    public async Task<int> CountAsync(CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<int>(
+            new CommandDefinition("SELECT count(*) FROM users", cancellationToken: ct));
+    }
+
     public async Task<User?> GetByCognitoSubAsync(string cognitoSub, CancellationToken ct = default)
     {
         await using var conn = await OpenConnectionAsync(ct);

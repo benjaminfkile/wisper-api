@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Accounts;
+using Wisper.Api.Admin;
 using Wisper.Api.Auth;
 using Wisper.Api.Billing;
 using Wisper.Api.Catalog;
@@ -114,6 +115,14 @@ builder.Services.AddSingleton<ITunnelRelay, TunnelRelay>();
 // advertised wisp capability. Behind interfaces + the persistence repos above; no Postgres/tunnel needed to test.
 builder.Services.AddSingleton<HostService>();
 
+// Admin API (docs/API.md §8, P7.2): the admin-group-gated operations surface — platform overview, the
+// versioned platform policy (read + publish), host/user search + suspend/unsuspend moderation, manual
+// refunds, the balanced ledger `adjustment` (the only hand-correction of money), the audit trail, and
+// read-only ledger forensics. Every admin write records an audit_log row (docs/DATA_MODEL.md §12). Depends
+// on the repos + LedgerService/PlatformPolicyService/AuditService (AddWisperPersistence) and BillingService
+// (AddWisperPayments) above; no Postgres/Stripe needed to test.
+builder.Services.AddSingleton<AdminService>();
+
 var app = builder.Build();
 
 // Apply pending DB migrations before serving (docs/DATA_MODEL.md §1). Idempotent; a no-op when
@@ -209,6 +218,12 @@ app.MapHostConnectEndpoints();
 // GET /v1/earnings/payouts (payout history → Stripe transfer ids), and POST /v1/payouts (on-demand payout,
 // Idempotency-Key required, connect_incomplete → 403). Host-gated; the same path the scheduled run uses.
 app.MapHostEarningsEndpoints();
+
+// Admin API surface (docs/API.md §8, P7.2): /v1/admin/* — GET /overview, GET/PUT /policy (versioned,
+// audited), GET /hosts · /users (search), POST /hosts|users/:id/suspend|unsuspend (moderation, audited),
+// POST /refunds · /adjustments (Idempotency-Key required, audited), GET /audit, and GET
+// /ledger/accounts/:id (read-only forensics). All admin-group-gated; every write records an audit_log row.
+app.MapAdminEndpoints();
 
 // Stripe webhook (docs/API.md §4, docs/PAYMENTS.md §8): POST /stripe/webhook, unauthenticated but
 // signature-verified (no JWT), sitting alongside /healthz. Verifies the Stripe-Signature, dedupes via the

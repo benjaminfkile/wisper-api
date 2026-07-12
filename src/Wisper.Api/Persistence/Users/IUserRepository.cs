@@ -15,6 +15,17 @@ public interface IUserRepository : IRepository
     /// <summary>Gets a user by internal id, or <c>null</c> if none.</summary>
     Task<User?> GetByIdAsync(Guid id, CancellationToken ct = default);
 
+    /// <summary>
+    /// The admin user search (docs/API.md §8, <c>GET /v1/admin/users</c>): a page of users, newest first,
+    /// optionally narrowed by <paramref name="query"/> — an email substring (case-insensitive) or an exact
+    /// user id. A blank query lists all. <paramref name="limit"/>/<paramref name="offset"/> paginate.
+    /// </summary>
+    Task<IReadOnlyList<User>> SearchAsync(
+        string? query, int limit, int offset, CancellationToken ct = default);
+
+    /// <summary>The total number of users (docs/API.md §8 overview counts).</summary>
+    Task<int> CountAsync(CancellationToken ct = default);
+
     /// <summary>Gets a user by Cognito subject, or <c>null</c> if none.</summary>
     Task<User?> GetByCognitoSubAsync(string cognitoSub, CancellationToken ct = default);
 
