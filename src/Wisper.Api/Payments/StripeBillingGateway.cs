@@ -71,4 +71,24 @@ public sealed class StripeBillingGateway : IStripeBillingGateway
             cancellationToken: ct);
         return new StripeSetupIntent(intent.Id, intent.ClientSecret);
     }
+
+    public async Task<StripeRefund> CreateRefundAsync(StripeRefundRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var service = new RefundService(_client.Sdk);
+        var refund = await service.CreateAsync(
+            new RefundCreateOptions
+            {
+                PaymentIntent = request.PaymentIntentId,
+                Amount = request.AmountCents,
+                // Stamp the user id so the charge.refunded webhook credits/debits the right wallet without a
+                // lookup, mirroring the top-up path (docs/PAYMENTS.md §7, §8).
+                Metadata = new Dictionary<string, string> { [TopupMetadata.UserId] = request.UserId.ToString() },
+            },
+            // The API idempotency key = the Stripe idempotency key, so a retried refund returns the same
+            // object rather than refunding twice (docs/PAYMENTS.md §1, §7).
+            new RequestOptions { IdempotencyKey = request.IdempotencyKey },
+            ct);
+        return new StripeRefund(refund.Id, refund.Amount);
+    }
 }

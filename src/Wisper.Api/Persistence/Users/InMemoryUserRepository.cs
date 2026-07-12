@@ -24,6 +24,9 @@ public sealed class InMemoryUserRepository : InMemoryRepositoryBase<Guid, User>,
     public Task<User?> GetByConnectAccountIdAsync(string connectAccountId, CancellationToken ct = default) =>
         Task.FromResult(FindBy(u => u.ConnectAccountId == connectAccountId));
 
+    public Task<User?> GetByStripeCustomerIdAsync(string stripeCustomerId, CancellationToken ct = default) =>
+        Task.FromResult(FindBy(u => u.StripeCustomerId == stripeCustomerId));
+
     public Task<User> CreateAsync(User user, CancellationToken ct = default)
     {
         var stored = user.Id == Guid.Empty ? user with { Id = Guid.NewGuid() } : user;

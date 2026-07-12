@@ -146,6 +146,49 @@ public class LedgerFlowsTests
         Assert.Equal(59, SideTotal(draft, fees, debit: false));
     }
 
+    [Fact]
+    public void Chargeback_debits_wallet_and_credits_cash()
+    {
+        var wallet = Guid.NewGuid();
+        var cash = Guid.NewGuid();
+
+        var draft = LedgerFlows.Chargeback(wallet, cash, amountCents: 1000, idempotencyKey: "evt_dispute");
+
+        AssertBalanced(draft);
+        Assert.Equal(LedgerTxnKind.Chargeback, draft.Kind);
+        Assert.Equal("evt_dispute", draft.IdempotencyKey);
+        Assert.Equal(1000, SideTotal(draft, wallet, debit: true));   // consumer loses the credits
+        Assert.Equal(1000, SideTotal(draft, cash, debit: false));    // money left the platform to the network
+    }
+
+    [Fact]
+    public async Task Chargeback_may_drive_the_wallet_negative_a_debt()
+    {
+        var svc = new LedgerService(new InMemoryLedgerStore());
+        var consumer = Guid.NewGuid();
+
+        var wallet = (await svc.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer)).Id;
+        var cash = (await svc.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null)).Id;
+        var fees = (await svc.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null)).Id;
+
+        // Fund 1000, spend it all (a lease charge draining the wallet via a hold), then dispute the top-up.
+        await svc.PostAsync(LedgerFlows.Topup(wallet, cash, fees, 1000, 0, "evt_topup"));
+        var holds = (await svc.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null)).Id;
+        var earnings = (await svc.GetOrCreateAccountAsync(LedgerAccountKind.HostEarnings, consumer)).Id;
+        var revenue = (await svc.GetOrCreateAccountAsync(LedgerAccountKind.PlatformRevenue, null)).Id;
+        var lease = Guid.NewGuid();
+        await svc.PostAsync(LedgerFlows.LeaseHold(wallet, holds, lease, 1000));
+        await svc.PostAsync(LedgerFlows.LeaseCharge(holds, earnings, revenue, lease, 1000, 150));
+        Assert.Equal(0, await svc.GetBalanceAsync(wallet));
+
+        // The disputed top-up is clawed back — the wallet goes negative (a genuine debt, docs/PAYMENTS.md §7).
+        await svc.PostAsync(LedgerFlows.Chargeback(wallet, cash, 1000, "evt_dispute"));
+
+        Assert.Equal(-1000, await svc.GetBalanceAsync(wallet));
+        var report = await svc.ReconcileAsync();
+        Assert.All(report, r => Assert.True(r.IsBalanced));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]

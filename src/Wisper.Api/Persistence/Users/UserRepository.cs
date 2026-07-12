@@ -51,6 +51,14 @@ public sealed class UserRepository : RepositoryBase, IUserRepository
             new { connectAccountId }, cancellationToken: ct));
     }
 
+    public async Task<User?> GetByStripeCustomerIdAsync(string stripeCustomerId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<User>(new CommandDefinition(
+            $"SELECT {Columns} FROM users WHERE stripe_customer_id = @stripeCustomerId",
+            new { stripeCustomerId }, cancellationToken: ct));
+    }
+
     public async Task<User> CreateAsync(User user, CancellationToken ct = default)
     {
         const string sql = $"""

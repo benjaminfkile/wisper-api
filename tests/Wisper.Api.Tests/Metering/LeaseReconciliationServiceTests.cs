@@ -51,8 +51,10 @@ public class LeaseReconciliationServiceTests
             Policy = new PlatformPolicyService(Policies, Clock);
             Meter = new MeteringService(
                 Leases, Usage, Hosts, Ledger, Policy, Clock, NullLogger<MeteringService>.Instance);
+            var fraud = new FraudGuardService(
+                Ledger, Leases, Policy, Clock, NullLogger<FraudGuardService>.Instance);
             var walletGate = new WalletLeaseGate(
-                Ledger, Leases, Policy, NullLogger<WalletLeaseGate>.Instance);
+                Ledger, Leases, Policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             Reconciler = new LeaseReconciliationService(
                 Leases, Meter, walletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
         }

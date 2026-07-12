@@ -22,6 +22,25 @@ public sealed record SetupIntentResponse(
     [property: JsonPropertyName("client_secret")] string ClientSecret);
 
 /// <summary>
+/// Body of <c>POST /v1/billing/refund</c> (docs/API.md §5, docs/PAYMENTS.md §3, §7): the amount of unspent
+/// wallet credit to refund, and optionally the top-up <c>payment_intent</c> (<c>pi_…</c>) to refund against
+/// (defaults to the caller's most recent top-up when omitted).
+/// </summary>
+public sealed record RefundRequest(
+    [property: JsonPropertyName("amount_cents")] long? AmountCents,
+    [property: JsonPropertyName("payment_intent")] string? PaymentIntent = null);
+
+/// <summary>
+/// Response of <c>POST /v1/billing/refund</c> — the created Stripe refund id, the amount refunded, and the
+/// wallet balance after the <c>refund</c> ledger txn debited it (docs/PAYMENTS.md §7).
+/// </summary>
+public sealed record RefundResponse(
+    [property: JsonPropertyName("refund_id")] string RefundId,
+    [property: JsonPropertyName("amount_cents")] long AmountCents,
+    [property: JsonPropertyName("currency")] string Currency,
+    [property: JsonPropertyName("balance_cents")] long BalanceCents);
+
+/// <summary>
 /// Response of <c>GET /v1/billing</c> (docs/API.md §5): the wallet balance (derived from the ledger, never a
 /// stored number, docs/DATA_MODEL.md §7) plus a usage summary of the caller's leases.
 /// </summary>

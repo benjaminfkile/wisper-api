@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Wisper.Api.Auth;
 using Wisper.Api.Ledger;
 using Wisper.Api.Payments;
+using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.Idempotency;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Policy;
@@ -36,6 +37,7 @@ public class BillingEndpointsTests
         public InMemoryLedgerStore Ledger { get; } = new();
         public InMemoryStripeEventRepository Events { get; } = new();
         public InMemoryPlatformPolicyRepository Policies { get; } = new();
+        public InMemoryAuditLogRepository AuditLog { get; } = new();
         public FakeStripeBillingGateway Gateway { get; } = new();
         public FakeJwtValidator Validator { get; } = new();
 
@@ -60,6 +62,8 @@ public class BillingEndpointsTests
                     services.AddSingleton<IStripeEventRepository>(Events);
                     services.RemoveAll<IPlatformPolicyRepository>();
                     services.AddSingleton<IPlatformPolicyRepository>(Policies);
+                    services.RemoveAll<IAuditLogRepository>();
+                    services.AddSingleton<IAuditLogRepository>(AuditLog);
                     services.RemoveAll<IStripeBillingGateway>();
                     services.AddSingleton<IStripeBillingGateway>(Gateway);
                     services.RemoveAll<IStripeSignatureVerifier>();
@@ -80,6 +84,20 @@ public class BillingEndpointsTests
     private static HttpRequestMessage Topup(object body, string? idempotencyKey)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/billing/topup")
+        {
+            Content = JsonContent.Create(body),
+        };
+        if (idempotencyKey is not null)
+        {
+            request.Headers.Add("Idempotency-Key", idempotencyKey);
+        }
+
+        return request;
+    }
+
+    private static HttpRequestMessage Refund(object body, string? idempotencyKey)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/billing/refund")
         {
             Content = JsonContent.Create(body),
         };
@@ -223,6 +241,65 @@ public class BillingEndpointsTests
     }
 
     [Fact]
+    public async Task Refund_without_an_idempotency_key_is_400()
+    {
+        var fx = new Fixture();
+        using var factory = fx.Build();
+
+        var response = await Authed(factory).SendAsync(Refund(new { amount_cents = 1000 }, idempotencyKey: null));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(fx.Gateway.RefundCalls);
+    }
+
+    [Fact]
+    public async Task Refund_of_unspent_credits_debits_the_wallet()
+    {
+        var fx = new Fixture();
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        // Fund the wallet via a top-up webhook, then refund part of it.
+        await client.GetAsync("/v1/billing");
+        var userId = fx.BootstrappedUserId();
+        fx.NextWebhookEvent = SucceededEvent("evt_topup_1", userId, amountCents: 5000);
+        await client.PostAsync("/stripe/webhook", WebhookBody());
+
+        var response = await client.SendAsync(Refund(new { amount_cents = 2000 }, "refund-key-1"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<RefundDto>();
+        Assert.Equal(2000, body!.AmountCents);
+        Assert.Equal(3000, body.BalanceCents);
+        Assert.Equal("pi_evt_topup_1", Assert.Single(fx.Gateway.RefundCalls).PaymentIntentId);
+
+        var billing = await client.GetFromJsonAsync<BillingDto>("/v1/billing");
+        Assert.Equal(3000, billing!.BalanceCents);
+    }
+
+    [Fact]
+    public async Task Refund_replays_the_same_key_and_refunds_once()
+    {
+        var fx = new Fixture();
+        using var factory = fx.Build();
+        var client = Authed(factory);
+        await client.GetAsync("/v1/billing");
+        var userId = fx.BootstrappedUserId();
+        fx.NextWebhookEvent = SucceededEvent("evt_topup_1", userId, amountCents: 5000);
+        await client.PostAsync("/stripe/webhook", WebhookBody());
+
+        var first = await client.SendAsync(Refund(new { amount_cents = 2000 }, "refund-key-1"));
+        var second = await client.SendAsync(Refund(new { amount_cents = 2000 }, "refund-key-1"));
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Single(fx.Gateway.RefundCalls); // the replay issues no second Stripe refund
+
+        var billing = await client.GetFromJsonAsync<BillingDto>("/v1/billing");
+        Assert.Equal(3000, billing!.BalanceCents); // debited once
+    }
+
+    [Fact]
     public async Task Payment_methods_returns_a_setup_intent_secret()
     {
         var fx = new Fixture();
@@ -244,6 +321,11 @@ public class BillingEndpointsTests
     private sealed record BillingDto(
         [property: JsonPropertyName("balance_cents")] long BalanceCents,
         [property: JsonPropertyName("currency")] string Currency);
+
+    private sealed record RefundDto(
+        [property: JsonPropertyName("refund_id")] string RefundId,
+        [property: JsonPropertyName("amount_cents")] long AmountCents,
+        [property: JsonPropertyName("balance_cents")] long BalanceCents);
 
     private sealed record TransactionDto(
         [property: JsonPropertyName("kind")] string Kind,

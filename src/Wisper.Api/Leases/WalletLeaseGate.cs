@@ -23,17 +23,20 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
     private readonly LedgerService _ledger;
     private readonly ILeaseRepository _leases;
     private readonly PlatformPolicyService _policy;
+    private readonly FraudGuardService _fraud;
     private readonly ILogger<WalletLeaseGate> _logger;
 
     public WalletLeaseGate(
         LedgerService ledger,
         ILeaseRepository leases,
         PlatformPolicyService policy,
+        FraudGuardService fraud,
         ILogger<WalletLeaseGate> logger)
     {
         _ledger = ledger;
         _leases = leases;
         _policy = policy;
+        _fraud = fraud;
         _logger = logger;
     }
 
@@ -43,6 +46,10 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         // Business quota first (docs/API.md §11): a user already at the concurrency cap is refused with
         // at_capacity (409), regardless of wallet balance.
         await EnforceConcurrencyCapAsync(consumerUserId, ct);
+
+        // The per-user daily spend cap (docs/PAYMENTS.md §7) — the fraud guard measured by up-front holds,
+        // refused with limit_exceeded (429) before any wallet check or tunnel frame.
+        await _fraud.EnforceLeaseSpendAllowedAsync(consumerUserId, holdCents, ct);
 
         // A free image needs no hold — nothing to gate on.
         if (holdCents <= 0)
