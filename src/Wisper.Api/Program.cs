@@ -2,6 +2,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Accounts;
 using Wisper.Api.Auth;
+using Wisper.Api.Catalog;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
@@ -30,6 +31,11 @@ builder.Services.AddWisperAuth(builder.Configuration);
 // first authenticated call and backs the /v1/me identity/profile endpoints. Depends on the users
 // repository (P2.2) and the shared clock, both registered by AddWisperPersistence above.
 builder.Services.AddSingleton<IUserAccountService, UserAccountService>();
+
+// Consumer catalog (docs/API.md §5, P4.1): reads online hosts and their priced, enabled images by
+// joining the host_images allow-list (P2.2) with the live tunnel registry — the authoritative source
+// of host presence. Backs GET /v1/catalog and GET /v1/hosts/:id, both consumer-gated.
+builder.Services.AddSingleton<ICatalogService, CatalogService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
@@ -101,6 +107,10 @@ v1.MapGet("/", () => Results.Json(new { service = "wisper-api", version = "v1" }
 // Consumer account surface (docs/API.md §5): GET/PATCH /v1/me, gated on the consumer role, which
 // bootstraps the caller's users row on first authenticated call.
 app.MapMeEndpoints();
+
+// Consumer catalog surface (docs/API.md §5): GET /v1/catalog and GET /v1/hosts/:id, gated on the
+// consumer role, listing online hosts and their priced, enabled images from the live tunnel registry.
+app.MapCatalogEndpoints();
 
 // Any unmatched route returns the uniform error envelope (docs/API.md §3) rather
 // than an empty 404, so clients always get a consistent error shape.
