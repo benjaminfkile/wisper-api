@@ -116,6 +116,36 @@ public enum LedgerTxnKind
 }
 
 /// <summary>
+/// Lifecycle of a host <see cref="Payout"/> (docs/DATA_MODEL.md §2, §9, <c>payout_status</c>) — a Connect
+/// transfer draining <see cref="LedgerAccountKind.HostEarnings"/>. <see cref="Pending"/> is created before
+/// the Stripe call; <see cref="InTransit"/>/<see cref="Paid"/> track the transfer; <see cref="Failed"/>/
+/// <see cref="Canceled"/> are terminal non-success states. The multi-word <see cref="InTransit"/> maps to
+/// the snake_case label <c>in_transit</c>.
+/// </summary>
+public enum PayoutStatus
+{
+    Pending,
+    InTransit,
+    Paid,
+    Failed,
+    Canceled,
+}
+
+/// <summary>
+/// Processing state of a persisted <see cref="StripeEvent"/> (docs/DATA_MODEL.md §2, §9,
+/// <c>stripe_event_status</c>). A webhook is persisted <see cref="Received"/> then handled to exactly one
+/// of <see cref="Processed"/> (applied), <see cref="Ignored"/> (nothing to do), or <see cref="Failed"/>
+/// (errored, retained for retry/inspection). Every webhook is processed exactly once (docs/PAYMENTS.md §9).
+/// </summary>
+public enum StripeEventStatus
+{
+    Received,
+    Processed,
+    Ignored,
+    Failed,
+}
+
+/// <summary>
 /// Maps the domain enums to and from their PostgreSQL native-enum labels (docs/DATA_MODEL.md §2).
 /// Single-word labels are the lowercase enum name (<see cref="ToLabel{TEnum}"/>); multi-word enums
 /// (e.g. <c>lease_end_reason</c>'s <c>host_disconnect</c>) use the snake_case pair
