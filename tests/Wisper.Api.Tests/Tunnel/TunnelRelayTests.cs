@@ -150,6 +150,60 @@ public class TunnelRelayTests
     }
 
     [Fact]
+    public async Task Host_error_for_a_request_fails_fast_instead_of_timing_out()
+    {
+        // A long relay deadline: if the error frame were dropped (the pre-hardening default log-and-ignore
+        // branch) the consumer would hang for the full window. It must instead fail immediately with the
+        // host-reported typed error (docs/TUNNEL.md §5, §12).
+        using var factory = CreateFactory(relayTimeoutMs: 60000);
+        var ct = Token();
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.LeaseCreate, req.GetProperty("t").GetString());
+            var rid = req.GetProperty("rid").GetUInt32();
+            await SendRawAsync(socket,
+                $"{{\"t\":\"error\",\"rid\":{rid},\"code\":\"wisp_error\",\"message\":\"wisp returned 500\"}}", ct);
+        }, ct);
+
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"image\":\"alpine\",\"ttl_seconds\":60}";
+        var response = await factory.CreateClient().PostAsync("/dev/leases", JsonContent(body), ct);
+        await responder;
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        var json = await ReadJsonAsync(response, ct);
+        Assert.Equal("lease_failed", json.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal("wisp returned 500", json.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Host_error_not_ready_maps_to_the_typed_lease_not_ready_code()
+    {
+        using var factory = CreateFactory(relayTimeoutMs: 60000);
+        var ct = Token();
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.ExecRun, req.GetProperty("t").GetString());
+            var rid = req.GetProperty("rid").GetUInt32();
+            await SendRawAsync(socket,
+                $"{{\"t\":\"error\",\"rid\":{rid},\"code\":\"not_ready\",\"message\":\"lease not ready\"}}", ct);
+        }, ct);
+
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"command\":\"echo hi\"}";
+        var response = await factory.CreateClient().PostAsync("/dev/leases/lease_abc/exec", JsonContent(body), ct);
+        await responder;
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var json = await ReadJsonAsync(response, ct);
+        Assert.Equal("lease_not_ready", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Create_right_after_connect_waits_for_readiness_instead_of_racing_to_host_offline()
     {
         using var factory = CreateFactory();

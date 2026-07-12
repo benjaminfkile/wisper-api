@@ -248,6 +248,10 @@ public sealed class TunnelRelay : ITunnelRelay
                 HandleLeaseEnded(connection, payload);
                 break;
 
+            case FrameTypes.Error:
+                HandleError(connection, payload);
+                break;
+
             default:
                 _logger.LogDebug("relay: ignoring unhandled agent frame {FrameType}", type);
                 break;
@@ -499,6 +503,75 @@ public sealed class TunnelRelay : ITunnelRelay
                 ApiErrorCode.LeaseFailed, $"lease ended before ready: {ended.Reason}"));
         }
     }
+
+    /// <summary>
+    /// Fails an in-flight request the host reported a typed <c>error</c> for (docs/TUNNEL.md §5, §12).
+    /// Without this the frame would fall through to the default log-and-ignore branch and the consumer's
+    /// call would hang until the full <see cref="TunnelOptions.RelayRequestTimeoutMs"/> deadline instead
+    /// of failing fast: the rid waiter (lease.create-before-accepted, exec.run, lease.release,
+    /// shell/exec.open) is completed with the mapped typed error, and any owning stream named by <c>sid</c>
+    /// is torn down so a bridged consumer unblocks. Idempotent — a late/duplicate error whose waiter and
+    /// stream are already gone is a no-op debug log.
+    /// </summary>
+    private void HandleError(TunnelConnection connection, ReadOnlyMemory<byte> payload)
+    {
+        var error = TryDeserialize<ErrorMessage>(payload);
+        if (error is null)
+        {
+            return;
+        }
+
+        var code = MapAgentErrorCode(error.Code);
+        var message = string.IsNullOrEmpty(error.Message)
+            ? $"the host reported error '{(string.IsNullOrEmpty(error.Code) ? "unspecified" : error.Code)}'"
+            : error.Message;
+        var ex = new ApiException(code, message);
+
+        var handled = false;
+
+        // Fail the correlated request. Wisper owns the rid space (docs/TUNNEL.md §1), so an error echoing a
+        // live rid is the response to exactly that request.
+        if (error.Rid != 0 && _ridWaiters.TryRemove((connection, error.Rid), out var ridTcs))
+        {
+            ridTcs.TrySetException(ex);
+            handled = true;
+        }
+
+        // A mid-stream error (or one for a stream whose open already completed) names the sid; tear the
+        // stream down so the bridged consumer sees the end rather than a stall.
+        if (error.Sid != 0 && connection.Streams.TryRemove(error.Sid, out var stream))
+        {
+            stream.OnPeerClosed(string.IsNullOrEmpty(error.Code) ? "error" : error.Code);
+            handled = true;
+        }
+
+        if (handled)
+        {
+            _logger.LogInformation(
+                "relay: host {HostId} reported error code={Code} rid={Rid} sid={Sid}: {Message}",
+                connection.HostId, error.Code, error.Rid, error.Sid, message);
+        }
+        else
+        {
+            _logger.LogDebug(
+                "relay: host {HostId} error code={Code} rid={Rid} sid={Sid} had no pending waiter (late or duplicate)",
+                connection.HostId, error.Code, error.Rid, error.Sid);
+        }
+    }
+
+    /// <summary>
+    /// Maps a tunnel <c>error.code</c> (docs/TUNNEL.md §12) to the typed API error the consumer sees.
+    /// Host-known request failures map to their specific code; everything else (a local wisp non-2xx,
+    /// overflow, unsupported, internal, or an unrecognised code) surfaces as a <c>lease_failed</c> (502
+    /// bad-gateway) — the host could not fulfil the request.
+    /// </summary>
+    private static ApiErrorCode MapAgentErrorCode(string? code) => code switch
+    {
+        "not_ready" => ApiErrorCode.LeaseNotReady,
+        "unknown_lease" => ApiErrorCode.NotFound,
+        "at_capacity" => ApiErrorCode.AtCapacity,
+        _ => ApiErrorCode.LeaseFailed,
+    };
 
     private static uint PeekRid(ReadOnlySpan<byte> payload)
     {
