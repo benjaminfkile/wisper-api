@@ -5,6 +5,7 @@ using Wisper.Api.Auth;
 using Wisper.Api.Catalog;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Leases;
+using Wisper.Api.Metering;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
 
@@ -51,6 +52,15 @@ builder.Services.AddSingleton<ILeaseService, LeaseService>();
 // ticket only needs to survive the seconds until the handshake on the same instance); a Redis-backed
 // store lands with the multi-instance backplane (P8.1).
 builder.Services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
+
+// Metering engine (docs/DATA_MODEL.md §14, docs/PAYMENTS.md §4, P5.1): the manager-authoritative meter
+// that accrues billable lease-minutes over healthy intervals and, on a fixed tick (default 60s) and on
+// lease end, posts a lease_charge (hold → host_earnings + platform_revenue) + a lease_usage row, idempotent
+// on (lease_id, period_start). Internal ledger only — no Stripe. The background loop is a no-op on a DB-less
+// boot; it resumes each active lease from its persisted last_metered_at watermark on restart.
+builder.Services.Configure<MeteringOptions>(builder.Configuration.GetSection(MeteringOptions.SectionName));
+builder.Services.AddSingleton<MeteringService>();
+builder.Services.AddHostedService<MeteringHostedService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel

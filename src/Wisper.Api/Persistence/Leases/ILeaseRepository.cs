@@ -23,6 +23,14 @@ public interface ILeaseRepository : IRepository
     /// </summary>
     Task<IReadOnlyList<Lease>> ListActiveByHostAsync(Guid hostId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Every lease with <c>status = 'active'</c> — the metering engine's working set (docs/DATA_MODEL.md
+    /// §14). On each tick the meter accrues over this set, and on restart it reloads the set from the DB
+    /// and resumes each lease from its persisted <see cref="Lease.LastMeteredAt"/> watermark. Suspended
+    /// leases are excluded: a suspended gap never bills (docs/TUNNEL.md §8).
+    /// </summary>
+    Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default);
+
     /// <summary>Inserts a new lease and returns the stored row (with any DB-generated id).</summary>
     Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default);
 

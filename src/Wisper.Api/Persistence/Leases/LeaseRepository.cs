@@ -50,6 +50,15 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<Row>(new CommandDefinition(
+            $"SELECT {Columns} FROM leases WHERE status = 'active' ORDER BY created_at",
+            cancellationToken: ct));
+        return rows.Select(r => r.ToEntity()).ToList();
+    }
+
     public async Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         const string sql = $"""
