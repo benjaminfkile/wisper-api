@@ -43,6 +43,14 @@ public sealed class UserRepository : RepositoryBase, IUserRepository
             $"SELECT {Columns} FROM users WHERE email = @email", new { email }, cancellationToken: ct));
     }
 
+    public async Task<User?> GetByConnectAccountIdAsync(string connectAccountId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<User>(new CommandDefinition(
+            $"SELECT {Columns} FROM users WHERE connect_account_id = @connectAccountId",
+            new { connectAccountId }, cancellationToken: ct));
+    }
+
     public async Task<User> CreateAsync(User user, CancellationToken ct = default)
     {
         const string sql = $"""

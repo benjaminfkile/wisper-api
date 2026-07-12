@@ -21,6 +21,9 @@ public sealed class InMemoryUserRepository : InMemoryRepositoryBase<Guid, User>,
     public Task<User?> GetByEmailAsync(string email, CancellationToken ct = default) =>
         Task.FromResult(FindBy(u => string.Equals(u.Email, email, StringComparison.OrdinalIgnoreCase)));
 
+    public Task<User?> GetByConnectAccountIdAsync(string connectAccountId, CancellationToken ct = default) =>
+        Task.FromResult(FindBy(u => u.ConnectAccountId == connectAccountId));
+
     public Task<User> CreateAsync(User user, CancellationToken ct = default)
     {
         var stored = user.Id == Guid.Empty ? user with { Id = Guid.NewGuid() } : user;

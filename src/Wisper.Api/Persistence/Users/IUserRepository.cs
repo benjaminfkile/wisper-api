@@ -22,6 +22,13 @@ public interface IUserRepository : IRepository
     Task<User?> GetByEmailAsync(string email, CancellationToken ct = default);
 
     /// <summary>
+    /// Gets a user by their Stripe Connect account id (<c>acct_…</c>), or <c>null</c> if none. The
+    /// <c>account.updated</c> webhook resolves the host wallet from the account id this way, so recomputing
+    /// <c>connect_status</c> is a pure function of the event (docs/PAYMENTS.md §5, §8).
+    /// </summary>
+    Task<User?> GetByConnectAccountIdAsync(string connectAccountId, CancellationToken ct = default);
+
+    /// <summary>
     /// Inserts a new user and returns the stored row (with any DB-generated id). Throws when a unique
     /// column (cognito_sub, email, stripe_customer_id, connect_account_id) collides with an existing row.
     /// </summary>

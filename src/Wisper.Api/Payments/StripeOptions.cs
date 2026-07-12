@@ -31,6 +31,18 @@ public sealed class StripeOptions
     /// </summary>
     public long WebhookToleranceSeconds { get; set; } = 300;
 
+    /// <summary>
+    /// Where Stripe sends the host when a Connect Account Link expires or is revisited before completion —
+    /// the app re-mints a fresh link (docs/PAYMENTS.md §5). Bound per env to the host dashboard URL.
+    /// </summary>
+    public string? ConnectRefreshUrl { get; set; }
+
+    /// <summary>
+    /// Where Stripe returns the host after they finish (or leave) hosted onboarding (docs/PAYMENTS.md §5).
+    /// Completion is confirmed by the <c>account.updated</c> webhook, never by this redirect. Per env.
+    /// </summary>
+    public string? ConnectReturnUrl { get; set; }
+
     /// <summary>True when an API secret key is present (outbound Stripe calls are possible).</summary>
     public bool HasSecretKey => !string.IsNullOrWhiteSpace(SecretKey);
 
