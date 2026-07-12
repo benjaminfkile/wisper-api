@@ -54,7 +54,7 @@ public static class TunnelEndpoints
         // (a) Authenticate. The header is read after upgrade so a bad/missing token is
         // reported as a 4401 WebSocket close (docs/TUNNEL.md §3), before any frames.
         var token = ReadBearerToken(context.Request.Headers.Authorization.ToString());
-        var auth = validator.Validate(token);
+        var auth = await validator.ValidateAsync(token, ct);
         if (!auth.Succeeded)
         {
             logger.LogWarning("agent tunnel: rejecting connection with bad/missing host token");
@@ -101,6 +101,10 @@ public static class TunnelEndpoints
         var maxReceiveBytes = Math.Max(HandshakeMaxBytes, options.MaxFrameBytes + BinaryFrame.HeaderSize);
         var connection = new TunnelConnection(socket, hostId, sessionId, maxReceiveBytes, logger)
         {
+            // The advertised wisp capability from this host's live hello (docs/TUNNEL.md §5). The host
+            // API validates its priced allow-list against this live snapshot (docs/API.md §6).
+            Capability = hello.Capability,
+
             // Route agent→server response frames (lease/exec) into the relay so pending
             // rid/leaseId awaiters complete (docs/TUNNEL.md §5, §11).
             ControlFrameRouter = relay.RouteAgentFrameAsync,

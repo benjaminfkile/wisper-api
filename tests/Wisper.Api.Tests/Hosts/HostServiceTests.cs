@@ -1,0 +1,331 @@
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using Wisper.Api.Domain;
+using Wisper.Api.Hosts;
+using Wisper.Api.Infrastructure;
+using Wisper.Api.Ledger;
+using Wisper.Api.Payouts;
+using Wisper.Api.Persistence.HostImages;
+using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Payouts;
+using Wisper.Api.Persistence.Users;
+using Wisper.Api.Tests.TestSupport;
+using Wisper.Api.Tunnel;
+using Xunit;
+using Host = Wisper.Api.Domain.Host;
+
+namespace Wisper.Api.Tests.Hosts;
+
+/// <summary>
+/// Unit tests for <see cref="HostService"/> (docs/API.md §6, P7.1) over the in-memory repositories + fakes
+/// (Grunt has no Postgres/tunnel): register issuing a hashed agent token shown once, <c>GET /v1/hosts/mine</c>,
+/// token rotation revoking + closing the tunnel (4402), and the priced allow-list validated live against the
+/// host's advertised wisp capability.
+/// </summary>
+public class HostServiceTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
+
+    private sealed class Fixture
+    {
+        public InMemoryHostRepository Hosts { get; } = new();
+        public InMemoryHostImageRepository Images { get; } = new();
+        public FakeHostRegistry Registry { get; } = new();
+        public FakeHostCapabilitySource Capabilities { get; } = new();
+        public FakeAgentTunnelCloser TunnelCloser { get; } = new();
+        public FakeTimeProvider Clock { get; } = new(T0);
+        public TunnelOptions Tunnel { get; } = new() { ManagerWebSocketUrl = "wss://wisper.test/agent" };
+        public PayoutService Payouts { get; }
+        public HostService Service { get; }
+
+        public Fixture()
+        {
+            var ledger = new LedgerService(new InMemoryLedgerStore());
+            Payouts = new PayoutService(
+                ledger, new InMemoryPayoutRepository(), new InMemoryUserRepository(), new FakeStripeConnectGateway(),
+                Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
+            Service = new HostService(
+                Hosts, Images, Registry, Capabilities, TunnelCloser, Payouts,
+                Options.Create(Tunnel), Clock, NullLogger<HostService>.Instance);
+        }
+
+        /// <summary>Seeds a stored host owned by <paramref name="owner"/> with a known token hash.</summary>
+        public Task<Host> SeedHostAsync(Guid owner, string token = "wht_live_seed") =>
+            Hosts.CreateAsync(new Host
+            {
+                OwnerUserId = owner,
+                Name = "home-server-1",
+                Label = "us",
+                Status = HostStatus.Offline,
+                AgentTokenHash = HostAgentToken.Hash(token),
+                AgentTokenPrefix = "wht_live_seed",
+                CreatedAt = T0,
+                UpdatedAt = T0,
+            });
+
+        /// <summary>A generous capability so valid entries pass; callers override for negative cases.</summary>
+        public HostCapabilitySnapshot Capability(params string[] images) => new(
+            Images: images.Length == 0 ? new[] { "alpine:latest" } : images,
+            Networks: new[] { NetworkMode.None, NetworkMode.Open },
+            MaxTtlSeconds: 14400,
+            MaxCpus: 8,
+            MaxMemoryMb: 16384,
+            MaxPids: 4096);
+    }
+
+    [Fact]
+    public async Task Register_issues_token_once_and_stores_only_the_hash()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+
+        var result = await fx.Service.RegisterAsync(owner, new RegisterHostRequest("home-server-1", "us"));
+
+        Assert.StartsWith(HostAgentToken.Prefix, result.AgentToken);
+        Assert.StartsWith(HostAgentToken.Prefix, result.AgentTokenPrefix);
+        Assert.Equal("wss://wisper.test/agent", result.ManagerWs);
+        Assert.Equal("offline", result.Status);
+
+        var stored = await fx.Hosts.GetByIdAsync(result.Id);
+        Assert.NotNull(stored);
+        Assert.Equal(owner, stored!.OwnerUserId);
+        // Only the hash + prefix are persisted; the clear token never lands in the row.
+        Assert.Equal(HostAgentToken.Hash(result.AgentToken), stored.AgentTokenHash);
+        Assert.Equal(result.AgentTokenPrefix, stored.AgentTokenPrefix);
+        Assert.DoesNotContain(result.AgentToken, stored.AgentTokenHash);
+    }
+
+    [Fact]
+    public async Task ListMine_returns_owned_hosts_with_presence_and_earnings()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var online = await fx.SeedHostAsync(owner);
+        var offline = await fx.SeedHostAsync(owner);
+        await fx.SeedHostAsync(Guid.NewGuid()); // another owner's host — must not appear
+        fx.Registry.SetOnline(online.Id);
+
+        var result = await fx.Service.ListMineAsync(owner);
+
+        Assert.Equal(2, result.Data.Count);
+        Assert.True(result.Data.Single(h => h.Id == online.Id).Online);
+        Assert.False(result.Data.Single(h => h.Id == offline.Id).Online);
+        Assert.Equal("usd", result.Earnings.Currency);
+        Assert.Equal(0, result.Earnings.AccruedCents);
+    }
+
+    [Fact]
+    public async Task Rotate_replaces_the_hash_and_closes_the_live_tunnel_4402()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        var oldHash = host.AgentTokenHash;
+        fx.TunnelCloser.SetLive(host.Id);
+
+        var result = await fx.Service.RotateAgentTokenAsync(owner, host.Id);
+
+        Assert.StartsWith(HostAgentToken.Prefix, result.AgentToken);
+        Assert.True(result.TunnelClosed);
+
+        var stored = await fx.Hosts.GetByIdAsync(host.Id);
+        Assert.Equal(HostAgentToken.Hash(result.AgentToken), stored!.AgentTokenHash);
+        Assert.NotEqual(oldHash, stored.AgentTokenHash);
+
+        Assert.True(fx.TunnelCloser.Closes.TryDequeue(out var close));
+        Assert.Equal(host.Id, close.HostId);
+        Assert.Equal(CloseCodes.Revoked, close.CloseCode);
+    }
+
+    [Fact]
+    public async Task Rotate_reports_no_tunnel_closed_when_offline_but_still_rotates()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+
+        var result = await fx.Service.RotateAgentTokenAsync(owner, host.Id);
+
+        Assert.False(result.TunnelClosed);
+        var stored = await fx.Hosts.GetByIdAsync(host.Id);
+        Assert.Equal(HostAgentToken.Hash(result.AgentToken), stored!.AgentTokenHash);
+    }
+
+    [Fact]
+    public async Task Rotate_of_unowned_host_is_not_found()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(Guid.NewGuid());
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.RotateAgentTokenAsync(Guid.NewGuid(), host.Id));
+        Assert.Equal(ApiErrorCode.NotFound, ex.Code);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_validates_and_persists_the_allow_list()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest", "ubuntu:24.04"));
+
+        var request = new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none", "open" }, 3600, 2m, 2048, 512, true),
+            new ImageUpsert("ubuntu:24.04", 9, new[] { "none" }, 7200, null, null, null, false),
+        });
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, request);
+
+        Assert.Equal(2, result.Data.Count);
+        var alpine = result.Data.Single(i => i.ImageRef == "alpine:latest");
+        Assert.Equal(5, alpine.PriceCentsPerMin);
+        Assert.Equal(new[] { "none", "open" }, alpine.Networks);
+        Assert.True(alpine.Enabled);
+        Assert.False(result.Data.Single(i => i.ImageRef == "ubuntu:24.04").Enabled);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_an_image_outside_capability()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var request = new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("nope:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        });
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, request));
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id));
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_a_network_or_limit_the_host_does_not_permit()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var badNetwork = new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "egress" }, 3600, null, null, null, true),
+        });
+        var netEx = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, badNetwork));
+        Assert.Equal(ApiErrorCode.ValidationError, netEx.Code);
+
+        var badTtl = new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 999999, null, null, null, true),
+        });
+        var ttlEx = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, badTtl));
+        Assert.Equal(ApiErrorCode.ValidationError, ttlEx.Code);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_requires_a_live_tunnel()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        // No capability declared → host offline for validation.
+
+        var request = new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        });
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, request));
+        Assert.Equal(ApiErrorCode.HostOffline, ex.Code);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_replaces_the_prior_set()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest", "ubuntu:24.04"));
+
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+
+        // A second replace drops alpine and adds ubuntu.
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "open" }, 3600, null, null, null, true),
+        }));
+
+        Assert.Single(result.Data);
+        Assert.Equal("ubuntu:24.04", result.Data[0].ImageRef);
+    }
+
+    [Fact]
+    public async Task PatchImage_updates_one_entry_and_revalidates()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(PriceCentsPerMin: 12, Networks: null, MaxTtlSeconds: null,
+                MaxCpus: null, MaxMemoryMb: null, MaxPids: null, Enabled: false));
+
+        Assert.Equal(12, patched.PriceCentsPerMin);
+        Assert.False(patched.Enabled);
+        Assert.Equal(new[] { "none" }, patched.Networks); // unchanged
+    }
+
+    [Fact]
+    public async Task PatchImage_rejects_a_limit_over_capability()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.PatchImageAsync(
+                owner, host.Id, imageId,
+                new PatchImageRequest(null, null, MaxTtlSeconds: 999999, null, null, null, null)));
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task PatchImage_of_missing_image_is_not_found()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.PatchImageAsync(
+                owner, host.Id, Guid.NewGuid(),
+                new PatchImageRequest(PriceCentsPerMin: 1, null, null, null, null, null, null)));
+        Assert.Equal(ApiErrorCode.NotFound, ex.Code);
+    }
+}

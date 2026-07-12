@@ -9,6 +9,13 @@ public sealed class TunnelOptions
     /// <summary>Configuration section these options bind from.</summary>
     public const string SectionName = "Tunnel";
 
+    /// <summary>
+    /// The public agent-tunnel WebSocket URL handed to a host at registration/rotation as
+    /// <c>manager_ws</c> (docs/API.md §6 — the <c>wss://&lt;wisper-host&gt;/agent</c> the agent dials).
+    /// Deployment config; the default is a sensible local value.
+    /// </summary>
+    public string ManagerWebSocketUrl { get; set; } = "wss://localhost/agent";
+
     /// <summary>WebSocket ping cadence in milliseconds (docs/TUNNEL.md §7). Announced in <c>hello.ack</c>.</summary>
     public int PingIntervalMs { get; set; } = 30000;
 

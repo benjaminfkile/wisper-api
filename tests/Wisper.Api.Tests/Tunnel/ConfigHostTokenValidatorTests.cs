@@ -22,11 +22,11 @@ public class ConfigHostTokenValidatorTests
     }
 
     [Fact]
-    public void Known_token_resolves_to_host_id()
+    public async Task Known_token_resolves_to_host_id()
     {
         var validator = Build(("tok-a", "host-a"), ("tok-b", "host-b"));
 
-        var result = validator.Validate("tok-b");
+        var result = await validator.ValidateAsync("tok-b");
 
         Assert.True(result.Succeeded);
         Assert.Equal("host-b", result.HostId);
@@ -36,11 +36,11 @@ public class ConfigHostTokenValidatorTests
     [InlineData("tok-a ")]     // trailing space — not a byte-for-byte match
     [InlineData("TOK-A")]      // wrong case
     [InlineData("unknown")]
-    public void Unknown_token_fails(string token)
+    public async Task Unknown_token_fails(string token)
     {
         var validator = Build(("tok-a", "host-a"));
 
-        var result = validator.Validate(token);
+        var result = await validator.ValidateAsync(token);
 
         Assert.False(result.Succeeded);
         Assert.Null(result.HostId);
@@ -49,19 +49,19 @@ public class ConfigHostTokenValidatorTests
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    public void Null_or_empty_token_fails(string? token)
+    public async Task Null_or_empty_token_fails(string? token)
     {
         var validator = Build(("tok-a", "host-a"));
 
-        Assert.False(validator.Validate(token).Succeeded);
+        Assert.False((await validator.ValidateAsync(token)).Succeeded);
     }
 
     [Fact]
-    public void Fails_closed_when_no_tokens_configured()
+    public async Task Fails_closed_when_no_tokens_configured()
     {
         var validator = Build();
 
-        Assert.False(validator.Validate("anything").Succeeded);
+        Assert.False((await validator.ValidateAsync("anything")).Succeeded);
     }
 
     private sealed class StaticOptionsMonitor : IOptionsMonitor<TunnelOptions>

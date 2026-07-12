@@ -2,9 +2,10 @@ namespace Wisper.Api.Tunnel;
 
 /// <summary>
 /// Validates the Bearer host token presented on the <c>/agent</c> handshake and resolves
-/// it to a stable <c>HostId</c> (docs/TUNNEL.md §3, §13). Phase 1 is config-backed
-/// (<see cref="ConfigHostTokenValidator"/>); the interface is deliberately narrow so a
-/// later DB-backed validator (hashed, revocable, rotatable tokens) can replace it.
+/// it to a stable <c>HostId</c> (docs/TUNNEL.md §3, §13). The production implementation
+/// (<see cref="DbHostTokenValidator"/>) resolves a presented token to its host id via a
+/// constant-time hashed lookup against the <c>hosts</c> table; the config-backed
+/// <see cref="ConfigHostTokenValidator"/> remains a dev/bootstrap fallback for a DB-less boot.
 /// </summary>
 public interface IHostTokenValidator
 {
@@ -12,10 +13,10 @@ public interface IHostTokenValidator
     /// Validates <paramref name="bearerToken"/> (the raw token, without the "Bearer " prefix).
     /// Returns success carrying the host id, or failure. A null/empty token always fails.
     /// </summary>
-    HostTokenValidationResult Validate(string? bearerToken);
+    Task<HostTokenValidationResult> ValidateAsync(string? bearerToken, CancellationToken ct = default);
 }
 
-/// <summary>The outcome of <see cref="IHostTokenValidator.Validate"/>.</summary>
+/// <summary>The outcome of <see cref="IHostTokenValidator.ValidateAsync"/>.</summary>
 public readonly record struct HostTokenValidationResult
 {
     private HostTokenValidationResult(bool succeeded, string? hostId)

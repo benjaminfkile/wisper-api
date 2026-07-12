@@ -5,10 +5,12 @@ using Microsoft.Extensions.Options;
 namespace Wisper.Api.Tunnel;
 
 /// <summary>
-/// Config-backed <see cref="IHostTokenValidator"/> for Phase 1: the allowed tokens and
-/// their host ids come from <see cref="TunnelOptions.HostTokens"/>. Comparison is
-/// constant-time (<see cref="CryptographicOperations.FixedTimeEquals"/>). If no tokens
-/// are configured it <b>fails closed</b> — every connection is rejected.
+/// Config-backed <see cref="IHostTokenValidator"/>: the allowed tokens and their host ids come from
+/// <see cref="TunnelOptions.HostTokens"/>. Comparison is constant-time
+/// (<see cref="CryptographicOperations.FixedTimeEquals"/>). If no tokens are configured it <b>fails
+/// closed</b> — every connection is rejected. It is no longer the primary validator: the DB-backed
+/// <see cref="DbHostTokenValidator"/> resolves tokens against the <c>hosts</c> table and delegates here
+/// only as a dev/bootstrap fallback for a DB-less boot (empty, and thus fail-closed, in production).
 /// </summary>
 public sealed class ConfigHostTokenValidator : IHostTokenValidator
 {
@@ -16,18 +18,18 @@ public sealed class ConfigHostTokenValidator : IHostTokenValidator
 
     public ConfigHostTokenValidator(IOptionsMonitor<TunnelOptions> options) => _options = options;
 
-    public HostTokenValidationResult Validate(string? bearerToken)
+    public Task<HostTokenValidationResult> ValidateAsync(string? bearerToken, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(bearerToken))
         {
-            return HostTokenValidationResult.Failure();
+            return Task.FromResult(HostTokenValidationResult.Failure());
         }
 
         var tokens = _options.CurrentValue.HostTokens;
         if (tokens.Count == 0)
         {
             // Fail closed: an unconfigured tunnel trusts nobody.
-            return HostTokenValidationResult.Failure();
+            return Task.FromResult(HostTokenValidationResult.Failure());
         }
 
         var presented = Encoding.UTF8.GetBytes(bearerToken);
@@ -46,8 +48,8 @@ public sealed class ConfigHostTokenValidator : IHostTokenValidator
             }
         }
 
-        return matchedHostId is null
+        return Task.FromResult(matchedHostId is null
             ? HostTokenValidationResult.Failure()
-            : HostTokenValidationResult.Success(matchedHostId);
+            : HostTokenValidationResult.Success(matchedHostId));
     }
 }

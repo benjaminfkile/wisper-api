@@ -94,11 +94,25 @@ builder.Services.AddHostedService<PayoutHostedService>();
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
 // per host, superseded on reconnect).
 builder.Services.Configure<TunnelOptions>(builder.Configuration.GetSection(TunnelOptions.SectionName));
-builder.Services.AddSingleton<IHostTokenValidator, ConfigHostTokenValidator>();
+// Host-token auth is now DB-backed (docs/TUNNEL.md §13, P7.1): a presented agent token is resolved to its
+// host id by a constant-time hashed lookup against the hosts table. The config-backed validator is retained
+// only as a dev/bootstrap fallback for a DB-less boot (it is empty, and thus fail-closed, in production).
+builder.Services.AddSingleton<ConfigHostTokenValidator>();
+builder.Services.AddSingleton<IHostTokenValidator, DbHostTokenValidator>();
 builder.Services.AddSingleton<IHostRegistry, InMemoryHostRegistry>();
+// Reads a host's live advertised wisp capability (hello.capability) and force-closes its tunnel — the host
+// API validates its priced allow-list against the former and revokes-on-rotate via the latter (§6, §13).
+builder.Services.AddSingleton<IHostCapabilitySource, RegistryHostCapabilitySource>();
+builder.Services.AddSingleton<IAgentTunnelCloser, RegistryAgentTunnelCloser>();
 // The server-side relay that drives a connected host (lease lifecycle + sync exec),
 // correlating agent responses by rid/leaseId (docs/TUNNEL.md §5, §11).
 builder.Services.AddSingleton<ITunnelRelay, TunnelRelay>();
+
+// Host registration + pricing surface (docs/API.md §6, P7.1): register a wisp host and issue its agent token
+// once (hash-at-rest), list the caller's hosts with live presence + earnings, rotate the token (revoking the
+// old one and closing its tunnel 4402), and manage the priced allow-list validated live against the host's
+// advertised wisp capability. Behind interfaces + the persistence repos above; no Postgres/tunnel needed to test.
+builder.Services.AddSingleton<HostService>();
 
 var app = builder.Build();
 
@@ -179,6 +193,12 @@ app.MapShellEndpoints();
 // /v1/billing/transactions (the caller's ledger view, paginated), and POST /v1/billing/payment-methods
 // (SetupIntent). Consumer-gated; the wallet is credited only on the payment_intent.succeeded webhook below.
 app.MapBillingEndpoints();
+
+// Host registration + pricing surface (docs/API.md §6, P7.1): POST /v1/hosts (register → agent token once +
+// manager_ws), GET /v1/hosts/mine, POST /v1/hosts/:id/agent-token (rotate → revoke + close tunnel 4402), and
+// GET/PUT /v1/hosts/:id/images + PATCH /v1/hosts/:id/images/:imageId (priced allow-list validated live against
+// the host's advertised wisp capability). All host-gated (§6).
+app.MapHostEndpoints();
 
 // Host Connect onboarding surface (docs/API.md §6, docs/PAYMENTS.md §5): POST /v1/hosts/connect (create/
 // continue Stripe Connect Express onboarding → onboarding_url) and GET /v1/hosts/connect/status
