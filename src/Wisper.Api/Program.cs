@@ -4,6 +4,7 @@ using Wisper.Api.Accounts;
 using Wisper.Api.Auth;
 using Wisper.Api.Catalog;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
 
@@ -36,6 +37,14 @@ builder.Services.AddSingleton<IUserAccountService, UserAccountService>();
 // joining the host_images allow-list (P2.2) with the live tunnel registry — the authoritative source
 // of host presence. Backs GET /v1/catalog and GET /v1/hosts/:id, both consumer-gated.
 builder.Services.AddSingleton<ICatalogService, CatalogService>();
+
+// Consumer leases (docs/API.md §5, P4.2): the POST/GET/DELETE /v1/leases surface that validates a
+// requested image against the host's priced allow-list, drives the host over the tunnel relay, and
+// persists the leases row (P2.3). The wallet gate is a Phase-6 hook (P6.3) that ALLOWS FOR NOW —
+// AllowAllLeaseWalletGate places no hold; the real balance-checking gate swaps in without touching
+// anything above it.
+builder.Services.AddSingleton<ILeaseWalletGate, AllowAllLeaseWalletGate>();
+builder.Services.AddSingleton<ILeaseService, LeaseService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
@@ -111,6 +120,10 @@ app.MapMeEndpoints();
 // Consumer catalog surface (docs/API.md §5): GET /v1/catalog and GET /v1/hosts/:id, gated on the
 // consumer role, listing online hosts and their priced, enabled images from the live tunnel registry.
 app.MapCatalogEndpoints();
+
+// Consumer lease surface (docs/API.md §5): POST/GET/DELETE /v1/leases, gated on the consumer role. The
+// canonical, authenticated, billed replacement for the /dev/leases Phase-1 harness above.
+app.MapLeaseEndpoints();
 
 // Any unmatched route returns the uniform error envelope (docs/API.md §3) rather
 // than an empty 404, so clients always get a consistent error shape.
