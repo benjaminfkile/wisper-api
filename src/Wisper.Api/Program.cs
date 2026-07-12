@@ -4,6 +4,7 @@ using Wisper.Api.Accounts;
 using Wisper.Api.Auth;
 using Wisper.Api.Billing;
 using Wisper.Api.Catalog;
+using Wisper.Api.Hosts;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Leases;
 using Wisper.Api.Metering;
@@ -171,6 +172,11 @@ app.MapShellEndpoints();
 // /v1/billing/transactions (the caller's ledger view, paginated), and POST /v1/billing/payment-methods
 // (SetupIntent). Consumer-gated; the wallet is credited only on the payment_intent.succeeded webhook below.
 app.MapBillingEndpoints();
+
+// Host Connect onboarding surface (docs/API.md §6, docs/PAYMENTS.md §5): POST /v1/hosts/connect (create/
+// continue Stripe Connect Express onboarding → onboarding_url) and GET /v1/hosts/connect/status
+// (connect_status + requirements), both host-gated. account.updated (webhook below) gates going online.
+app.MapHostConnectEndpoints();
 
 // Stripe webhook (docs/API.md §4, docs/PAYMENTS.md §8): POST /stripe/webhook, unauthenticated but
 // signature-verified (no JWT), sitting alongside /healthz. Verifies the Stripe-Signature, dedupes via the

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Wisper.Api.Billing;
+using Wisper.Api.Hosts;
 using Wisper.Api.Payments.Handlers;
 
 namespace Wisper.Api.Payments;
@@ -27,6 +28,7 @@ public static class PaymentsServiceCollectionExtensions
         services.AddSingleton<IStripeClient, StripeClient>();
         services.AddSingleton<IStripeSignatureVerifier, StripeSignatureVerifier>();
         services.AddSingleton<IStripeBillingGateway, StripeBillingGateway>();
+        services.AddSingleton<IStripeConnectGateway, StripeConnectGateway>();
 
         // Webhook handler registry (docs/PAYMENTS.md §8.5). The top-up handler is live (P6.2): it posts the
         // `topup` ledger txn keyed by the Stripe event id, crediting the wallet exactly once. Account/
@@ -43,6 +45,11 @@ public static class PaymentsServiceCollectionExtensions
         // ledger view. Depends on the ledger, lease + user repositories, active policy, and the Stripe
         // gateway — all registered above / by AddWisperPersistence.
         services.AddSingleton<BillingService>();
+
+        // Host Connect Express onboarding surface (docs/API.md §6, docs/PAYMENTS.md §5): create/continue the
+        // Connect account + Account Link, and read/derive connect_status. Depends on the connect gateway and
+        // the user repository (registered above / by AddWisperPersistence).
+        services.AddSingleton<HostConnectService>();
 
         return services;
     }
