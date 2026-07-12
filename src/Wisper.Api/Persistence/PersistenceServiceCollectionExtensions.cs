@@ -2,6 +2,7 @@ using Dapper;
 using Npgsql;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Users;
 
 namespace Wisper.Api.Persistence;
@@ -49,6 +50,10 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IUserRepository, UserRepository>();
         services.AddSingleton<IHostRepository, HostRepository>();
         services.AddSingleton<IHostImageRepository, HostImageRepository>();
+
+        // Lease + metering repositories (docs/DATA_MODEL.md §5, §6).
+        services.AddSingleton<ILeaseRepository, LeaseRepository>();
+        services.AddSingleton<ILeaseUsageRepository, LeaseUsageRepository>();
 
         // Extend the health surface with the DB probe (degrades gracefully when no DB — see DbHealthCheck).
         services.AddHealthChecks().AddCheck<DbHealthCheck>(DbHealthCheck.Name);
