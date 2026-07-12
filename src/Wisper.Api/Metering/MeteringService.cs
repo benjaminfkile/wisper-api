@@ -33,6 +33,7 @@ public sealed class MeteringService
     private readonly PlatformPolicyService _policy;
     private readonly TimeProvider _time;
     private readonly ILogger<MeteringService> _logger;
+    private readonly IMeterLivenessSource? _liveness;
 
     public MeteringService(
         ILeaseRepository leases,
@@ -41,7 +42,8 @@ public sealed class MeteringService
         LedgerService ledger,
         PlatformPolicyService policy,
         TimeProvider time,
-        ILogger<MeteringService> logger)
+        ILogger<MeteringService> logger,
+        IMeterLivenessSource? liveness = null)
     {
         _leases = leases;
         _usage = usage;
@@ -50,6 +52,7 @@ public sealed class MeteringService
         _policy = policy;
         _time = time;
         _logger = logger;
+        _liveness = liveness;
     }
 
     /// <summary>
@@ -64,7 +67,26 @@ public sealed class MeteringService
         foreach (var lease in active)
         {
             ct.ThrowIfCancellationRequested();
-            if (await FlushLeaseAsync(lease, now, ct) is not null)
+
+            // Cap accrual at the host's last-healthy liveness point so a blind window is structurally
+            // un-billable (docs/TUNNEL.md §8). A host with no live tunnel is skipped this tick — the
+            // disconnect path flushes it to last-healthy and suspends it. No liveness source (unit tests)
+            // means no gating: bill straight up to `now`.
+            var asOf = now;
+            if (_liveness is not null)
+            {
+                if (_liveness.LastHealthyAt(lease.HostId) is not { } lastHealthy)
+                {
+                    continue;
+                }
+
+                if (lastHealthy < asOf)
+                {
+                    asOf = lastHealthy;
+                }
+            }
+
+            if (await FlushLeaseAsync(lease, asOf, ct) is not null)
             {
                 flushed++;
             }

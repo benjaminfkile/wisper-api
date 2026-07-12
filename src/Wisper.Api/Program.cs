@@ -59,8 +59,18 @@ builder.Services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
 // on (lease_id, period_start). Internal ledger only — no Stripe. The background loop is a no-op on a DB-less
 // boot; it resumes each active lease from its persisted last_metered_at watermark on restart.
 builder.Services.Configure<MeteringOptions>(builder.Configuration.GetSection(MeteringOptions.SectionName));
+// The meter caps accrual at each host's last-healthy liveness point (via the live tunnel registry) so a
+// blind disconnect window is structurally un-billable (docs/TUNNEL.md §8).
+builder.Services.AddSingleton<IMeterLivenessSource, RegistryMeterLivenessSource>();
 builder.Services.AddSingleton<MeteringService>();
 builder.Services.AddHostedService<MeteringHostedService>();
+
+// Disconnect / grace / reconnect reconciliation (docs/TUNNEL.md §8, P5.2): on tunnel loss the coordinator
+// suspends the host's leases at last-healthy (pausing billing) and arms the bounded grace timer; a reconnect
+// within the window resumes the still-present leases (same id) and ends the vanished ones (container_lost);
+// grace expiry ends the rest (host_disconnect). The pure set-diff/metering logic lives in the reconciler.
+builder.Services.AddSingleton<LeaseReconciliationService>();
+builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel

@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Wisper.Api.Leases;
 using Wisper.Api.Tunnel.Messages;
 
 namespace Wisper.Api.Tunnel;
@@ -41,6 +42,7 @@ public static class TunnelEndpoints
         var validator = context.RequestServices.GetRequiredService<IHostTokenValidator>();
         var registry = context.RequestServices.GetRequiredService<IHostRegistry>();
         var relay = context.RequestServices.GetRequiredService<ITunnelRelay>();
+        var coordinator = context.RequestServices.GetRequiredService<TunnelDisconnectCoordinator>();
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync(new WebSocketAcceptContext
         {
@@ -102,6 +104,11 @@ public static class TunnelEndpoints
             // Route agent→server response frames (lease/exec) into the relay so pending
             // rid/leaseId awaiters complete (docs/TUNNEL.md §5, §11).
             ControlFrameRouter = relay.RouteAgentFrameAsync,
+
+            // Route each heartbeat's live lease list into the disconnect coordinator so a reconnect
+            // reconciles the suspended set via set-diff (docs/TUNNEL.md §8).
+            HeartbeatRouter = (conn, heartbeat, hbCt) =>
+                coordinator.OnHeartbeatAsync(conn.HostId, ParseLiveLeaseIds(heartbeat), hbCt),
         };
 
         logger.LogInformation(
@@ -109,6 +116,11 @@ public static class TunnelEndpoints
             hostId, sessionId, hello.AgentVersion);
 
         await registry.RegisterAsync(connection, ct);
+
+        // A reconnect within the grace window: cancel the pending expiry timer so the returning agent's
+        // leases are not ended; the first heartbeat then reconciles them (docs/TUNNEL.md §8). A no-op on a
+        // first connect (no pending grace).
+        coordinator.OnReconnected(hostId);
 
         try
         {
@@ -135,11 +147,43 @@ public static class TunnelEndpoints
         }
         finally
         {
+            // Was this connection superseded by a newer tunnel for the same host? If the registry now
+            // points elsewhere, a fresh connection already took over — do NOT suspend/arm grace (the host
+            // is still connected). Only a genuine disconnect of the live tunnel triggers the §8 policy.
+            var superseded = !(registry.TryGet(hostId, out var current) && ReferenceEquals(current, connection));
+
             registry.Unregister(connection);
             relay.OnConnectionClosed(connection);
             logger.LogInformation(
                 "agent tunnel: host {HostId} disconnected, session {SessionId}", hostId, sessionId);
+
+            if (!superseded)
+            {
+                // Tunnel loss: suspend the host's leases at the last-healthy liveness point and arm the
+                // bounded grace window (docs/TUNNEL.md §8). Use last-received-frame time as last-healthy and
+                // CancellationToken.None so the reconciliation is not cut off by the aborted request.
+                var lastHealthy = new DateTimeOffset(connection.LastActivityUtc, TimeSpan.Zero);
+                _ = await coordinator.OnDisconnectedAsync(hostId, lastHealthy, CancellationToken.None);
+            }
         }
+    }
+
+    /// <summary>
+    /// Extracts the host-reported live lease ids from a heartbeat as their <see cref="Guid"/> keys,
+    /// dropping any that are not well-formed <c>lease_&lt;hex&gt;</c> tokens (docs/TUNNEL.md §5, §8).
+    /// </summary>
+    private static IReadOnlyCollection<Guid> ParseLiveLeaseIds(HostHeartbeat heartbeat)
+    {
+        var ids = new List<Guid>(heartbeat.Leases.Count);
+        foreach (var lease in heartbeat.Leases)
+        {
+            if (TunnelLeaseId.TryParse(lease.LeaseId, out var id))
+            {
+                ids.Add(id);
+            }
+        }
+
+        return ids;
     }
 
     private static async Task<Hello?> ReadHelloAsync(WebSocket socket, CancellationToken ct)
