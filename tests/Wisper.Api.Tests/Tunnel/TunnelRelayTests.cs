@@ -69,6 +69,68 @@ public class TunnelRelayTests
     }
 
     [Fact]
+    public async Task Create_lease_forwards_env_into_the_outgoing_lease_create_frame()
+    {
+        using var factory = CreateFactory();
+        var ct = Token();
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        // Fake agent asserts the opaque env map arrived on the lease.create frame, then answers.
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.LeaseCreate, req.GetProperty("t").GetString());
+            var env = req.GetProperty("env");
+            Assert.Equal("bar", env.GetProperty("FOO").GetString());
+            Assert.Equal("s3cr3t", env.GetProperty("TOKEN").GetString());
+
+            var rid = req.GetProperty("rid").GetUInt32();
+            var leaseId = req.GetProperty("leaseId").GetString();
+            await SendRawAsync(socket,
+                $"{{\"t\":\"lease.accepted\",\"rid\":{rid},\"leaseId\":\"{leaseId}\"," +
+                "\"wispContractId\":\"wc_env\",\"status\":\"provisioning\"}", ct);
+            await SendRawAsync(socket, $"{{\"t\":\"lease.ready\",\"leaseId\":\"{leaseId}\"}}", ct);
+        }, ct);
+
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"image\":\"alpine\",\"ttl_seconds\":3600," +
+                   "\"env\":{\"FOO\":\"bar\",\"TOKEN\":\"s3cr3t\"}}";
+        var response = await factory.CreateClient().PostAsync("/dev/leases", JsonContent(body), ct);
+        await responder;
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var json = await ReadJsonAsync(response, ct);
+        Assert.Equal("wc_env", json.GetProperty("wispContractId").GetString());
+    }
+
+    [Fact]
+    public async Task Create_lease_without_env_omits_it_from_the_outgoing_frame()
+    {
+        using var factory = CreateFactory();
+        var ct = Token();
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.LeaseCreate, req.GetProperty("t").GetString());
+            Assert.False(req.TryGetProperty("env", out _));
+
+            var rid = req.GetProperty("rid").GetUInt32();
+            var leaseId = req.GetProperty("leaseId").GetString();
+            await SendRawAsync(socket,
+                $"{{\"t\":\"lease.accepted\",\"rid\":{rid},\"leaseId\":\"{leaseId}\"," +
+                "\"wispContractId\":\"wc_noenv\",\"status\":\"provisioning\"}", ct);
+            await SendRawAsync(socket, $"{{\"t\":\"lease.ready\",\"leaseId\":\"{leaseId}\"}}", ct);
+        }, ct);
+
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"image\":\"alpine\",\"ttl_seconds\":3600}";
+        var response = await factory.CreateClient().PostAsync("/dev/leases", JsonContent(body), ct);
+        await responder;
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Exec_returns_stdout_stderr_and_exit_code()
     {
         using var factory = CreateFactory();
