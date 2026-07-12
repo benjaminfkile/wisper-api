@@ -426,6 +426,60 @@ public class LeaseServiceTests
         Assert.Empty(fx.Relay.ReleaseCalls);
     }
 
+    [Fact]
+    public async Task ResolveExecTarget_returns_the_host_and_lease_token_for_an_active_lease()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        var target = await fx.Service().ResolveExecTargetAsync(fx.ConsumerId, created.Lease.Id);
+
+        Assert.NotNull(target);
+        Assert.Equal(fx.Host!.Id.ToString(), target!.HostId);
+        Assert.Equal(TunnelLeaseId.Format(created.Lease.Id), target.LeaseId);
+    }
+
+    [Fact]
+    public async Task ResolveExecTarget_is_null_for_a_lease_the_caller_does_not_own()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        var target = await fx.Service().ResolveExecTargetAsync(Guid.NewGuid(), created.Lease.Id);
+
+        Assert.Null(target); // ownership failures are indistinguishable from missing (→ 404)
+    }
+
+    [Fact]
+    public async Task ResolveExecTarget_throws_lease_not_ready_before_the_lease_is_active()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        // A provisioning lease is not yet ready for exec — seed it directly (create always yields active).
+        var lease = await fx.Leases.CreateAsync(new Lease
+        {
+            Id = Guid.NewGuid(),
+            ConsumerUserId = fx.ConsumerId,
+            HostId = fx.Host!.Id,
+            HostImageId = fx.Image!.Id,
+            ImageRef = fx.Image.ImageRef,
+            Network = NetworkMode.Open,
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 5,
+            Currency = "usd",
+            Status = LeaseStatus.Provisioning,
+            WispContractId = "wisp-contract-1",
+            CreatedAt = T0,
+            LastMeteredAt = T0,
+        });
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().ResolveExecTargetAsync(fx.ConsumerId, lease.Id));
+        Assert.Equal(ApiErrorCode.LeaseNotReady, ex.Code);
+    }
+
     private sealed class DenyingWalletGate : ILeaseWalletGate
     {
         private readonly long _required;
