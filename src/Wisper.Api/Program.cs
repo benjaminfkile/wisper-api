@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
+using Wisper.Api.Auth;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Persistence;
 using Wisper.Api.Tunnel;
@@ -18,6 +19,11 @@ builder.Logging.AddJsonConsole(options =>
 // PostgreSQL persistence (docs/DATA_MODEL.md §1): pooled data source from ConnectionStrings:Wisper,
 // the DbUp migration runner, and the DB health probe. Boots DB-less (tunnel-only) when unset.
 builder.Services.AddWisperPersistence(builder.Configuration);
+
+// Cognito JWT auth (docs/API.md §2): validates Bearer tokens against the pool's JWKS behind
+// IJwtValidator, and provides the RequireRole/RequireConsumer/RequireHost/RequireAdmin route-group
+// gates. Config-driven (Auth section); fails closed when unconfigured. Endpoints land in P3.2+.
+builder.Services.AddWisperAuth(builder.Configuration);
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
