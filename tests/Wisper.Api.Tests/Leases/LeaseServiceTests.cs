@@ -25,7 +25,7 @@ public class LeaseServiceTests
         public InMemoryHostRepository Hosts { get; } = new();
         public InMemoryHostImageRepository Images { get; } = new();
         public FakeTunnelRelay Relay { get; } = new();
-        public ILeaseWalletGate WalletGate { get; set; } = new AllowAllLeaseWalletGate();
+        public ILeaseWalletGate WalletGate { get; set; } = new AllowWalletGate();
         public FakeTimeProvider Clock { get; } = new(T0);
         public Guid ConsumerId { get; } = Guid.NewGuid();
 
@@ -494,5 +494,11 @@ public class LeaseServiceTests
         public Task<WalletGateDecision> AuthorizeHoldAsync(
             Guid consumerUserId, long holdCents, string currency, CancellationToken ct = default) =>
             Task.FromResult(WalletGateDecision.Deny(_required, _available));
+
+        public Task<Guid?> PlaceHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+            Task.FromResult<Guid?>(null); // never reached — the deny gates before provisioning
+
+        public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
     }
 }

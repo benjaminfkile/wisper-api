@@ -43,10 +43,11 @@ builder.Services.AddSingleton<ICatalogService, CatalogService>();
 
 // Consumer leases (docs/API.md §5, P4.2): the POST/GET/DELETE /v1/leases surface that validates a
 // requested image against the host's priced allow-list, drives the host over the tunnel relay, and
-// persists the leases row (P2.3). The wallet gate is a Phase-6 hook (P6.3) that ALLOWS FOR NOW —
-// AllowAllLeaseWalletGate places no hold; the real balance-checking gate swaps in without touching
-// anything above it.
-builder.Services.AddSingleton<ILeaseWalletGate, AllowAllLeaseWalletGate>();
+// persists the leases row (P2.3). The wallet gate (P6.3, docs/PAYMENTS.md §4) is now the real billing
+// gate: at POST /leases it enforces the per-user concurrency cap and places a ⌈ttl/60⌉·price hold from
+// the wallet (402 insufficient_funds before any lease.create), the meter debits it per tick, and lease
+// end releases the remainder — pure internal ledger against pre-funded wallet money, no Stripe.
+builder.Services.AddSingleton<ILeaseWalletGate, WalletLeaseGate>();
 builder.Services.AddSingleton<ILeaseService, LeaseService>();
 
 // Consumer interactive shell (docs/API.md §7, P4.4): the store that mints the single-use, ~30s,

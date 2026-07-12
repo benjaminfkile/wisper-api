@@ -77,8 +77,9 @@ public sealed class LeaseService : ILeaseService
         var resources = ValidateResources(request.Resources, image);
 
         // Wallet gate BEFORE any tunnel frame: no compute is provisioned that can't be paid for
-        // (docs/DATA_MODEL.md §8, §14). Wallet-gating itself is a Phase-6 hook that allows for now.
-        var holdCents = EstimateHoldCents(ttlSeconds, image.PriceCentsPerMin);
+        // (docs/DATA_MODEL.md §8, §14, docs/PAYMENTS.md §4). It also enforces the per-user concurrency cap
+        // (throwing at_capacity). Insufficient wallet balance → 402, and no lease.create is ever sent.
+        var holdCents = LeaseHoldPricing.EstimateHoldCents(ttlSeconds, image.PriceCentsPerMin);
         var decision = await _walletGate.AuthorizeHoldAsync(consumerUserId, holdCents, Usd, ct);
         if (!decision.Allowed)
         {
@@ -113,10 +114,15 @@ public sealed class LeaseService : ILeaseService
             throw new ApiException(ApiErrorCode.Internal, "The relay returned a malformed lease id.");
         }
 
+        // Earmark the hold now the lease id exists (docs/PAYMENTS.md §4): wallet → lease_holds. The meter
+        // debits it per tick; the remainder is released at lease end. A free image places no hold.
+        var holdTxnId = await _walletGate.PlaceHoldAsync(consumerUserId, leaseId, holdCents, Usd, ct);
+
         var now = _time.GetUtcNow();
         var lease = new Lease
         {
             Id = leaseId,
+            HoldTxnId = holdTxnId,
             ConsumerUserId = consumerUserId,
             HostId = host.Id,
             HostImageId = image.Id,
@@ -228,6 +234,10 @@ public sealed class LeaseService : ILeaseService
         var now = _time.GetUtcNow();
         var ended = await _leases.TransitionStateAsync(
             lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: now, ct: ct);
+
+        // Return the unused remainder of the hold to the wallet (docs/PAYMENTS.md §4). Keyed by lease id, so
+        // it is a safe no-op if the lease was already finalized (and released) by the reconciler.
+        await _walletGate.ReleaseHoldAsync(lease.Id, ct);
         return LeaseView.From(ended ?? lease);
     }
 
@@ -237,13 +247,6 @@ public sealed class LeaseService : ILeaseService
 
         // Ownership failures return "not found" so the API never reveals a lease the caller can't see.
         return lease is not null && lease.ConsumerUserId == consumerUserId ? lease : null;
-    }
-
-    /// <summary>The up-front hold estimate: <c>⌈ttl/60⌉·price</c> (docs/DATA_MODEL.md §8).</summary>
-    private static long EstimateHoldCents(int ttlSeconds, long priceCentsPerMin)
-    {
-        var minutes = (ttlSeconds + 59) / 60; // ceil, integer-only (money is never floats, §1)
-        return minutes * priceCentsPerMin;
     }
 
     private static bool After(Lease lease, LeaseCursor? cursor) =>

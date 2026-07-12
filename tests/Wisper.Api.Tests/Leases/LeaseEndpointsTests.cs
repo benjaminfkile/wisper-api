@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Wisper.Api.Auth;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Idempotency;
@@ -61,6 +62,11 @@ public class LeaseEndpointsTests
                     services.AddSingleton<IIdempotencyKeyRepository>(Idempotency);
                     services.RemoveAll<ITunnelRelay>();
                     services.AddSingleton<ITunnelRelay>(Relay);
+                    // The lease HTTP surface (auth/idempotency/envelope/shape) is exercised without the
+                    // ledger; a permissive gate stands in for the DB-backed WalletLeaseGate. The real
+                    // hold/charge/release behaviour is covered by WalletLeaseGateTests.
+                    services.RemoveAll<ILeaseWalletGate>();
+                    services.AddSingleton<ILeaseWalletGate, AllowWalletGate>();
                 }));
 
         public async Task SeedImageAsync(NetworkMode[]? networks = null, long price = 5)
