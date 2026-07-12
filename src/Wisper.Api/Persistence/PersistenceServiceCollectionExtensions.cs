@@ -1,4 +1,8 @@
+using Dapper;
 using Npgsql;
+using Wisper.Api.Persistence.HostImages;
+using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Users;
 
 namespace Wisper.Api.Persistence;
 
@@ -22,6 +26,10 @@ public static class PersistenceServiceCollectionExtensions
     {
         services.Configure<PersistenceOptions>(configuration.GetSection(PersistenceOptions.SectionName));
 
+        // The schema is snake_case (docs/DATA_MODEL.md); let Dapper map snake_case columns to the
+        // PascalCase entity properties so repositories don't have to alias every scalar column.
+        DefaultTypeMap.MatchNamesWithUnderscores = true;
+
         var connectionString = configuration.GetConnectionString(PersistenceOptions.ConnectionStringName);
 
         services.AddSingleton(sp =>
@@ -34,6 +42,13 @@ public static class PersistenceServiceCollectionExtensions
             var dataSource = new NpgsqlDataSourceBuilder(connectionString).Build();
             return new Db(dataSource);
         });
+
+        // Identity + catalog repositories (docs/DATA_MODEL.md §3, §4). The Dapper implementations are
+        // registered for the running service; unit tests use the in-memory doubles directly. They only
+        // open a connection when a query runs, so they are safe to register on a DB-less boot.
+        services.AddSingleton<IUserRepository, UserRepository>();
+        services.AddSingleton<IHostRepository, HostRepository>();
+        services.AddSingleton<IHostImageRepository, HostImageRepository>();
 
         // Extend the health surface with the DB probe (degrades gracefully when no DB — see DbHealthCheck).
         services.AddHealthChecks().AddCheck<DbHealthCheck>(DbHealthCheck.Name);
