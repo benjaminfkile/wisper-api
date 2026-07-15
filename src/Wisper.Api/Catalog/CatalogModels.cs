@@ -41,21 +41,26 @@ public sealed record CatalogImage(
 /// <c>label</c> carries the host's display name and <c>region</c> its region/label
 /// (docs/DATA_MODEL.md §4 — <c>hosts.name</c> is the display, <c>hosts.label</c> the region). Only
 /// hosts confirmed online by the live tunnel registry are emitted, so <c>online</c> is always true.
+/// <c>os</c> carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>, mirroring
+/// the wisp <c>/images</c> document), or <c>null</c> when the live capability has none — a client can
+/// adapt to a Windows host without a separate fetch, and an older agent that omits it never errors.
 /// </summary>
 public sealed record CatalogItem(
     [property: JsonPropertyName("host_id")] Guid HostId,
     [property: JsonPropertyName("label")] string? Label,
     [property: JsonPropertyName("region")] string? Region,
     [property: JsonPropertyName("images")] IReadOnlyList<CatalogImage> Images,
-    [property: JsonPropertyName("online")] bool Online)
+    [property: JsonPropertyName("online")] bool Online,
+    [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a host plus its already-filtered priced images into the catalog wire shape.</summary>
-    public static CatalogItem From(Host host, IReadOnlyList<CatalogImage> images, bool online) => new(
+    public static CatalogItem From(Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null) => new(
         HostId: host.Id,
         Label: host.Name,
         Region: host.Label,
         Images: images,
-        Online: online);
+        Online: online,
+        Os: os);
 }
 
 /// <summary>
@@ -69,19 +74,23 @@ public sealed record CatalogPage(
 /// <summary>
 /// The public detail of one host (docs/API.md §5, <c>GET /v1/hosts/:id</c>): the same public
 /// identity as a catalog entry plus its full priced, enabled image list and per-image limits.
+/// <c>os</c> is the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>), or <c>null</c>
+/// when the host is offline or its (older) agent advertised none — surfacing only, back-compatible.
 /// </summary>
 public sealed record HostDetail(
     [property: JsonPropertyName("host_id")] Guid HostId,
     [property: JsonPropertyName("label")] string? Label,
     [property: JsonPropertyName("region")] string? Region,
     [property: JsonPropertyName("online")] bool Online,
-    [property: JsonPropertyName("images")] IReadOnlyList<CatalogImage> Images)
+    [property: JsonPropertyName("images")] IReadOnlyList<CatalogImage> Images,
+    [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a host plus its enabled priced images into the host-detail wire shape.</summary>
-    public static HostDetail From(Host host, IReadOnlyList<CatalogImage> images, bool online) => new(
+    public static HostDetail From(Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null) => new(
         HostId: host.Id,
         Label: host.Name,
         Region: host.Label,
         Online: online,
-        Images: images);
+        Images: images,
+        Os: os);
 }

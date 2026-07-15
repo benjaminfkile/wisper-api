@@ -22,7 +22,7 @@ public static class DevLeaseEndpoints
     }
 
     private static async Task<IResult> CreateLeaseAsync(
-        DevCreateLeaseRequest request, ITunnelRelay relay, CancellationToken ct)
+        DevCreateLeaseRequest request, ITunnelRelay relay, IHostRegistry registry, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.HostId))
         {
@@ -46,8 +46,14 @@ public static class DevLeaseEndpoints
         };
 
         var lease = await relay.CreateLeaseAsync(request.HostId, spec, ct);
+
+        // Surface the target host's advertised container OS ("linux"|"windows"), read from the live
+        // hello capability the tunnel registry tracks for this dev host id (a plain string like
+        // 'dev-host-1', so we key the registry directly rather than by Guid). Null when the host has no
+        // live tunnel or its (older) agent advertised no os — surfacing only, back-compatible (task #316).
+        var os = registry.TryGet(request.HostId, out var connection) ? connection?.Capability?.Os : null;
         return Results.Json(
-            new { leaseId = lease.LeaseId, wispContractId = lease.WispContractId, status = lease.Status },
+            new { leaseId = lease.LeaseId, wispContractId = lease.WispContractId, status = lease.Status, os },
             statusCode: StatusCodes.Status201Created);
     }
 

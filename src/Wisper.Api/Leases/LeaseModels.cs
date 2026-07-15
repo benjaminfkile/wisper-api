@@ -63,7 +63,10 @@ public sealed record LeaseResourcesView(
 /// immutable snapshots, the current lifecycle state, and the metering timeline with a running-cost
 /// figure. Until the P5 metering engine lands, <see cref="BillableSeconds"/> is the persisted watermark
 /// (0 for a just-started lease) and <see cref="CostCentsSoFar"/> is derived from it — a truthful
-/// placeholder, not an estimate of wall-clock time.
+/// placeholder, not an estimate of wall-clock time. <see cref="Os"/> carries the host's advertised
+/// container OS (<c>"linux"</c> | <c>"windows"</c>) resolved from its live capability at projection time,
+/// or <c>null</c> when the host is offline or its (older) agent advertised none — so lease detail/exec/
+/// console UIs adapt without a separate host fetch, and it never errors (task #316).
 /// </summary>
 public sealed record LeaseView(
     [property: JsonPropertyName("id")] string Id,
@@ -80,10 +83,12 @@ public sealed record LeaseView(
     [property: JsonPropertyName("billable_seconds")] long BillableSeconds,
     [property: JsonPropertyName("cost_cents_so_far")] long CostCentsSoFar,
     [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt,
-    [property: JsonPropertyName("end_reason")] string? EndReason)
+    [property: JsonPropertyName("end_reason")] string? EndReason,
+    [property: JsonPropertyName("os")] string? Os = null)
 {
-    /// <summary>Projects a stored <see cref="Lease"/> into its read wire shape.</summary>
-    public static LeaseView From(Lease lease) => new(
+    /// <summary>Projects a stored <see cref="Lease"/> into its read wire shape, optionally carrying the
+    /// host's live container <paramref name="os"/> (null when offline/pre-os — surfacing only).</summary>
+    public static LeaseView From(Lease lease, string? os = null) => new(
         Id: TunnelLeaseId.Format(lease.Id),
         Status: PgEnum.ToLabel(lease.Status),
         HostId: lease.HostId,
@@ -98,7 +103,8 @@ public sealed record LeaseView(
         BillableSeconds: lease.BillableSeconds,
         CostCentsSoFar: RunningCostCents(lease),
         ExpiresAt: ExpiresAtOf(lease),
-        EndReason: lease.EndReason is { } reason ? PgEnum.ToSnakeLabel(reason) : null);
+        EndReason: lease.EndReason is { } reason ? PgEnum.ToSnakeLabel(reason) : null,
+        Os: os);
 
     /// <summary>
     /// The running cost placeholder: billed minutes so far × price (docs/API.md §5). Metering (P5) is the

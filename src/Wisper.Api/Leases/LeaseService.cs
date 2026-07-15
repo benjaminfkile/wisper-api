@@ -24,6 +24,7 @@ public sealed class LeaseService : ILeaseService
     private readonly IHostRepository _hosts;
     private readonly IHostImageRepository _images;
     private readonly ITunnelRelay _relay;
+    private readonly IHostCapabilitySource _capabilities;
     private readonly ILeaseWalletGate _walletGate;
     private readonly TimeProvider _time;
 
@@ -32,6 +33,7 @@ public sealed class LeaseService : ILeaseService
         IHostRepository hosts,
         IHostImageRepository images,
         ITunnelRelay relay,
+        IHostCapabilitySource capabilities,
         ILeaseWalletGate walletGate,
         TimeProvider time)
     {
@@ -39,6 +41,7 @@ public sealed class LeaseService : ILeaseService
         _hosts = hosts;
         _images = images;
         _relay = relay;
+        _capabilities = capabilities;
         _walletGate = walletGate;
         _time = time;
     }
@@ -166,7 +169,7 @@ public sealed class LeaseService : ILeaseService
                 break;
             }
 
-            page.Add(LeaseView.From(lease));
+            page.Add(LeaseView.From(lease, OsOf(lease.HostId)));
             lastIncluded = lease;
         }
 
@@ -180,7 +183,7 @@ public sealed class LeaseService : ILeaseService
         Guid consumerUserId, Guid leaseId, CancellationToken ct = default)
     {
         var lease = await OwnedLeaseOrNullAsync(consumerUserId, leaseId, ct);
-        return lease is null ? null : LeaseView.From(lease);
+        return lease is null ? null : LeaseView.From(lease, OsOf(lease.HostId));
     }
 
     public async Task<LeaseExecTarget?> ResolveExecTargetAsync(
@@ -218,7 +221,7 @@ public sealed class LeaseService : ILeaseService
         // Idempotent: an already-ended lease is a safe no-op replay (docs/API.md §5, DELETE is retryable).
         if (lease.Status == LeaseStatus.Ended)
         {
-            return LeaseView.From(lease);
+            return LeaseView.From(lease, OsOf(lease.HostId));
         }
 
         try
@@ -238,8 +241,14 @@ public sealed class LeaseService : ILeaseService
         // Return the unused remainder of the hold to the wallet (docs/PAYMENTS.md §4). Keyed by lease id, so
         // it is a safe no-op if the lease was already finalized (and released) by the reconciler.
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
-        return LeaseView.From(ended ?? lease);
+        return LeaseView.From(ended ?? lease, OsOf(lease.HostId));
     }
+
+    /// <summary>
+    /// The host's advertised container OS from its live capability snapshot (docs/TUNNEL.md §5), or null
+    /// when it has no live tunnel or its agent advertised none — surfacing only, always null-safe (task #316).
+    /// </summary>
+    private string? OsOf(Guid hostId) => _capabilities.GetCapability(hostId)?.Os;
 
     private async Task<Lease?> OwnedLeaseOrNullAsync(Guid consumerUserId, Guid leaseId, CancellationToken ct)
     {
