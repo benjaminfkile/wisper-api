@@ -5,6 +5,7 @@ using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Tests.TestSupport;
+using Wisper.Api.Tunnel;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -25,6 +26,7 @@ public class LeaseServiceTests
         public InMemoryHostRepository Hosts { get; } = new();
         public InMemoryHostImageRepository Images { get; } = new();
         public FakeTunnelRelay Relay { get; } = new();
+        public FakeHostCapabilitySource Capabilities { get; } = new();
         public ILeaseWalletGate WalletGate { get; set; } = new AllowWalletGate();
         public FakeTimeProvider Clock { get; } = new(T0);
         public Guid ConsumerId { get; } = Guid.NewGuid();
@@ -33,7 +35,12 @@ public class LeaseServiceTests
         public HostImage? Image { get; private set; }
 
         public LeaseService Service() =>
-            new(Leases, Hosts, Images, Relay, WalletGate, Clock);
+            new(Leases, Hosts, Images, Relay, Capabilities, WalletGate, Clock);
+
+        /// <summary>Declares the live capability (optionally carrying the container OS) for the seeded host.</summary>
+        public void SetHostOs(string? os) => Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
+            Array.Empty<string>(), Array.Empty<NetworkMode>(),
+            MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, Os: os));
 
         public async Task<HostImage> SeedImageAsync(
             HostStatus hostStatus = HostStatus.Online,
@@ -299,6 +306,34 @@ public class LeaseServiceTests
         Assert.NotNull(view);
         Assert.Equal(TunnelLeaseId.Format(created.Lease.Id), view!.Id);
         Assert.Equal("active", view.Status);
+    }
+
+    [Fact]
+    public async Task Get_carries_the_hosts_container_os_from_the_live_capability()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+        fx.SetHostOs("windows"); // host is online and advertises a Windows container OS
+
+        var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
+
+        Assert.NotNull(view);
+        Assert.Equal("windows", view!.Os);
+    }
+
+    [Fact]
+    public async Task Get_os_is_null_when_the_host_is_offline_or_pre_os()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+        // No capability declared for the host — offline (or a legacy agent that never advertised os).
+
+        var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
+
+        Assert.NotNull(view);
+        Assert.Null(view!.Os);
     }
 
     [Fact]

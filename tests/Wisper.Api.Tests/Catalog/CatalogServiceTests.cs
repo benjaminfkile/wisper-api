@@ -3,6 +3,7 @@ using Wisper.Api.Domain;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Tests.TestSupport;
+using Wisper.Api.Tunnel;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -24,11 +25,12 @@ public class CatalogServiceTests
         public InMemoryHostRepository Hosts { get; } = new();
         public InMemoryHostImageRepository Images { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
-        public CatalogService Service => new(Hosts, Images, Registry);
+        public FakeHostCapabilitySource Capabilities { get; } = new();
+        public CatalogService Service => new(Hosts, Images, Registry, Capabilities);
 
         public async Task<Host> AddHostAsync(
             string name, string region, DateTimeOffset createdAt,
-            HostStatus status = HostStatus.Online, bool online = true, Guid? id = null)
+            HostStatus status = HostStatus.Online, bool online = true, Guid? id = null, string? os = null)
         {
             var host = await Hosts.CreateAsync(new Host
             {
@@ -44,6 +46,15 @@ public class CatalogServiceTests
             if (online)
             {
                 Registry.SetOnline(host.Id);
+            }
+
+            // A live host advertises a wisp capability; declare it (optionally carrying the container OS)
+            // so the catalog can surface `os` from the live snapshot the way the real source does.
+            if (online)
+            {
+                Capabilities.Set(host.Id, new HostCapabilitySnapshot(
+                    Array.Empty<string>(), Array.Empty<NetworkMode>(),
+                    MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, Os: os));
             }
 
             return host;
@@ -216,6 +227,60 @@ public class CatalogServiceTests
 
         Assert.Equal(new[] { a.Id, b.Id }, page.Data.Select(d => d.HostId));
         Assert.Null(page.NextCursor);
+    }
+
+    [Fact]
+    public async Task List_carries_the_hosts_container_os_from_the_live_capability()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("win-server", "us", T0, os: "windows");
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        var item = Assert.Single(page.Data);
+        Assert.Equal("windows", item.Os);
+    }
+
+    [Fact]
+    public async Task List_os_is_null_when_the_capability_advertises_none()
+    {
+        var h = new Harness();
+        // Online host whose (older) agent advertised no os — surfaces as null, never an error.
+        var host = await h.AddHostAsync("legacy", "us", T0, os: null);
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        Assert.Null(Assert.Single(page.Data).Os);
+    }
+
+    [Fact]
+    public async Task Get_host_carries_the_container_os_from_the_live_capability()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("linux-server", "eu", T0, os: "linux");
+        await h.AddImageAsync(host.Id, "enabled:img", price: 7);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.Equal("linux", detail!.Os);
+    }
+
+    [Fact]
+    public async Task Get_host_os_is_null_when_the_host_is_offline()
+    {
+        var h = new Harness();
+        // Offline host has no live capability, so os is null (still returns detail).
+        var host = await h.AddHostAsync("home", "eu", T0, status: HostStatus.Offline, online: false);
+        await h.AddImageAsync(host.Id, "img", price: 7);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.False(detail!.Online);
+        Assert.Null(detail.Os);
     }
 
     [Fact]

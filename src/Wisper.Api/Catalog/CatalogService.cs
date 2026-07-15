@@ -20,12 +20,18 @@ public sealed class CatalogService : ICatalogService
     private readonly IHostRepository _hosts;
     private readonly IHostImageRepository _images;
     private readonly IHostRegistry _registry;
+    private readonly IHostCapabilitySource _capabilities;
 
-    public CatalogService(IHostRepository hosts, IHostImageRepository images, IHostRegistry registry)
+    public CatalogService(
+        IHostRepository hosts,
+        IHostImageRepository images,
+        IHostRegistry registry,
+        IHostCapabilitySource capabilities)
     {
         _hosts = hosts;
         _images = images;
         _registry = registry;
+        _capabilities = capabilities;
     }
 
     public async Task<CatalogPage> ListAsync(CatalogQuery query, CancellationToken ct = default)
@@ -58,7 +64,7 @@ public sealed class CatalogService : ICatalogService
                 break;
             }
 
-            page.Add(CatalogItem.From(host, images, online: true));
+            page.Add(CatalogItem.From(host, images, online: true, os: OsOf(host.Id)));
             lastIncluded = host;
         }
 
@@ -79,8 +85,14 @@ public sealed class CatalogService : ICatalogService
 
         var images = await _images.ListByHostAsync(hostId, enabledOnly: true, ct);
         var wire = images.Select(CatalogImage.From).ToList();
-        return HostDetail.From(host, wire, online: IsLive(host));
+        return HostDetail.From(host, wire, online: IsLive(host), os: OsOf(host.Id));
     }
+
+    /// <summary>
+    /// The host's advertised container OS from its live capability snapshot (docs/TUNNEL.md §5), or null
+    /// when it has no live tunnel or its agent advertised none — surfacing only, always null-safe (task #316).
+    /// </summary>
+    private string? OsOf(Guid hostId) => _capabilities.GetCapability(hostId)?.Os;
 
     /// <summary>The host's enabled priced images that pass the request's image/network/price filters.</summary>
     private async Task<IReadOnlyList<CatalogImage>> MatchingImagesAsync(
