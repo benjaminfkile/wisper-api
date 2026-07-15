@@ -41,6 +41,14 @@ public record HelloCapability
     [JsonPropertyName("default")]
     public string Default { get; init; } = string.Empty;
 
+    /// <summary>
+    /// The host's container OS (<c>"linux"</c> | <c>"windows"</c>), mirroring wisp's <c>GET /images</c>
+    /// (snake_case wire field <c>os</c>). Optional and back-compatible: an older agent that omits it leaves
+    /// this <c>null</c> (unknown). Surfacing only — it drives no lease-routing decision (docs/TUNNEL.md §5).
+    /// </summary>
+    [JsonPropertyName("os")]
+    public string? Os { get; init; }
+
     [JsonPropertyName("limits")]
     public HelloLimits Limits { get; init; } = new();
 }
