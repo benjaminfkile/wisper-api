@@ -40,6 +40,9 @@ public sealed class RegistryHostCapabilitySource : IHostCapabilitySource
             limits.MaxTtlSeconds,
             limits.MaxCpus,
             limits.MaxMemoryMb,
-            limits.PidsLimit);
+            limits.PidsLimit,
+            // The host's advertised container OS ("linux"|"windows"), or null for an older agent that
+            // did not send it — surfacing only, back-compatible (docs/TUNNEL.md §5).
+            capability.Os);
     }
 }

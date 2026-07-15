@@ -18,7 +18,9 @@ public interface IHostCapabilitySource
 /// <summary>
 /// A flattened snapshot of a host's advertised wisp capability (docs/TUNNEL.md §5): the allow-listed image
 /// refs plus the host-wide per-lease ceilings a priced image may not exceed. Network labels that do not map
-/// to a known <see cref="NetworkMode"/> are dropped (forward-compatible with additive modes).
+/// to a known <see cref="NetworkMode"/> are dropped (forward-compatible with additive modes). <see cref="Os"/>
+/// carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>), or <c>null</c> when an
+/// older agent's hello did not advertise it — surfacing only, it gates no routing.
 /// </summary>
 public sealed record HostCapabilitySnapshot(
     IReadOnlyList<string> Images,
@@ -26,7 +28,8 @@ public sealed record HostCapabilitySnapshot(
     long MaxTtlSeconds,
     double MaxCpus,
     long MaxMemoryMb,
-    long MaxPids)
+    long MaxPids,
+    string? Os = null)
 {
     /// <summary>Whether <paramref name="imageRef"/> is in the host's advertised allow-list (ordinal match).</summary>
     public bool AllowsImage(string imageRef) => Images.Contains(imageRef, StringComparer.Ordinal);
