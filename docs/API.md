@@ -20,7 +20,7 @@ The external surface of Wisper: what the two Next.js apps and third-party client
 ## 2. Authentication & roles
 
 - **Human APIs (consumer/host/admin):** `Authorization: Bearer <Cognito JWT>`. Wisper validates the JWT against the pool's JWKS (issuer, audience, expiry, signature). Identity = the `sub` claim; the first authenticated call **bootstraps** the `users` row (`DATA_MODEL.md` §3).
-- **Machine API keys (consumer surface):** `Authorization: Bearer wck_live_<64-hex>` — a long-lived key for a machine client (first: the orchestrator app) driving the `/v1` surface without the Cognito JWT flow (`DATA_MODEL.md` §3, `api_keys`). The auth layer tells a key from a JWT by its `wck_` prefix and, instead of JWT validation, does a **constant-time hashed lookup** (SHA-256 at rest, shown once at mint) against `api_keys`; an active key resolves to a principal for its **owning user** (same identity the JWT path would produce, so every downstream endpoint and role gate is unchanged). **Scopes, not Cognito groups:** a key's roles are exactly its stored `scopes` (⊆ `{consumer, host, admin}`) — there is **no** implicit `consumer`, so a key must be granted each role it needs (a key lacking the gate's role is `403`). **Fail-closed:** a key that is unknown, revoked (`revoked_at` set), or whose owner is suspended, and any empty/malformed bearer, is rejected `401 unauthenticated` — same envelope as a bad JWT. Best-effort `last_used_at` is stamped on use. Keys are minted/listed/revoked at `/v1/me/api-keys` (§5).
+- **Machine API keys (consumer surface):** `Authorization: Bearer wck_live_<64-hex>` — a long-lived key for a machine client (first: the orchestrator app) driving the `/v1` surface without the Cognito JWT flow (`DATA_MODEL.md` §3, `api_keys`). The auth layer tells a key from a JWT by its `wck_` prefix and, instead of JWT validation, does a **constant-time hashed lookup** (SHA-256 at rest, shown once at mint) against `api_keys`; an active key resolves to a principal for its **owning user** (same identity the JWT path would produce, so every downstream endpoint and role gate is unchanged). **Scopes, not Cognito groups:** a key's roles are exactly its stored `scopes` (⊆ `{consumer, host, admin}`) — there is **no** implicit `consumer`, so a key must be granted each role it needs (a key lacking the gate's role is `403`). **Fail-closed:** a key that is unknown, revoked (`revoked_at` set), or whose owner is suspended, and any empty/malformed bearer, is rejected `401 unauthenticated` — same envelope as a bad JWT. Best-effort `last_used_at` is stamped on use. Keys are minted/listed/revoked at `/v1/me/api-keys` (§5); **minting is JWT-only** — a key cannot mint more keys (privilege containment, `403`) — and requested scopes are **capped by the minter's own roles**.
 - **Dev/bootstrap key config-map:** an `Auth:ApiKeys` config section maps a raw key string → `{ userId, scopes[] }`, mirroring `Tunnel:HostTokens`. It is the fallback the key authenticator uses when there is no DB-backed store (a **DB-less boot**), letting an operator mint a key locally. **Empty by default and fail-closed**, so production — which never sets it — is unaffected.
 - **Roles are additive** (`DESIGN.md` §10), sourced from Cognito **groups** (`consumer`, `host`, `admin`). Every authenticated user is implicitly `consumer`; `host`/`admin` are added. Endpoint tables below mark the **minimum** role. (An API key instead carries its granted roles as explicit `scopes` — see above.)
 - **Agent tunnel** (`WS /agent`): authenticated by the **host agent token** (`Authorization: Bearer`), *not* a JWT — see `TUNNEL.md` §3.
@@ -73,6 +73,31 @@ Ownership failures return `404` (not `403`) so the API never reveals the existen
 |---|---|---|
 | GET | `/v1/me` | identity + roles + `connect_status` |
 | PATCH | `/v1/me` | mutable profile fields |
+
+### API keys
+| Method | Path | Body / notes |
+|---|---|---|
+| POST | `/v1/me/api-keys` | mint a machine key → the **full key once** (never retrievable again) |
+| GET | `/v1/me/api-keys` | the caller's keys (prefix + scopes + lifecycle; never the hash/key) |
+| DELETE | `/v1/me/api-keys/:id` | revoke (idempotent; `404` for another user's key) |
+
+Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting requires a JWT principal, not an API key** — a key must not be able to mint more keys (privilege containment), so a key-authenticated caller gets `403 forbidden`. Requested `scopes` default to `["consumer"]` and are **capped by the roles the calling JWT holds** — a consumer-only user cannot mint a `host`-scoped key (`403`). The full key is returned exactly once at mint and is never logged or retrievable again; only its hash + non-secret prefix are stored, and a revoked key fails auth on the next request (§2).
+
+**`POST /v1/me/api-keys`** request → response:
+```json
+// request
+{ "name": "orchestrator-prod", "scopes": ["consumer"] }
+// 201 — `key` shown once
+{ "id": "…", "name": "orchestrator-prod", "key": "wck_live_<64-hex>",
+  "token_prefix": "wck_live_ab12", "scopes": ["consumer"], "created_at": "…Z" }
+```
+
+**`GET /v1/me/api-keys`** item shape:
+```json
+{ "id": "…", "name": "orchestrator-prod", "token_prefix": "wck_live_ab12",
+  "scopes": ["consumer"], "created_at": "…Z", "last_used_at": "…Z"|null,
+  "revoked_at": "…Z"|null }
+```
 
 ### Catalog
 | Method | Path | Notes |

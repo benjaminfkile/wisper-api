@@ -137,6 +137,14 @@ public static class WisperPrincipal
     public static bool IsWisperAuthenticationType(string? authenticationType) =>
         authenticationType is AuthenticationType or ApiKeyAuthenticationType;
 
+    /// <summary>
+    /// Whether the caller authenticated with an <b>API key</b> rather than a Cognito JWT (docs/API.md §2).
+    /// Used to enforce privilege containment: a key must not mint more keys, so key-authenticated callers are
+    /// barred from <c>POST /v1/me/api-keys</c> even though they otherwise pass the same consumer gate.
+    /// </summary>
+    public static bool IsApiKeyPrincipal(this ClaimsPrincipal principal) =>
+        principal.Identity?.AuthenticationType == ApiKeyAuthenticationType;
+
     /// <summary>The <c>sub</c> claim, or <c>null</c> if absent.</summary>
     public static string? GetSubject(this ClaimsPrincipal principal) =>
         principal.FindFirst(SubjectClaimType)?.Value;
