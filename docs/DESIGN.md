@@ -191,6 +191,7 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 - **Hosts** — a host account (Cognito) *plus* a per-host **agent token** (opaque, hashed at rest, revocable) that the wisp agent presents on the `WS /agent` handshake (via `?token=` or a `bearer.<token>` subprotocol, mirroring wisp). Token identifies + authorizes the tunnel; rotating it forces the agent to re-auth.
 - **Admin** — Cognito `admin` group; gates `/admin/*`. Ben is the first admin.
 - **Roles are additive.** A single account can hold `consumer` and `host` at once (and `admin` too); there are not separate consumer/host accounts. A consumer "becomes a host" by completing host onboarding, which just adds the `host` group + capabilities to the same user. Roles map to Cognito **groups** (`consumer`, `host`, `admin`); the API authorizes per-group. Reuses the dev/prod Cognito pool pattern already in the fleet.
+- **Machine API keys** — a consumer may also drive `/v1` with a long-lived `wck_live_…` key (hashed at rest, revocable, shown once) that authenticates as its owner but carries its **own scopes** rather than Cognito groups; a dev config-map (`Auth:ApiKeys`, empty/fail-closed in prod) mirrors the host-token bootstrap (`API.md` §2).
 
 ## 11. Metering & billing
 
