@@ -58,6 +58,8 @@ Pure ledger; see `DATA_MODEL.md` §8 for the debit/credit of each step.
 3. **Release.** At lease end, post `hold_release` for the unused remainder (hold → wallet). Because the hold covered the *entire* max lease, the hold can never be exhausted mid-lease — no "insufficient funds mid-run" failure exists in this model.
 4. **Grace/suspend.** A tunnel drop pauses metering (no `lease_charge` accrues during the gap); on grace expiry, the lease ends and the remainder releases. Billing integrity comes for free from "meter only over healthy intervals."
 
+**Zero-priced images (free tier / self-hosted).** `price_cents_per_min = 0` is a **valid price** (`≥ 0`; only a negative price is rejected — `API.md` §6), so an operator who is both host and consumer of their own box — or anyone offering a free image — needs no wallet balance to lease it. The whole loop degenerates cleanly: the estimated hold is `⌈ttl/60⌉ × 0 = 0`, so the authorize gate **passes with an empty wallet** and **no `lease_hold` is posted**; each meter tick still accrues `billable_seconds` (so timeline/liveness are unaffected) but the `lease_charge` amount is `0`, and a **zero-amount transaction is skipped, never posted** — a `0`-debit/`0`-credit txn would be vacuous and the balanced-entry trigger (`DATA_MODEL.md` §7,§8) is reserved for real money movement, so no `lease_charge`/`lease_usage` row is written; at end there is no hold to release, so `hold_release` is a no-op. The result: a free lease moves the ledger **zero times** and can never drive a balance negative.
+
 ## 5. Host onboarding — Connect Express + KYC
 
 ```

@@ -315,6 +315,57 @@ public class MeteringServiceTests
         Assert.Equal(60, result.Usage.BillableSeconds);
     }
 
+    [Fact]
+    public async Task Zero_price_lease_meters_ledger_safely_writing_no_charge_or_usage_row()
+    {
+        // A free image (price 0): the meter still accrues healthy seconds so the timeline is correct, but the
+        // charge is 0¢, so no lease_charge txn and no lease_usage row are written — a 0=0 ledger txn would be
+        // vacuous and is skipped (docs/PAYMENTS.md §4, docs/DATA_MODEL.md §8). No hold was ever placed.
+        var fx = await ReadyFixtureAsync();
+        var lease = await fx.SeedActiveLeaseAsync(price: 0);
+        // Deliberately do NOT fund a hold: a free lease needs no wallet money at all.
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(90));
+        var flushed = await fx.NewService().RunTickAsync();
+
+        Assert.Equal(0, flushed); // no billable flush — nothing to charge
+
+        // The watermark still advances (billable_seconds accrue) so a later paid image can't rely on drift.
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.Equal(90, stored!.BillableSeconds);
+        Assert.Equal(T0.AddSeconds(90), stored.LastMeteredAt);
+
+        // No money moved anywhere: no usage row, and every touched account is flat at zero.
+        Assert.Empty(await fx.Usage.ListByLeaseAsync(lease.Id));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.HostEarnings, fx.HostOwnerId));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.PlatformRevenue));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.UserWallet, fx.ConsumerId));
+
+        // The ledger is internally consistent (no corruption / drift) after a zero-price tick.
+        foreach (var account in await fx.Ledger.ReconcileAsync())
+        {
+            Assert.True(account.IsBalanced);
+            Assert.True(account.MaintainedBalanceCents >= 0); // no account driven negative
+        }
+    }
+
+    [Fact]
+    public async Task Zero_price_on_end_flush_returns_null_and_moves_no_money()
+    {
+        var fx = await ReadyFixtureAsync();
+        var lease = await fx.SeedActiveLeaseAsync(price: 0);
+        fx.Clock.Advance(TimeSpan.FromSeconds(45));
+
+        // The on-end flush of the final (sub-tick) interval is a no-op for a free lease.
+        var end = await fx.NewService().FlushLeaseByIdAsync(lease.Id, fx.Clock.GetUtcNow());
+
+        Assert.Null(end);
+        Assert.Equal(45, (await fx.Leases.GetByIdAsync(lease.Id))!.BillableSeconds); // seconds still accrued
+        Assert.Empty(await fx.Usage.ListByLeaseAsync(lease.Id));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
+    }
+
     [Theory]
     [InlineData(0, 0, 0)]        // sub-second / zero
     [InlineData(60, 60, 60)]    // one minute @ 1¢/s
