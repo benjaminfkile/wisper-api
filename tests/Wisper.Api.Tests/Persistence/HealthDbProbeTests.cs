@@ -6,9 +6,10 @@ using Xunit;
 namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
-/// Over the real app host with no database configured (as on Grunt), the health endpoints must
-/// still report <c>ok</c> and include the DB probe entry marked as skipped — proving the probe is
-/// wired and degrades gracefully rather than crashing the boot (docs/DATA_MODEL.md §1).
+/// Over the real app host with no database configured (the in-memory dev mode), the health endpoints must
+/// still report <c>ok</c> and include the DB probe entry marked <c>in-memory</c> — proving the probe is
+/// wired and states the DB-less mode plainly rather than pretending a database is healthy or crashing the
+/// boot (docs/DATA_MODEL.md §1).
 /// </summary>
 public class HealthDbProbeTests : IClassFixture<WebApplicationFactory<Program>>
 {
@@ -32,7 +33,7 @@ public class HealthDbProbeTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal("ok", report!.Status);
         Assert.True(report.Checks.TryGetValue("database", out var db));
         Assert.Equal("healthy", db!.Status);
-        Assert.Contains("skipped", db.Description ?? string.Empty);
+        Assert.Contains("in-memory", db.Description ?? string.Empty);
     }
 
     private sealed record HealthReport(string Status, Dictionary<string, HealthEntry> Checks);

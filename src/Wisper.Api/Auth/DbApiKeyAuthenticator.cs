@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Wisper.Api.ApiKeys;
 using Wisper.Api.Domain;
-using Wisper.Api.Persistence;
 using Wisper.Api.Persistence.ApiKeys;
 using Wisper.Api.Persistence.Users;
 
@@ -24,31 +23,29 @@ namespace Wisper.Api.Auth;
 /// Cognito groups), then a best-effort <c>last_used_at</c> stamp is written.
 /// </para>
 /// <para>
-/// When no database is configured (a DB-less boot) the DB path is skipped and resolution falls through to
-/// the config-backed allow-list (<see cref="ConfigApiKeyAuthenticator"/>), the operator bootstrap escape
-/// hatch — exactly the layering <see cref="Tunnel.DbHostTokenValidator"/> uses for host tokens. In
-/// production the config allow-list is empty, so the DB is the sole source of truth and an unknown key
-/// fails closed.
+/// The lookup runs against whichever <see cref="IApiKeyRepository"/> backs the persistence layer — the
+/// Postgres table in production, or the in-memory store on a DB-less dev boot (docs/DATA_MODEL.md §1). A
+/// key the store does not recognize falls through to the config-backed allow-list
+/// (<see cref="ConfigApiKeyAuthenticator"/>), the operator bootstrap escape hatch — exactly the layering
+/// <see cref="Tunnel.DbHostTokenValidator"/> uses for host tokens. In production the config allow-list is
+/// empty, so the store is the sole source of truth and an unknown key fails closed.
 /// </para>
 /// </summary>
 public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
 {
     private readonly IApiKeyRepository _keys;
     private readonly IUserRepository _users;
-    private readonly Db _db;
     private readonly TimeProvider _time;
     private readonly ConfigApiKeyAuthenticator _fallback;
 
     public DbApiKeyAuthenticator(
         IApiKeyRepository keys,
         IUserRepository users,
-        Db db,
         TimeProvider time,
         ConfigApiKeyAuthenticator fallback)
     {
         _keys = keys;
         _users = users;
-        _db = db;
         _time = time;
         _fallback = fallback;
     }
@@ -60,32 +57,29 @@ public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
             return null;
         }
 
-        // Hashed lookup against the api_keys table. Guarded on IsConfigured so a DB-less boot degrades to
-        // the config fallback instead of throwing (docs/DATA_MODEL.md §1 — the app can boot with no DB).
-        if (_db.IsConfigured)
+        // Hashed lookup against the api_keys store (Postgres or the in-memory dev store — both are
+        // queryable without a live DB connection, docs/DATA_MODEL.md §1).
+        var hash = ApiKeyToken.Hash(bearerToken);
+        var key = await _keys.GetByTokenHashAsync(hash, ct);
+        if (key is not null && ConstantTimeEquals(key.TokenHash, hash))
         {
-            var hash = ApiKeyToken.Hash(bearerToken);
-            var key = await _keys.GetByTokenHashAsync(hash, ct);
-            if (key is not null && ConstantTimeEquals(key.TokenHash, hash))
+            // Known, active key: the owner must exist and be active, else fail closed (a suspended or
+            // deleted owner gates the key exactly as a host suspension gates the tunnel). A recognized
+            // key never falls through to the config allow-list.
+            var user = await _users.GetByIdAsync(key.UserId, ct);
+            if (user is null || user.Status != UserStatus.Active)
             {
-                // Known, active key: the owner must exist and be active, else fail closed (a suspended or
-                // deleted owner gates the key exactly as a host suspension gates the tunnel). A recognized
-                // key never falls through to the config allow-list.
-                var user = await _users.GetByIdAsync(key.UserId, ct);
-                if (user is null || user.Status != UserStatus.Active)
-                {
-                    return null;
-                }
-
-                // Best-effort last-used stamp on the authenticated path; the repo swallows any failure.
-                await _keys.TouchLastUsedAsync(key.Id, _time.GetUtcNow(), ct);
-
-                return WisperPrincipal.CreateForApiKey(user.CognitoSub, user.Email, key.Scopes);
+                return null;
             }
+
+            // Best-effort last-used stamp on the authenticated path; the repo swallows any failure.
+            await _keys.TouchLastUsedAsync(key.Id, _time.GetUtcNow(), ct);
+
+            return WisperPrincipal.CreateForApiKey(user.CognitoSub, user.Email, key.Scopes);
         }
 
-        // Not resolved from the DB — try the config allow-list (dev/bootstrap; empty and thus fail-closed
-        // in production).
+        // Not resolved from the store — try the config allow-list (dev/bootstrap; empty and thus
+        // fail-closed in production).
         return await _fallback.AuthenticateAsync(bearerToken, ct);
     }
 

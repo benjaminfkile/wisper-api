@@ -55,6 +55,28 @@ curl localhost:8080/api/health   # {"status":"ok"}   (also /healthz)
 
 Every response carries an `X-Request-Id`; errors use the uniform envelope `{ "error": { "code", "message", "request_id", "details" } }` (see `docs/API.md` §3).
 
+## In-memory persistence mode (DB-less dev boot)
+
+With **no** `ConnectionStrings:Wisper` set (the default for `dotnet run` and the whole test suite), the app boots in **in-memory persistence mode**: it registers in-memory doubles for *every* repository, so the full `/v1` path runs with no Postgres. Set the connection string (`ConnectionStrings__Wisper`) to switch to the Postgres path — production behaviour is unchanged.
+
+- **Loud:** a single startup line `persistence: in-memory (no connection string) — state resets on restart` (logged at warning), and `GET /api/health` reports the `database` check as `in-memory`. Migrations are a no-op.
+- **Full self-hosted flow with no Cognito/Postgres:** mint a config API key with `consumer`+`host` scopes and drive `POST /v1/hosts` → `PUT /v1/hosts/:id/images` (0-cent pricing allowed) → `GET /v1/catalog` → `POST /v1/leases`. Example `appsettings.Development.json` / env:
+
+  ```jsonc
+  "Auth": {
+    "ApiKeys": {
+      "wck_live_dev_operator": {
+        "UserId": "self-host-operator",
+        "Email": "operator@example.test",
+        "Scopes": ["consumer", "host"]
+      }
+    }
+  }
+  ```
+
+  Then `Authorization: Bearer wck_live_dev_operator` on every `/v1` call.
+- **State resets on every restart** (hosts, leases, wallet/ledger balances — everything lives in process memory). **Never use this mode in production** — no durability, no cross-instance sharing, no backups. See `docs/DESIGN.md` §16.
+
 ## Container
 
 ```sh

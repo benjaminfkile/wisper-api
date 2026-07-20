@@ -1,8 +1,6 @@
-using Npgsql;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Domain;
 using Wisper.Api.Hosts;
-using Wisper.Api.Persistence;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Tunnel;
 using Xunit;
@@ -12,18 +10,13 @@ namespace Wisper.Api.Tests.Tunnel;
 
 /// <summary>
 /// Unit tests for <see cref="DbHostTokenValidator"/> (docs/TUNNEL.md §13, P7.1): a presented agent token is
-/// resolved to its host id by a hashed lookup against the hosts table; an unknown token fails closed; and a
-/// DB-less boot degrades to the config allow-list fallback. The <see cref="Db"/> is "configured" with a data
-/// source that is never actually opened (the in-memory repository double serves every lookup), so no Postgres
-/// is required.
+/// resolved to its host id by a hashed lookup against the host store; an unknown token fails closed; and a
+/// token the store does not hold degrades to the config allow-list fallback. The in-memory repository double
+/// serves every lookup, so no Postgres is required.
 /// </summary>
 public class DbHostTokenValidatorTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
-
-    /// <summary>A configured <see cref="Db"/> whose data source is never opened by these tests.</summary>
-    private static Db ConfiguredDb() =>
-        new(new NpgsqlDataSourceBuilder("Host=127.0.0.1;Database=none;Username=none").Build());
 
     private static ConfigHostTokenValidator Config(params (string token, string hostId)[] tokens)
     {
@@ -56,7 +49,7 @@ public class DbHostTokenValidatorTests
         var hosts = new InMemoryHostRepository();
         var token = HostAgentToken.Issue().Token;
         var host = SeedHost(hosts, token);
-        var validator = new DbHostTokenValidator(hosts, ConfiguredDb(), Config());
+        var validator = new DbHostTokenValidator(hosts, Config());
 
         var result = await validator.ValidateAsync(token);
 
@@ -65,11 +58,11 @@ public class DbHostTokenValidatorTests
     }
 
     [Fact]
-    public async Task Unknown_token_fails_closed_when_db_configured_and_config_empty()
+    public async Task Unknown_token_fails_closed_when_store_has_no_match_and_config_empty()
     {
         var hosts = new InMemoryHostRepository();
         SeedHost(hosts, HostAgentToken.Issue().Token);
-        var validator = new DbHostTokenValidator(hosts, ConfiguredDb(), Config());
+        var validator = new DbHostTokenValidator(hosts, Config());
 
         var result = await validator.ValidateAsync("wht_live_not-a-real-token");
 
@@ -83,7 +76,7 @@ public class DbHostTokenValidatorTests
         var hosts = new InMemoryHostRepository();
         var oldToken = HostAgentToken.Issue().Token;
         var host = SeedHost(hosts, oldToken);
-        var validator = new DbHostTokenValidator(hosts, ConfiguredDb(), Config());
+        var validator = new DbHostTokenValidator(hosts, Config());
 
         // Rotate the stored hash to a new token.
         var newIssued = HostAgentToken.Issue();
@@ -96,11 +89,11 @@ public class DbHostTokenValidatorTests
     }
 
     [Fact]
-    public async Task Falls_back_to_config_on_a_db_less_boot()
+    public async Task Falls_back_to_config_when_the_store_does_not_hold_the_token()
     {
         var hosts = new InMemoryHostRepository();
-        // Db.Unconfigured → the DB path is skipped and the config allow-list resolves the token.
-        var validator = new DbHostTokenValidator(hosts, Db.Unconfigured, Config(("dev-token", "host-alpha")));
+        // The store has no matching host → the lookup misses and the config allow-list resolves the token.
+        var validator = new DbHostTokenValidator(hosts, Config(("dev-token", "host-alpha")));
 
         var result = await validator.ValidateAsync("dev-token");
 
@@ -112,7 +105,7 @@ public class DbHostTokenValidatorTests
     public async Task Null_or_empty_token_fails()
     {
         var validator = new DbHostTokenValidator(
-            new InMemoryHostRepository(), ConfiguredDb(), Config(("dev-token", "host-alpha")));
+            new InMemoryHostRepository(), Config(("dev-token", "host-alpha")));
 
         Assert.False((await validator.ValidateAsync(null)).Succeeded);
         Assert.False((await validator.ValidateAsync("")).Succeeded);

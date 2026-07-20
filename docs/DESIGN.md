@@ -251,6 +251,14 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
   Both call the respective Wisper API (prod / dev); frontends are hosted on Vercel, not on the API infrastructure.
 - Deploy as a container image (from a container registry) behind the gateway / load balancer.
 
+### In-memory persistence mode (DB-less dev boot)
+
+- **Trigger:** when `ConnectionStrings:Wisper` is unset/empty, the manager boots in **in-memory persistence mode** — it registers the in-memory doubles for *every* repository (users, hosts, host images, api keys, leases, lease usage, ledger, stripe events, payouts, idempotency, platform policy, audit) instead of the Postgres repositories. With a connection string present, the Postgres path is used and production behaviour is **unchanged**.
+- **Loud & unambiguous:** exactly one startup line is logged — `persistence: in-memory (no connection string) — state resets on restart` (at **warning** level, so an accidental production boot with no connection string is unmissable) — and the health report's `database` entry reads `in-memory` rather than pretending a database is healthy. Migrations are a no-op.
+- **What works:** the whole `/v1` path runs in-process with no Postgres. A single config API key (`Auth:ApiKeys`) with `consumer`+`host` scopes drives the full self-hosted flow end-to-end: `POST /v1/hosts` (issues a real `wht_live_` agent token the DB-backed validator resolves against the in-memory store) → `PUT /v1/hosts/:id/images` (0-cent pricing allowed for self-hosted operators) → `GET /v1/catalog` (once the agent tunnel is live) → `POST /v1/leases` (with `env`, placing a 0-cent hold). The config key grant carries an optional `Email` so it can bootstrap the operator's account (`users.email` is NOT NULL) with no Cognito.
+- **What resets:** *all state* lives in process memory and is gone on every restart — hosts, leases, wallet/ledger balances, everything.
+- **Never for production.** It exists for local dev and self-hosted single-operator experimentation only; there is no durability, no cross-instance sharing, and no backups.
+
 ## 17. Open questions / decisions to confirm
 
 - ~~**Marketplace now vs first-party-first**~~ **DECIDED: marketplace now.** Build the *full* two-sided marketplace up front — third-party host onboarding, **Stripe Connect payouts, and KYC** are all in scope from the start, not deferred. Rollout is a **soft launch**: everything is built and hardened in the **dev** environment first and only *advertised publicly* once the kinks are worked out. Scope ≠ launch timing — the code is complete; the marketing waits.

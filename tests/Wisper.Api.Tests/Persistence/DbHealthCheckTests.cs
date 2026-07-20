@@ -6,9 +6,9 @@ using Xunit;
 namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
-/// The DB probe must degrade gracefully (report healthy) when no database is configured so the app
-/// boots for the tunnel, and must actually round-trip a query — surfacing an <b>unhealthy</b> result
-/// — when a database is configured but unreachable.
+/// The DB probe must report healthy and name the <c>in-memory</c> dev mode when no database is configured
+/// (rather than pretending a database is healthy), and must actually round-trip a query — surfacing an
+/// <b>unhealthy</b> result — when a database is configured but unreachable.
 /// </summary>
 public class DbHealthCheckTests
 {
@@ -18,14 +18,14 @@ public class DbHealthCheckTests
     };
 
     [Fact]
-    public async Task Unconfigured_reports_healthy_skip()
+    public async Task Unconfigured_reports_healthy_in_memory()
     {
         var check = new DbHealthCheck(Db.Unconfigured);
 
         var result = await check.CheckHealthAsync(Context());
 
         Assert.Equal(HealthStatus.Healthy, result.Status);
-        Assert.Contains("skipped", result.Description);
+        Assert.Contains("in-memory", result.Description);
     }
 
     [Fact]

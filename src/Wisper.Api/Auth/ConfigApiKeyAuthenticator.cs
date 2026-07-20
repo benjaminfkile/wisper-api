@@ -54,7 +54,7 @@ public sealed class ConfigApiKeyAuthenticator : IApiKeyAuthenticator
             return Task.FromResult<ClaimsPrincipal?>(null);
         }
 
-        var principal = WisperPrincipal.CreateForApiKey(matched.UserId, email: null, matched.Scopes);
+        var principal = WisperPrincipal.CreateForApiKey(matched.UserId, matched.Email, matched.Scopes);
         return Task.FromResult<ClaimsPrincipal?>(principal);
     }
 }
