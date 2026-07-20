@@ -113,12 +113,16 @@ public class InMemoryPersistenceFullPathTests
         });
         Assert.Equal(HttpStatusCode.OK, priced.StatusCode);
 
-        // 3) The agent tunnel goes live: presence in the registry + the host row flips online (the transition
-        //    a live agent WebSocket drives). The catalog now lists the host and its 0-priced image.
+        // 3) The agent tunnel goes live: register presence, then drive the REAL presence flip the tunnel
+        //    handshake runs at hello.ack (task #392) — NOT a seeded status. A self-hosted operator (no
+        //    Connect) with an all-zero-priced allow-list clears the earning gate, so the host row flips
+        //    online on its own; the catalog then lists the host and its 0-priced image.
         fx.Registry.SetOnline(hostId);
-        var now = DateTimeOffset.UtcNow;
-        await factory.Services.GetRequiredService<IHostRepository>()
-            .SetOnlineStateAsync(hostId, HostStatus.Online, now, now);
+        await factory.Services.GetRequiredService<IHostPresence>()
+            .GoOnlineIfEligibleAsync(hostId.ToString());
+
+        var hosts = factory.Services.GetRequiredService<IHostRepository>();
+        Assert.Equal(HostStatus.Online, (await hosts.GetByIdAsync(hostId))!.Status); // the real flip, not a seed
 
         var catalog = await client.GetFromJsonAsync<CatalogPageDto>("/v1/catalog");
         var item = Assert.Single(catalog!.Data);

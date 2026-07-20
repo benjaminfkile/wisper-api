@@ -84,6 +84,11 @@ builder.Services.AddHostedService<MeteringHostedService>();
 // within the window resumes the still-present leases (same id) and ends the vanished ones (container_lost);
 // grace expiry ends the rest (host_disconnect). The pure set-diff/metering logic lives in the reconciler.
 builder.Services.AddSingleton<LeaseReconciliationService>();
+// Host presence follows the tunnel (docs/TUNNEL.md §3, §8, task #392): tunnel-ready flips the host online
+// when it clears the earning gate (owner Connect-enabled OR every enabled image zero-priced), and a durable
+// tunnel loss (grace expiry / no-lease close, driven by the coordinator) flips it back offline — the wiring
+// that was missing, leaving a live agent's host stuck offline and absent from the catalog.
+builder.Services.AddSingleton<IHostPresence, HostPresenceService>();
 builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
 
 // Stripe integration (docs/PAYMENTS.md §1, §8, P6.1): the config-driven Stripe client wrapper + webhook

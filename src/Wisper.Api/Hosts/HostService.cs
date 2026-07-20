@@ -4,6 +4,7 @@ using Wisper.Api.Infrastructure;
 using Wisper.Api.Payouts;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tunnel;
 using Host = Wisper.Api.Domain.Host;
 
@@ -22,6 +23,7 @@ public sealed class HostService
 {
     private readonly IHostRepository _hosts;
     private readonly IHostImageRepository _images;
+    private readonly IUserRepository _users;
     private readonly IHostRegistry _registry;
     private readonly IHostCapabilitySource _capabilities;
     private readonly IAgentTunnelCloser _tunnelCloser;
@@ -33,6 +35,7 @@ public sealed class HostService
     public HostService(
         IHostRepository hosts,
         IHostImageRepository images,
+        IUserRepository users,
         IHostRegistry registry,
         IHostCapabilitySource capabilities,
         IAgentTunnelCloser tunnelCloser,
@@ -43,6 +46,7 @@ public sealed class HostService
     {
         _hosts = hosts;
         _images = images;
+        _users = users;
         _registry = registry;
         _capabilities = capabilities;
         _tunnelCloser = tunnelCloser;
@@ -149,8 +153,12 @@ public sealed class HostService
     public async Task<HostImagesResponse> ReplaceImagesAsync(
         Guid ownerUserId, Guid hostId, ReplaceImagesRequest request, CancellationToken ct = default)
     {
-        await LoadOwnedHostAsync(ownerUserId, hostId, ct);
+        var host = await LoadOwnedHostAsync(ownerUserId, hostId, ct);
         var capability = RequireCapability(hostId);
+        var connectStatus = await OwnerConnectStatusAsync(host, ct);
+
+        var existing = await _images.ListByHostAsync(hostId, enabledOnly: false, ct);
+        var existingByRef = existing.ToDictionary(i => i.ImageRef, StringComparer.Ordinal);
 
         var desired = request.Images ?? Array.Empty<ImageUpsert>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -170,11 +178,15 @@ public sealed class HostService
             ValidateAgainstCapability(
                 capability, imageRef, entry.PriceCentsPerMin, entry.MaxTtlSeconds, networks,
                 entry.MaxCpus, entry.MaxMemoryMb, entry.MaxPids);
+
+            // A new entry defaults enabled; an update keeps the stored flag unless overridden. Charging a
+            // non-Connect-enabled owner's image is rejected here so the online gate stays consistent (§6).
+            var enabled = entry.Enabled
+                ?? (existingByRef.TryGetValue(imageRef, out var current) ? current.Enabled : true);
+            RejectIfChargesRequireConnect(connectStatus, enabled, entry.PriceCentsPerMin, imageRef);
+
             validated.Add((imageRef, entry, networks));
         }
-
-        var existing = await _images.ListByHostAsync(hostId, enabledOnly: false, ct);
-        var existingByRef = existing.ToDictionary(i => i.ImageRef, StringComparer.Ordinal);
 
         // Remove entries the replacement no longer contains.
         foreach (var stale in existing.Where(i => !seen.Contains(i.ImageRef)))
@@ -232,8 +244,9 @@ public sealed class HostService
     public async Task<HostImageView> PatchImageAsync(
         Guid ownerUserId, Guid hostId, Guid imageId, PatchImageRequest request, CancellationToken ct = default)
     {
-        await LoadOwnedHostAsync(ownerUserId, hostId, ct);
+        var host = await LoadOwnedHostAsync(ownerUserId, hostId, ct);
         var capability = RequireCapability(hostId);
+        var connectStatus = await OwnerConnectStatusAsync(host, ct);
 
         var image = await _images.GetByIdAsync(imageId, ct);
         if (image is null || image.HostId != hostId)
@@ -247,9 +260,14 @@ public sealed class HostService
         var maxCpus = request.MaxCpus ?? image.MaxCpus;
         var maxMemoryMb = request.MaxMemoryMb ?? image.MaxMemoryMb;
         var maxPids = request.MaxPids ?? image.MaxPids;
+        var enabled = request.Enabled ?? image.Enabled;
 
         ValidateAgainstCapability(
             capability, image.ImageRef, price, maxTtl, networks, maxCpus, maxMemoryMb, maxPids);
+
+        // Enabling a non-zero-priced image requires Connect onboarding (§6): reject before persisting so a
+        // non-Connect owner can never move into the earning arm of the online gate mid-tunnel.
+        RejectIfChargesRequireConnect(connectStatus, enabled, price, image.ImageRef);
 
         var updated = await _images.UpdateAsync(
             image with
@@ -260,7 +278,7 @@ public sealed class HostService
                 MaxCpus = maxCpus,
                 MaxMemoryMb = maxMemoryMb,
                 MaxPids = maxPids,
-                Enabled = request.Enabled ?? image.Enabled,
+                Enabled = enabled,
                 UpdatedAt = _time.GetUtcNow(),
             },
             ct);
@@ -289,6 +307,35 @@ public sealed class HostService
 
     /// <summary>True when the host has a live agent tunnel in the registry (authoritative presence).</summary>
     private bool IsOnline(Guid hostId) => _registry.TryGet(hostId.ToString(), out _);
+
+    /// <summary>The host owner's Stripe Connect onboarding state, or <see cref="ConnectStatus.None"/> if unknown.</summary>
+    private async Task<ConnectStatus> OwnerConnectStatusAsync(Host host, CancellationToken ct) =>
+        (await _users.GetByIdAsync(host.OwnerUserId, ct))?.ConnectStatus ?? ConnectStatus.None;
+
+    /// <summary>
+    /// Rejects enabling a non-zero-priced image while the owner is not Connect-enabled (docs/API.md §6,
+    /// docs/PAYMENTS.md §5): charging money requires an onboarded Connect account. A zero price (self-hosted,
+    /// task #386) or a disabled entry is always allowed. Enforced at the only pricing mutation point so the
+    /// host presence gate (<see cref="ConnectGate.CanHostGoOnline"/>) stays consistent.
+    /// </summary>
+    private static void RejectIfChargesRequireConnect(
+        ConnectStatus ownerConnectStatus, bool enabled, long priceCentsPerMin, string imageRef)
+    {
+        if (ConnectGate.ChargesRequireConnect(ownerConnectStatus, enabled, priceCentsPerMin))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "Charging for an image requires Stripe Connect onboarding. Complete Connect "
+                + "(POST /v1/hosts/connect) before enabling a priced image, or set price_cents_per_min to 0 "
+                + $"to self-host '{imageRef}' for free.",
+                new
+                {
+                    field = "price_cents_per_min",
+                    image_ref = imageRef,
+                    connect_status = PgEnum.ToLabel(ownerConnectStatus),
+                });
+        }
+    }
 
     /// <summary>
     /// Validates one priced image against the host's advertised capability (docs/API.md §6,

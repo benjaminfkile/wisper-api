@@ -43,6 +43,7 @@ public static class TunnelEndpoints
         var registry = context.RequestServices.GetRequiredService<IHostRegistry>();
         var relay = context.RequestServices.GetRequiredService<ITunnelRelay>();
         var coordinator = context.RequestServices.GetRequiredService<TunnelDisconnectCoordinator>();
+        var presence = context.RequestServices.GetRequiredService<IHostPresence>();
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync(new WebSocketAcceptContext
         {
@@ -142,6 +143,18 @@ public static class TunnelEndpoints
             // available to the relay (docs/TUNNEL.md §3). Until this point a create for this host waits
             // briefly for readiness rather than racing to host_offline on a freshly-connected agent.
             connection.MarkReady();
+
+            // Presence follows the tunnel (docs/TUNNEL.md §3): with the handshake complete, flip the host
+            // online if it clears the earning gate (owner Connect-enabled, or every enabled image is
+            // zero-priced — task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
+            try
+            {
+                await presence.GoOnlineIfEligibleAsync(hostId, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "agent tunnel: flipping host {HostId} online failed", hostId);
+            }
 
             // (d) Steady state until close/cancel/liveness timeout.
             var livenessTimeout = TimeSpan.FromMilliseconds(options.EffectiveLivenessTimeoutMs);

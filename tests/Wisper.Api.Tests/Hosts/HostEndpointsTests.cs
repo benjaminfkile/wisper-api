@@ -74,6 +74,18 @@ public class HostEndpointsTests
         return client;
     }
 
+    /// <summary>
+    /// Marks the bootstrapped host owner Connect-enabled so a priced allow-list is accepted (docs/API.md §6):
+    /// charging a non-zero price requires Connect onboarding (task #392). The owner is the user provisioned
+    /// from the host JWT (<c>host-sub</c>).
+    /// </summary>
+    private static async Task EnableOwnerConnectAsync(Fixture fx)
+    {
+        var user = await fx.Users.GetByCognitoSubAsync("host-sub")
+            ?? throw new InvalidOperationException("host owner not provisioned yet");
+        await fx.Users.UpdateAsync(user with { ConnectStatus = ConnectStatus.Enabled });
+    }
+
     [Fact]
     public async Task Register_requires_a_token()
     {
@@ -173,6 +185,7 @@ public class HostEndpointsTests
             Images: new[] { "alpine:latest" },
             Networks: new[] { NetworkMode.None, NetworkMode.Open },
             MaxTtlSeconds: 14400, MaxCpus: 8, MaxMemoryMb: 16384, MaxPids: 4096));
+        await EnableOwnerConnectAsync(fx); // a priced image requires Connect (task #392)
 
         var ok = await client.PutAsJsonAsync($"/v1/hosts/{registered.Id}/images", new
         {
@@ -220,6 +233,41 @@ public class HostEndpointsTests
     }
 
     [Fact]
+    public async Task Put_images_priced_without_connect_is_validation_error()
+    {
+        // Enabling a non-zero-priced image without Connect onboarding is rejected at the mutation (task #392):
+        // the owner is provisioned Connect-none, so charging money is not yet allowed.
+        var fx = new Fixture();
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var registered = await (await client.PostAsJsonAsync("/v1/hosts", new { name = "h1" }))
+            .Content.ReadFromJsonAsync<HostRegisteredDto>();
+        fx.Capabilities.Set(registered!.Id, new HostCapabilitySnapshot(
+            new[] { "alpine:latest" }, new[] { NetworkMode.None }, 14400, 8, 16384, 4096));
+
+        var priced = await client.PutAsJsonAsync($"/v1/hosts/{registered.Id}/images", new
+        {
+            images = new[]
+            {
+                new { image_ref = "alpine:latest", price_cents_per_min = 5, networks = new[] { "none" }, max_ttl_seconds = 3600 },
+            },
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, priced.StatusCode);
+        Assert.Empty(await fx.Images.ListByHostAsync(registered.Id));
+
+        // The same image at price 0 (self-hosted) is accepted with no Connect.
+        var free = await client.PutAsJsonAsync($"/v1/hosts/{registered.Id}/images", new
+        {
+            images = new[]
+            {
+                new { image_ref = "alpine:latest", price_cents_per_min = 0, networks = new[] { "none" }, max_ttl_seconds = 3600 },
+            },
+        });
+        Assert.Equal(HttpStatusCode.OK, free.StatusCode);
+    }
+
+    [Fact]
     public async Task Patch_image_updates_price_and_enabled()
     {
         var fx = new Fixture();
@@ -230,6 +278,7 @@ public class HostEndpointsTests
             .Content.ReadFromJsonAsync<HostRegisteredDto>();
         fx.Capabilities.Set(registered!.Id, new HostCapabilitySnapshot(
             new[] { "alpine:latest" }, new[] { NetworkMode.None }, 14400, 8, 16384, 4096));
+        await EnableOwnerConnectAsync(fx); // a priced image requires Connect (task #392)
         await client.PutAsJsonAsync($"/v1/hosts/{registered.Id}/images", new
         {
             images = new[]

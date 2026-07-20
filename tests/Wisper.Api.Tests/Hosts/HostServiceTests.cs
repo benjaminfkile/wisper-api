@@ -30,6 +30,7 @@ public class HostServiceTests
     {
         public InMemoryHostRepository Hosts { get; } = new();
         public InMemoryHostImageRepository Images { get; } = new();
+        public InMemoryUserRepository Users { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public FakeAgentTunnelCloser TunnelCloser { get; } = new();
@@ -42,16 +43,23 @@ public class HostServiceTests
         {
             var ledger = new LedgerService(new InMemoryLedgerStore());
             Payouts = new PayoutService(
-                ledger, new InMemoryPayoutRepository(), new InMemoryUserRepository(), new FakeStripeConnectGateway(),
+                ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
             Service = new HostService(
-                Hosts, Images, Registry, Capabilities, TunnelCloser, Payouts,
+                Hosts, Images, Users, Registry, Capabilities, TunnelCloser, Payouts,
                 Options.Create(Tunnel), Clock, NullLogger<HostService>.Instance);
         }
 
-        /// <summary>Seeds a stored host owned by <paramref name="owner"/> with a known token hash.</summary>
-        public Task<Host> SeedHostAsync(Guid owner, string token = "wht_live_seed") =>
-            Hosts.CreateAsync(new Host
+        /// <summary>
+        /// Seeds a stored host owned by <paramref name="owner"/> with a known token hash. The owner's
+        /// <see cref="ConnectStatus"/> defaults to <see cref="ConnectStatus.Enabled"/> so priced allow-lists
+        /// are accepted; a caller pricing a non-zero image for a non-Connect owner passes the state under test.
+        /// </summary>
+        public async Task<Host> SeedHostAsync(
+            Guid owner, string token = "wht_live_seed", ConnectStatus connect = ConnectStatus.Enabled)
+        {
+            await EnsureOwnerAsync(owner, connect);
+            return await Hosts.CreateAsync(new Host
             {
                 OwnerUserId = owner,
                 Name = "home-server-1",
@@ -62,6 +70,31 @@ public class HostServiceTests
                 CreatedAt = T0,
                 UpdatedAt = T0,
             });
+        }
+
+        /// <summary>Ensures a <see cref="User"/> row exists for <paramref name="owner"/> with a given Connect state.</summary>
+        public async Task EnsureOwnerAsync(Guid owner, ConnectStatus connect)
+        {
+            if (await Users.GetByIdAsync(owner) is { } existing)
+            {
+                if (existing.ConnectStatus != connect)
+                {
+                    await Users.UpdateAsync(existing with { ConnectStatus = connect, UpdatedAt = T0 });
+                }
+
+                return;
+            }
+
+            await Users.CreateAsync(new User
+            {
+                Id = owner,
+                CognitoSub = $"sub-{owner}",
+                Email = $"{owner}@hosts.test",
+                ConnectStatus = connect,
+                CreatedAt = T0,
+                UpdatedAt = T0,
+            });
+        }
 
         /// <summary>A generous capability so valid entries pass; callers override for negative cases.</summary>
         public HostCapabilitySnapshot Capability(params string[] images) => new(
@@ -384,5 +417,83 @@ public class HostServiceTests
             new PatchImageRequest(PriceCentsPerMin: 0, null, null, null, null, null, null));
 
         Assert.Equal(0, patched.PriceCentsPerMin);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_enabling_a_priced_image_for_a_non_connect_owner()
+    {
+        // A non-zero-priced, enabled image cannot be advertised until the owner completes Connect (§6): the
+        // gate is enforced at the pricing mutation so the host never moves into the earning arm mid-tunnel.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner, connect: ConnectStatus.Pending);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // nothing persisted on rejection
+    }
+
+    [Fact]
+    public async Task ReplaceImages_accepts_a_zero_priced_image_for_a_non_connect_owner()
+    {
+        // The self-hosted / zero-price posture (task #386): a host that earns nothing needs no Connect.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner, connect: ConnectStatus.None);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 0, new[] { "none", "open" }, 3600, null, null, null, true),
+        }));
+
+        Assert.Equal(0, Assert.Single(result.Data).PriceCentsPerMin);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_accepts_a_disabled_priced_image_for_a_non_connect_owner()
+    {
+        // A priced but disabled entry never advertises/earns, so Connect is not yet required to stage it.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner, connect: ConnectStatus.None);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, false),
+        }));
+
+        Assert.False(Assert.Single(result.Data).Enabled);
+    }
+
+    [Fact]
+    public async Task PatchImage_rejects_enabling_a_priced_image_for_a_non_connect_owner()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        // Seed a Connect-enabled owner so a priced image can be staged, then drop Connect and try to keep it.
+        var host = await fx.SeedHostAsync(owner, connect: ConnectStatus.Enabled);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, false),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+        await fx.EnsureOwnerAsync(owner, ConnectStatus.Restricted);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.PatchImageAsync(
+                owner, host.Id, imageId,
+                new PatchImageRequest(null, null, null, null, null, null, Enabled: true)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.False((await fx.Images.ListByHostAsync(host.Id))[0].Enabled); // stayed disabled
     }
 }

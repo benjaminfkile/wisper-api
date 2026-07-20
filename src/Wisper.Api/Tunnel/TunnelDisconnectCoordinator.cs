@@ -12,8 +12,11 @@ namespace Wisper.Api.Tunnel;
 /// last-healthy and arms a bounded grace timer (<see cref="TunnelOptions.GraceSeconds"/>); a reconnect
 /// within the window cancels the timer and the first heartbeat's live-lease list drives the resume/end
 /// set-diff; if grace expires with no reconnect the still-suspended leases are ended
-/// (<c>host_disconnect</c>). Every hook is exception-safe — a reconciliation failure never disrupts the
-/// tunnel plumbing — and a host id that is not a Guid (the Phase-1 dev/no-DB harness) is a no-op.
+/// (<c>host_disconnect</c>). It also drives host <b>presence</b> (<see cref="IHostPresence"/>, task #392):
+/// the host is flipped <c>offline</c> once the loss is durable — grace expired, or a close with no leases
+/// to protect — so a momentary blip or a superseding reconnect keeps it online. Every hook is
+/// exception-safe — a reconciliation or presence failure never disrupts the tunnel plumbing — and a host
+/// id that is not a Guid (the Phase-1 dev/no-DB harness) is a no-op.
 /// <para>
 /// The grace timer runs as a background task per host, cancellable by reconnect. <see
 /// cref="OnDisconnectedAsync"/> awaits only the synchronous suspend and returns the background grace task,
@@ -27,6 +30,7 @@ public sealed class TunnelDisconnectCoordinator
     private readonly TimeProvider _time;
     private readonly ILogger<TunnelDisconnectCoordinator> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly IHostPresence? _presence;
     private readonly ConcurrentDictionary<Guid, GraceEntry> _grace = new();
 
     public TunnelDisconnectCoordinator(
@@ -34,13 +38,15 @@ public sealed class TunnelDisconnectCoordinator
         IOptionsMonitor<TunnelOptions> options,
         TimeProvider time,
         ILogger<TunnelDisconnectCoordinator> logger,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        IHostPresence? presence = null)
     {
         _reconciler = reconciler;
         _options = options;
         _time = time;
         _logger = logger;
         _delay = delay ?? ((span, ct) => Task.Delay(span, time, ct));
+        _presence = presence;
     }
 
     private sealed class GraceEntry
@@ -76,7 +82,10 @@ public sealed class TunnelDisconnectCoordinator
 
         if (outcome.TotalSuspended == 0)
         {
-            return Task.CompletedTask; // nothing live to protect
+            // Nothing live to protect (no leases in grace): the host is simply gone, so flip it offline
+            // immediately rather than arming an empty grace window (docs/TUNNEL.md §8, task #392).
+            await MarkOfflineSafeAsync(host, lastHealthyAt);
+            return Task.CompletedTask;
         }
 
         var grace = TimeSpan.FromSeconds(Math.Max(0, _options.CurrentValue.GraceSeconds));
@@ -131,6 +140,32 @@ public sealed class TunnelDisconnectCoordinator
         catch (Exception ex)
         {
             _logger.LogError(ex, "grace expiry: ending suspended leases for host {HostId} failed", host);
+        }
+
+        // The loss is now durable (no reconnect within grace): flip the host offline so the catalog drops
+        // it, stamping last-seen at last-healthy (docs/TUNNEL.md §8, task #392).
+        await MarkOfflineSafeAsync(host, entry.LastHealthyAt);
+    }
+
+    /// <summary>
+    /// Flip <paramref name="host"/> offline via the presence hook, if one is wired. Exception-safe — a
+    /// presence failure never disrupts the grace/reconnect plumbing (mirrors the lease hooks). A no-op when
+    /// no <see cref="IHostPresence"/> was supplied (the unit fixtures that only exercise lease reconciliation).
+    /// </summary>
+    private async Task MarkOfflineSafeAsync(Guid host, DateTimeOffset lastHealthyAt)
+    {
+        if (_presence is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _presence.GoOfflineAsync(host, lastHealthyAt, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "disconnect: flipping host {HostId} offline failed", host);
         }
     }
 

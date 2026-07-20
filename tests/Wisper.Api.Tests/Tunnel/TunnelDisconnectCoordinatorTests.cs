@@ -3,9 +3,11 @@ using Wisper.Api.Domain;
 using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
+using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Policy;
+using Wisper.Api.Persistence.Users;
 using Wisper.Api.Policy;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
@@ -50,6 +52,8 @@ public class TunnelDisconnectCoordinatorTests
         public InMemoryLeaseRepository Leases { get; } = new();
         public InMemoryLeaseUsageRepository Usage { get; } = new();
         public InMemoryHostRepository Hosts { get; } = new();
+        public InMemoryHostImageRepository Images { get; } = new();
+        public InMemoryUserRepository Users { get; } = new();
         public InMemoryLedgerStore LedgerStore { get; } = new();
         public InMemoryPlatformPolicyRepository Policies { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
@@ -73,8 +77,13 @@ public class TunnelDisconnectCoordinatorTests
             var reconciler = new LeaseReconciliationService(
                 Leases, meter, walletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
             var options = new StaticOptionsMonitor<TunnelOptions>(new TunnelOptions { GraceSeconds = 90 });
+            // The real presence hook so a durable disconnect flips the host offline (task #392); a blip or
+            // superseding reconnect never reaches it, so the host stays online across those.
+            var presence = new HostPresenceService(
+                Hosts, Images, Users, Clock, NullLogger<HostPresenceService>.Instance);
             Coordinator = new TunnelDisconnectCoordinator(
-                reconciler, options, Clock, NullLogger<TunnelDisconnectCoordinator>.Instance, Grace.Delay);
+                reconciler, options, Clock, NullLogger<TunnelDisconnectCoordinator>.Instance, Grace.Delay,
+                presence);
         }
 
         public async Task SeedAsync()
@@ -91,6 +100,8 @@ public class TunnelDisconnectCoordinatorTests
             });
             HostId = host.Id;
         }
+
+        public async Task<HostStatus> HostStatusAsync() => (await Hosts.GetByIdAsync(HostId))!.Status;
 
         public Task<Lease> SeedActiveLeaseAsync() =>
             Leases.CreateAsync(new Lease
@@ -131,6 +142,20 @@ public class TunnelDisconnectCoordinatorTests
 
         Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
         Assert.True(fx.Coordinator.HasPendingGrace(fx.HostKey));
+        // The host stays online during the grace window — a reconnect must find it already catalogued.
+        Assert.Equal(HostStatus.Online, await fx.HostStatusAsync());
+    }
+
+    [Fact]
+    public async Task Disconnect_with_no_leases_flips_the_host_offline_immediately()
+    {
+        var fx = await ReadyAsync();
+
+        // No active leases: nothing to protect, so there is no grace window and the host goes offline now.
+        _ = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+
+        Assert.False(fx.Coordinator.HasPendingGrace(fx.HostKey));
+        Assert.Equal(HostStatus.Offline, await fx.HostStatusAsync());
     }
 
     [Fact]
@@ -150,6 +175,8 @@ public class TunnelDisconnectCoordinatorTests
         Assert.Equal(LeaseEndReason.HostDisconnect, ended.EndReason);
         Assert.Equal(T0, ended.EndedAt);
         Assert.False(fx.Coordinator.HasPendingGrace(fx.HostKey));
+        // The loss is now durable → the host is flipped offline and drops out of the catalog.
+        Assert.Equal(HostStatus.Offline, await fx.HostStatusAsync());
     }
 
     [Fact]
@@ -171,6 +198,8 @@ public class TunnelDisconnectCoordinatorTests
         var resumed = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Active, resumed!.Status);
         Assert.False(fx.Coordinator.HasPendingGrace(fx.HostKey));
+        // A reconnect within grace is a blip — the host was never flipped offline.
+        Assert.Equal(HostStatus.Online, await fx.HostStatusAsync());
     }
 
     [Fact]

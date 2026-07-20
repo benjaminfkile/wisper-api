@@ -177,8 +177,8 @@ Becoming a host is additive — a `consumer` gains the `host` group on first hos
 | DELETE | `/v1/hosts/:id` | | deregister (drains pending earnings first) |
 | POST | `/v1/hosts/:id/agent-token` | | rotate the agent token (old one revoked, tunnel closed `4402`) |
 | GET | `/v1/hosts/:id/images` | | priced allow-list |
-| PUT | `/v1/hosts/:id/images` | | replace the priced allow-list (validated live against the host's advertised wisp capability) |
-| PATCH | `/v1/hosts/:id/images/:imageId` | | price/enable/limits for one image |
+| PUT | `/v1/hosts/:id/images` | `validation_error` if a priced image is enabled without Connect | replace the priced allow-list (validated live against the host's advertised wisp capability) |
+| PATCH | `/v1/hosts/:id/images/:imageId` | `validation_error` if a priced image is enabled without Connect | price/enable/limits for one image |
 | POST | `/v1/hosts/connect` | | create/continue Stripe **Connect Express** onboarding → `{ onboarding_url }` |
 | GET | `/v1/hosts/connect/status` | | `connect_status` + what's still required |
 | GET | `/v1/earnings` | | accrued + paid, by period |
@@ -193,6 +193,10 @@ Becoming a host is additive — a `consumer` gains the `host` group on first hos
   "status":"offline" }
 ```
 Pricing/earning is inert until `connect_status='enabled'` and the agent has connected and advertised capability (`TUNNEL.md` §3).
+
+**Presence follows the tunnel.** A host's `status` is driven by its agent tunnel, not set by hand: when the handshake completes Wisper flips it `online` if it clears the earning gate — the owner is Connect-enabled **or** every enabled `host_image` is priced at `0` cents/min (the self-hosted / zero-price posture, `PAYMENTS.md` §5) — and a durable tunnel loss (grace expiry, or a close with no leases to protect) flips it back `offline` (`TUNNEL.md` §8). An admin-suspended host never comes back `online` on reconnect.
+
+**Charging requires Connect (images surface).** Because the online gate has a zero-earn arm, `PUT`/`PATCH …/images` **reject enabling a non-zero-priced image while the owner's `connect_status` is not `enabled`** (`validation_error` explaining Connect onboarding is required to charge; price at `0` to self-host for free). This is the single pricing mutation point, so a live host is never knocked `offline` mid-tunnel — it simply cannot move into the earning arm without Connect (`PAYMENTS.md` §5).
 
 ## 7. WebSocket & streaming (the console relay)
 
