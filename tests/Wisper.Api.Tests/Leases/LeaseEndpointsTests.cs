@@ -39,6 +39,7 @@ public class LeaseEndpointsTests
         public InMemoryUserRepository Users { get; } = new();
         public InMemoryIdempotencyKeyRepository Idempotency { get; } = new();
         public FakeTunnelRelay Relay { get; } = new();
+        public FakeHostCapabilitySource Capabilities { get; } = new();
         public FakeJwtValidator Validator { get; } = new();
 
         public Host? Host { get; private set; }
@@ -62,6 +63,8 @@ public class LeaseEndpointsTests
                     services.AddSingleton<IIdempotencyKeyRepository>(Idempotency);
                     services.RemoveAll<ITunnelRelay>();
                     services.AddSingleton<ITunnelRelay>(Relay);
+                    services.RemoveAll<IHostCapabilitySource>();
+                    services.AddSingleton<IHostCapabilitySource>(Capabilities);
                     // The lease HTTP surface (auth/idempotency/envelope/shape) is exercised without the
                     // ledger; a permissive gate stands in for the DB-backed WalletLeaseGate. The real
                     // hold/charge/release behaviour is covered by WalletLeaseGateTests.
@@ -107,6 +110,22 @@ public class LeaseEndpointsTests
             ttl_seconds = 3600,
             userdata = "apt-get install -y git",
         };
+
+        public object CreateBodyWithEnv(object env) => new
+        {
+            host_id = Host!.Id.ToString(),
+            host_image_id = Image!.Id.ToString(),
+            network = "open",
+            resources = new { cpus = 2, memory_mb = 4096, pids = 1024 },
+            ttl_seconds = 3600,
+            userdata = "apt-get install -y git",
+            env,
+        };
+
+        /// <summary>Declares the live capability (carrying the container OS) for the seeded host.</summary>
+        public void SetHostOs(string? os) => Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
+            Array.Empty<string>(), Array.Empty<NetworkMode>(),
+            MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, Os: os));
     }
 
     private static HttpClient Authed(WebApplicationFactory<Program> factory)
@@ -161,6 +180,67 @@ public class LeaseEndpointsTests
         Assert.Equal(3600, created.TtlSeconds);
         Assert.Single(fx.Relay.CreateCalls);
         Assert.Single(await fx.Leases.ListByConsumerAsync((await fx.Users.GetByCognitoSubAsync("fake-sub"))!.Id));
+    }
+
+    [Fact]
+    public async Task Post_carries_env_to_the_lease_create_frame_and_never_persists_it()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        using var factory = fx.Build();
+        var body = fx.CreateBodyWithEnv(
+            new Dictionary<string, string> { ["API_TOKEN"] = "top-secret-value", ["REGION"] = "eu" });
+
+        var response = await Authed(factory).SendAsync(Post(body, "key-1"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        // env reached the tunnel frame verbatim.
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.Equal("top-secret-value", spec.Env!["API_TOKEN"]);
+
+        // …but never landed on the persisted lease row (env may carry secrets).
+        var userId = (await fx.Users.GetByCognitoSubAsync("fake-sub"))!.Id;
+        var stored = Assert.Single(await fx.Leases.ListByConsumerAsync(userId));
+        var serialized = System.Text.Json.JsonSerializer.Serialize(stored);
+        Assert.DoesNotContain("top-secret-value", serialized);
+
+        // …nor echoed in the 201 response body.
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("top-secret-value", responseBody);
+    }
+
+    [Fact]
+    public async Task Post_over_the_env_cap_is_400_validation_error_and_hides_the_value()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        using var factory = fx.Build();
+        var big = new string('x', 256 * 1024 + 1);
+        var body = fx.CreateBodyWithEnv(new Dictionary<string, string> { ["BLOB"] = big });
+
+        var response = await Authed(factory).SendAsync(Post(body, "key-1"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.Contains("validation_error", responseBody);
+        Assert.DoesNotContain(big, responseBody); // the secret value is never echoed
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Post_201_carries_the_hosts_container_os()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        using var factory = fx.Build();
+        fx.SetHostOs("linux");
+
+        var response = await Authed(factory).SendAsync(Post(fx.CreateBody(), "key-1"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<CreateLeaseDto>();
+        Assert.Equal("linux", created!.Os);
     }
 
     [Fact]
@@ -403,7 +483,8 @@ public class LeaseEndpointsTests
         [property: JsonPropertyName("price_cents_per_min")] long PriceCentsPerMin,
         [property: JsonPropertyName("currency")] string Currency,
         [property: JsonPropertyName("hold_cents")] long HoldCents,
-        [property: JsonPropertyName("ttl_seconds")] int TtlSeconds);
+        [property: JsonPropertyName("ttl_seconds")] int TtlSeconds,
+        [property: JsonPropertyName("os")] string? Os = null);
 
     private sealed record LeaseViewDto(
         [property: JsonPropertyName("id")] string Id,

@@ -85,13 +85,15 @@ public class LeaseServiceTests
         public CreateLeaseRequest Request(
             string? network = "open",
             int? ttlSeconds = 3600,
-            LeaseResourcesRequest? resources = null) => new(
+            LeaseResourcesRequest? resources = null,
+            Dictionary<string, string>? env = null) => new(
             HostId: Host!.Id.ToString(),
             HostImageId: Image!.Id.ToString(),
             Network: network,
             Resources: resources,
             TtlSeconds: ttlSeconds,
-            Userdata: "apt-get install -y git");
+            Userdata: "apt-get install -y git",
+            Env: env);
     }
 
     [Fact]
@@ -292,6 +294,108 @@ public class LeaseServiceTests
             fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
         Assert.Equal(code, ex.Code);
         Assert.Empty(await fx.Leases.ListByConsumerAsync(fx.ConsumerId));
+    }
+
+    [Fact]
+    public async Task Create_forwards_env_to_the_lease_create_frame()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var env = new Dictionary<string, string> { ["API_TOKEN"] = "s3cr3t", ["REGION"] = "eu" };
+
+        await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(env: env));
+
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.NotNull(spec.Env);
+        Assert.Equal("s3cr3t", spec.Env!["API_TOKEN"]);
+        Assert.Equal("eu", spec.Env["REGION"]);
+    }
+
+    [Fact]
+    public async Task Create_omits_env_from_the_frame_when_absent()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+
+        await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(env: null));
+
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.Null(spec.Env);
+    }
+
+    [Fact]
+    public async Task Create_env_never_lands_on_the_persisted_lease_row()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var env = new Dictionary<string, string> { ["API_TOKEN"] = "top-secret-value" };
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(env: env));
+
+        // The lease snapshot stores everything EXCEPT env (it may carry secrets); the value must not be
+        // recoverable from the persisted row under any field.
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.NotNull(stored);
+        var serialized = System.Text.Json.JsonSerializer.Serialize(stored);
+        Assert.DoesNotContain("top-secret-value", serialized);
+        Assert.DoesNotContain("API_TOKEN", serialized);
+    }
+
+    [Fact]
+    public async Task Create_rejects_env_over_the_entry_cap_and_never_provisions()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var env = Enumerable.Range(0, 129).ToDictionary(i => $"K{i}", _ => "v");
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(env: env)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls); // guarded before any lease.create frame
+    }
+
+    [Fact]
+    public async Task Create_rejects_env_over_the_size_cap_and_never_echoes_the_value()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        // A single entry whose value alone exceeds 256 KiB serialized.
+        var big = new string('x', 256 * 1024 + 1);
+        var env = new Dictionary<string, string> { ["BLOB"] = big };
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(env: env)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+        // The env value is a secret-in-transit — it must never surface in the error message or details.
+        var rendered = ex.Message + System.Text.Json.JsonSerializer.Serialize(ex.Details);
+        Assert.DoesNotContain(big, rendered);
+    }
+
+    [Fact]
+    public async Task Create_result_carries_the_hosts_container_os()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        fx.SetHostOs("linux"); // host is online and advertises a Linux container OS
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Equal("linux", created.Os);
+    }
+
+    [Fact]
+    public async Task Create_result_os_is_null_when_the_host_is_offline_or_pre_os()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        // No capability declared for the host — offline (or a legacy agent that never advertised os).
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Null(created.Os);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Persistence.HostImages;
@@ -19,6 +20,14 @@ namespace Wisper.Api.Leases;
 public sealed class LeaseService : ILeaseService
 {
     private const string Usd = "usd";
+
+    /// <summary>
+    /// Create-time env caps, mirroring wisp's own limits so we guard the tunnel rather than re-impose a
+    /// business rule (docs/TUNNEL.md §5, §13): at most <see cref="MaxEnvEntries"/> keys and
+    /// <see cref="MaxEnvSerializedBytes"/> of serialized payload. Over either → <c>validation_error</c>.
+    /// </summary>
+    private const int MaxEnvEntries = 128;
+    private const int MaxEnvSerializedBytes = 256 * 1024;
 
     private readonly ILeaseRepository _leases;
     private readonly IHostRepository _hosts;
@@ -78,6 +87,7 @@ public sealed class LeaseService : ILeaseService
         ValidateNetwork(network, image);
         ValidateTtl(ttlSeconds, image);
         var resources = ValidateResources(request.Resources, image);
+        ValidateEnv(request.Env);
 
         // Wallet gate BEFORE any tunnel frame: no compute is provisioned that can't be paid for
         // (docs/DATA_MODEL.md §8, §14, docs/PAYMENTS.md §4). It also enforces the per-user concurrency cap
@@ -106,6 +116,10 @@ public sealed class LeaseService : ILeaseService
             },
             TtlSeconds = ttlSeconds,
             Userdata = request.Userdata,
+            // Create-time env is forwarded down the tunnel for secret injection, but never lands on the
+            // lease snapshot below: env may carry secrets, exists only to provision the container, and is
+            // out of scope for the metering/read surface (docs/TUNNEL.md §13). Guarded by ValidateEnv above.
+            Env = request.Env,
         };
         var result = await _relay.CreateLeaseAsync(host.Id.ToString(), spec, ct);
 
@@ -145,7 +159,10 @@ public sealed class LeaseService : ILeaseService
             BillableSeconds = 0,
         };
         var stored = await _leases.CreateAsync(lease, ct);
-        return new LeaseCreationResult(stored, holdCents);
+
+        // Surface the host's advertised container OS on the 201, like the dev endpoint and LeaseView do
+        // (task #316) — read from the live capability, null-safe when offline/pre-os (surfacing only).
+        return new LeaseCreationResult(stored, holdCents, OsOf(host.Id));
     }
 
     public async Task<LeasePage> ListAsync(
@@ -388,5 +405,36 @@ public sealed class LeaseService : ILeaseService
         }
 
         return value;
+    }
+
+    /// <summary>
+    /// Guards the create-time <c>env</c> map against wisp's own caps before it reaches the tunnel
+    /// (docs/TUNNEL.md §5, §13): reject over <see cref="MaxEnvEntries"/> keys or over
+    /// <see cref="MaxEnvSerializedBytes"/> of serialized payload. Env VALUES are secrets-in-transit, so the
+    /// error details carry only the count/size and the cap — never a key or value — and env is never logged.
+    /// </summary>
+    private static void ValidateEnv(Dictionary<string, string>? env)
+    {
+        if (env is null || env.Count == 0)
+        {
+            return;
+        }
+
+        if (env.Count > MaxEnvEntries)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'env' has too many entries.",
+                new { field = "env", max = MaxEnvEntries, count = env.Count });
+        }
+
+        var serializedBytes = JsonSerializer.SerializeToUtf8Bytes(env).Length;
+        if (serializedBytes > MaxEnvSerializedBytes)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'env' exceeds the maximum serialized size.",
+                new { field = "env", max_bytes = MaxEnvSerializedBytes, bytes = serializedBytes });
+        }
     }
 }
