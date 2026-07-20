@@ -4,6 +4,7 @@ using Npgsql;
 using Wisper.Api.Audit;
 using Wisper.Api.Infrastructure.Idempotency;
 using Wisper.Api.Ledger;
+using Wisper.Api.Persistence.ApiKeys;
 using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
@@ -60,6 +61,10 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IUserRepository, UserRepository>();
         services.AddSingleton<IHostRepository, HostRepository>();
         services.AddSingleton<IHostImageRepository, HostImageRepository>();
+
+        // Consumer API keys — long-lived machine bearers for the /v1 surface (docs/DATA_MODEL.md §3). The
+        // storage + token mechanics only; the auth gate that resolves a presented key lands next.
+        services.AddSingleton<IApiKeyRepository, ApiKeyRepository>();
 
         // Lease + metering repositories (docs/DATA_MODEL.md §5, §6).
         services.AddSingleton<ILeaseRepository, LeaseRepository>();

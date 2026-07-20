@@ -52,6 +52,24 @@ Roles are **additive** (`DESIGN.md` §10) and authoritative in Cognito groups; t
 
 Each user gets **exactly one `user_wallet`** and (if a host) **one `host_earnings`** ledger account, created lazily and pinned by the unique constraint in §8.
 
+### `api_keys` — consumer machine credentials
+
+A long-lived **machine bearer** for the authenticated `/v1` surface (`API.md` §2) — a machine client (first: the orchestrator app) drives the API with one key instead of the Cognito JWT flow. The key value is **shown once** at mint and stored **hashed only** (SHA-256), exactly like the host agent token (§4). Roles cannot come from Cognito groups for a key, so its granted **scopes** ride on the row (constrained to the role labels). The auth layer tells a key from a JWT by its `wck_` prefix.
+
+| column | type | notes |
+|---|---|---|
+| `id` | `uuid` PK (`gen_random_uuid()`) | |
+| `user_id` | `uuid` NOT NULL → `users(id)` | the user the key authenticates as |
+| `name` | `text` NOT NULL | user-supplied label for the listing UX |
+| `token_hash` | `text` NOT NULL UNIQUE | **hash only** (SHA-256); backs the O(1) hashed lookup |
+| `token_prefix` | `text` NOT NULL | short non-secret display prefix (e.g. `wck_live_ab12`) |
+| `scopes` | `text[]` NOT NULL DEFAULT `'{}'` | granted role labels, CHECK ⊆ `{consumer, host, admin}` |
+| `created_at` | `timestamptz` NOT NULL | |
+| `last_used_at` | `timestamptz` | best-effort touch on use; may lag |
+| `revoked_at` | `timestamptz` | NULL = active; a revoked key no longer resolves |
+
+Format `wck_live_<64-hex>` (256-bit CSPRNG). Lookup is `token_hash = … AND revoked_at IS NULL`, so a revoked key **fails closed**. Index: `(user_id)`; the UNIQUE `token_hash` backs the auth lookup.
+
 ## 4. Hosts & priced images
 
 ### `hosts`
@@ -317,6 +335,7 @@ Append-only record of every admin/policy/money-sensitive action.
 ## 13. Index & constraint summary (beyond PKs)
 
 - `users(cognito_sub)`, `users(email)`, `users(stripe_customer_id)`, `users(connect_account_id)` — unique.
+- `api_keys(token_hash)` — unique (backs the hashed auth lookup); `api_keys(user_id)`.
 - `hosts(owner_user_id)`; partial `hosts(status) WHERE 'online'`; `host_images(host_id,image_ref)` unique.
 - `leases(consumer_user_id, created_at DESC)`; partial `leases(host_id) WHERE status IN ('active','suspended')`.
 - `lease_usage(lease_id, period_start)` unique.
