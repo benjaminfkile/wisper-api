@@ -68,6 +68,15 @@ public sealed class ApiKeyGrant
     /// </summary>
     public string? UserId { get; set; }
 
+    /// <summary>
+    /// The email the key authenticates as — mirrors the DB-key path (which carries the owning user's
+    /// email). It seeds the principal's <c>email</c> claim so a config key can <b>bootstrap</b> the
+    /// operator's account (<c>users.email</c> is NOT NULL, docs/DATA_MODEL.md §3) on a DB-less boot; without
+    /// it the operator cannot register a host or place a lease. Optional and empty in production, where this
+    /// allow-list is inert.
+    /// </summary>
+    public string? Email { get; set; }
+
     /// <summary>The granted scopes — the role labels (<c>consumer</c>, <c>host</c>, <c>admin</c>) the key carries.</summary>
     public IList<string> Scopes { get; set; } = new List<string>();
 }

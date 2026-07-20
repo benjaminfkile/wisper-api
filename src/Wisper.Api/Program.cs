@@ -134,6 +134,10 @@ builder.Services.AddSingleton<AdminService>();
 
 var app = builder.Build();
 
+// One loud line naming the persistence backend (docs/DATA_MODEL.md §1): postgres, or the in-memory dev
+// mode (no connection string) whose state resets on restart and which must never be used in production.
+app.LogPersistenceMode();
+
 // Apply pending DB migrations before serving (docs/DATA_MODEL.md §1). Idempotent; a no-op when
 // no database is configured, so the app still boots for the tunnel.
 app.ApplyDatabaseMigrations();

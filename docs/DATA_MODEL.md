@@ -18,6 +18,11 @@ This is the authoritative schema for Wisper. It is built to be correct under con
 
 **Access & migrations.** Wisper (C#/ASP.NET Core) uses **Dapper + explicit SQL** with **DbUp**-managed, ordered, raw-SQL migrations — not a heavyweight ORM. Rationale: a financial ledger with constraint triggers and hand-tuned transactions wants explicit, reviewable SQL and no ORM surprises around isolation or lazy loading. (EF Core would be acceptable for the non-financial CRUD tables, but one access pattern across the service is simpler to reason about.)
 
+**Persistence backend (Postgres vs in-memory dev mode).** The backend is chosen at boot from `ConnectionStrings:Wisper`:
+
+- **Connection string present → Postgres** (the production path): the Dapper repositories over a pooled `NpgsqlDataSource`, DbUp migrations at startup, and the live DB health probe. This is the only mode production ever runs.
+- **Connection string unset → in-memory** (an explicit **dev mode**): in-memory doubles are registered for **every** repository in this document (users, hosts, host_images, api_keys, leases, lease_usage, ledger store, stripe_events, payouts, idempotency, platform_policy, audit), so the full `/v1` path runs with no Postgres. Migrations are a no-op. It is **loud** — one startup line, `persistence: in-memory (no connection string) — state resets on restart` (warning level), and the health report's `database` entry reads `in-memory` rather than pretending a database is healthy. **All state lives in process memory and resets on every restart — never for production.** See `DESIGN.md` §16.
+
 ## 2. Enum types
 
 ```sql

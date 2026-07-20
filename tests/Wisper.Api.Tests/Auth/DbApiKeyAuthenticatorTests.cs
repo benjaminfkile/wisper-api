@@ -1,8 +1,6 @@
-using Npgsql;
 using Wisper.Api.ApiKeys;
 using Wisper.Api.Auth;
 using Wisper.Api.Domain;
-using Wisper.Api.Persistence;
 using Wisper.Api.Persistence.ApiKeys;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
@@ -12,19 +10,15 @@ namespace Wisper.Api.Tests.Auth;
 
 /// <summary>
 /// Unit tests for <see cref="DbApiKeyAuthenticator"/> (docs/API.md §2): a presented <c>wck_</c> key is
-/// resolved to the owning user's principal by a hashed lookup against the api_keys table, roles come from
+/// resolved to the owning user's principal by a hashed lookup against the api_keys store, roles come from
 /// the key's stored scopes, and every fail-closed condition rejects — unknown key, revoked key, a
-/// suspended/missing owner, and a null/empty bearer. A DB-less boot degrades to the config allow-list. The
-/// <see cref="Db"/> is "configured" with a data source that is never opened (the in-memory doubles serve
-/// every lookup), so no Postgres is required — mirroring <c>DbHostTokenValidatorTests</c>.
+/// suspended/missing owner, and a null/empty bearer. A key the store does not hold degrades to the config
+/// allow-list. The in-memory doubles serve every lookup, so no Postgres is required — mirroring
+/// <c>DbHostTokenValidatorTests</c>.
 /// </summary>
 public class DbApiKeyAuthenticatorTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 20, 0, 0, 0, TimeSpan.Zero);
-
-    /// <summary>A configured <see cref="Db"/> whose data source is never opened by these tests.</summary>
-    private static Db ConfiguredDb() =>
-        new(new NpgsqlDataSourceBuilder("Host=127.0.0.1;Database=none;Username=none").Build());
 
     private static ConfigApiKeyAuthenticator Config(params (string key, string userId, string[] scopes)[] entries)
     {
@@ -66,9 +60,9 @@ public class DbApiKeyAuthenticatorTests
     }
 
     private static DbApiKeyAuthenticator Build(
-        InMemoryApiKeyRepository keys, InMemoryUserRepository users, Db db,
+        InMemoryApiKeyRepository keys, InMemoryUserRepository users,
         ConfigApiKeyAuthenticator? config = null, TimeProvider? time = null) =>
-        new(keys, users, db, time ?? new FakeTimeProvider(T0), config ?? Config());
+        new(keys, users, time ?? new FakeTimeProvider(T0), config ?? Config());
 
     [Fact]
     public async Task Resolves_an_active_key_to_the_owner_with_key_scopes()
@@ -77,7 +71,7 @@ public class DbApiKeyAuthenticatorTests
         var keys = new InMemoryApiKeyRepository();
         var owner = await SeedUser(users, "cognito-owner");
         var (_, token) = await SeedKey(keys, owner.Id, new[] { "consumer", "host" });
-        var authenticator = Build(keys, users, ConfiguredDb());
+        var authenticator = Build(keys, users);
 
         var principal = await authenticator.AuthenticateAsync(token);
 
@@ -97,7 +91,7 @@ public class DbApiKeyAuthenticatorTests
         var keys = new InMemoryApiKeyRepository();
         var owner = await SeedUser(users, "cognito-owner");
         var (_, token) = await SeedKey(keys, owner.Id, new[] { "host" }); // host only, no consumer
-        var authenticator = Build(keys, users, ConfiguredDb());
+        var authenticator = Build(keys, users);
 
         var principal = await authenticator.AuthenticateAsync(token);
 
@@ -114,7 +108,7 @@ public class DbApiKeyAuthenticatorTests
         var owner = await SeedUser(users, "cognito-owner");
         var (key, token) = await SeedKey(keys, owner.Id, new[] { "consumer" });
         var clock = new FakeTimeProvider(T0.AddHours(3));
-        var authenticator = Build(keys, users, ConfiguredDb(), time: clock);
+        var authenticator = Build(keys, users, time: clock);
 
         await authenticator.AuthenticateAsync(token);
 
@@ -125,7 +119,7 @@ public class DbApiKeyAuthenticatorTests
     [Fact]
     public async Task Unknown_key_fails_closed()
     {
-        var authenticator = Build(new InMemoryApiKeyRepository(), new InMemoryUserRepository(), ConfiguredDb());
+        var authenticator = Build(new InMemoryApiKeyRepository(), new InMemoryUserRepository());
 
         Assert.Null(await authenticator.AuthenticateAsync(ApiKeyToken.Issue().Token));
     }
@@ -137,7 +131,7 @@ public class DbApiKeyAuthenticatorTests
         var keys = new InMemoryApiKeyRepository();
         var owner = await SeedUser(users, "cognito-owner");
         var (_, token) = await SeedKey(keys, owner.Id, new[] { "consumer" }, revokedAt: T0.AddMinutes(5));
-        var authenticator = Build(keys, users, ConfiguredDb());
+        var authenticator = Build(keys, users);
 
         Assert.Null(await authenticator.AuthenticateAsync(token));
     }
@@ -151,7 +145,7 @@ public class DbApiKeyAuthenticatorTests
         var (_, token) = await SeedKey(keys, owner.Id, new[] { "consumer" });
         // The config allow-list holds the same raw token, to prove a recognized-but-suspended key never
         // falls through to the fallback.
-        var authenticator = Build(keys, users, ConfiguredDb(), Config((token, "cfg-user", new[] { "consumer" })));
+        var authenticator = Build(keys, users, Config((token, "cfg-user", new[] { "consumer" })));
 
         Assert.Null(await authenticator.AuthenticateAsync(token));
     }
@@ -162,7 +156,7 @@ public class DbApiKeyAuthenticatorTests
         var keys = new InMemoryApiKeyRepository();
         // Key owned by a user id with no matching row.
         var (_, token) = await SeedKey(keys, Guid.NewGuid(), new[] { "consumer" });
-        var authenticator = Build(keys, new InMemoryUserRepository(), ConfiguredDb());
+        var authenticator = Build(keys, new InMemoryUserRepository());
 
         Assert.Null(await authenticator.AuthenticateAsync(token));
     }
@@ -172,17 +166,17 @@ public class DbApiKeyAuthenticatorTests
     [InlineData("")]
     public async Task Null_or_empty_bearer_fails_closed(string? token)
     {
-        var authenticator = Build(new InMemoryApiKeyRepository(), new InMemoryUserRepository(), ConfiguredDb());
+        var authenticator = Build(new InMemoryApiKeyRepository(), new InMemoryUserRepository());
 
         Assert.Null(await authenticator.AuthenticateAsync(token));
     }
 
     [Fact]
-    public async Task Falls_back_to_config_on_a_db_less_boot()
+    public async Task Falls_back_to_config_when_the_store_does_not_hold_the_key()
     {
-        // Db.Unconfigured → the DB path is skipped and the config allow-list resolves the key.
+        // The store has no matching key → the lookup misses and the config allow-list resolves the key.
         var authenticator = Build(
-            new InMemoryApiKeyRepository(), new InMemoryUserRepository(), Db.Unconfigured,
+            new InMemoryApiKeyRepository(), new InMemoryUserRepository(),
             Config(("wck_live_dev", "dev-user", new[] { "consumer" })));
 
         var principal = await authenticator.AuthenticateAsync("wck_live_dev");

@@ -8,8 +8,8 @@ namespace Wisper.Api.Persistence;
 /// <summary>
 /// Liveness probe for PostgreSQL (docs/API.md §4). Behaviour by configuration:
 /// <list type="bullet">
-///   <item>no database configured → <see cref="HealthStatus.Healthy"/> with a "skipped" note, so
-///   the app still reports healthy and boots for the tunnel (graceful degrade, never a crash);</item>
+///   <item>no database configured → <see cref="HealthStatus.Healthy"/> reported as <c>in-memory</c>, so
+///   the DB-less dev mode is stated plainly rather than pretending a database is healthy (never a crash);</item>
 ///   <item>configured and reachable (a <c>SELECT 1</c> round-trips) → <see cref="HealthStatus.Healthy"/>;</item>
 ///   <item>configured but unreachable → <see cref="HealthStatus.Unhealthy"/> (the DB is expected but down).</item>
 /// </list>
@@ -28,7 +28,9 @@ public sealed class DbHealthCheck : IHealthCheck
     {
         if (!_db.TryGetDataSource(out var dataSource))
         {
-            return HealthCheckResult.Healthy("skipped: no database configured");
+            // No connection string → the in-memory persistence dev mode (docs/DATA_MODEL.md §1). Report it
+            // as such rather than pretending a database is healthy; state resets on restart.
+            return HealthCheckResult.Healthy("in-memory");
         }
 
         var started = Stopwatch.GetTimestamp();
