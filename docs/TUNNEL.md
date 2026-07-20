@@ -60,7 +60,8 @@ agent                                   Wisper
 1. **Dial + auth.** The agent opens `wss://<wisper-host>/agent` and sends the **host agent token** as an `Authorization: Bearer` header (a native WS client can set headers — unlike a browser). Bad/missing/revoked token → Wisper closes with a **4401** close code before any frames.
 2. **`hello` / `hello.ack`.** The agent advertises its capability — the wisp `GET /images` document (`images[]`, `default`, `limits`) plus versions. Wisper replies with the negotiated protocol version, a `sessionId`, and operational params (`pingIntervalMs`, `maxFrameBytes`). Prices live in Wisper, never here (`DESIGN.md` §1, §12).
 3. **Steady state.** Multiplexed lease ops + byte streams + `host.heartbeat` + ping/pong.
-4. **Close.** Graceful (WebSocket close frame with a code) or dead (missed pongs → §7). On any close Wisper marks the host `offline` and applies the disconnect policy (§8).
+3a. **Presence.** Once registered and `hello.ack` is sent, Wisper flips the host `online` **if** it clears the earning gate — the owner is Connect-enabled, or every enabled `host_image` is priced at `0` cents/min (`PAYMENTS.md` §5). A Connect-incomplete host with a priced image, or an admin-suspended host, stays `offline` (the agent is still connected and may test). This is the wiring that makes a live agent's host appear in the consumer catalog.
+4. **Close.** Graceful (WebSocket close frame with a code) or dead (missed pongs → §7). On a durable close Wisper marks the host `offline` and applies the disconnect policy (§8). A momentary blip resolved by a reconnect within grace, or a supersede (a new tunnel replacing the old for the same host), keeps the host `online` throughout.
 
 ### Close codes
 
@@ -152,7 +153,7 @@ Tunnel loss must be handled without either **billing a consumer through a blind 
 - Lease still present and healthy on the host → **resume**: back to `active`, **billing restarts**, consumer may reopen streams. The lease keeps its id, price snapshot, and usage ledger (leaseIds are Wisper-issued and stable across reconnects).
 - Lease no longer on the host (container died in a host crash/restart) → **end** it (`end_reason = container_lost`), finalize at last-healthy time.
 
-**On grace expiry (no reconnect):** end all that host's suspended leases (`end_reason = host_disconnect`), finalize billing at last-healthy time, mark the host `offline`. wisp's TTL guarantees the abandoned containers are reaped regardless.
+**On grace expiry (no reconnect):** end all that host's suspended leases (`end_reason = host_disconnect`), finalize billing at last-healthy time, mark the host `offline` (so the catalog drops it), stamping last-seen at last-healthy. wisp's TTL guarantees the abandoned containers are reaped regardless. A tunnel that closes with **no leases to protect** has nothing to wait for, so the host is marked `offline` immediately rather than arming an empty grace window. Marking `offline` never clears an admin **suspension** — a suspended host stays suspended.
 
 Reconciliation is an idempotent set-diff run on every reconnect, so repeated flaps converge correctly.
 
