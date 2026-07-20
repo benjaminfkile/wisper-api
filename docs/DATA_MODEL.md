@@ -256,6 +256,8 @@ Every flow is `Σ debit = Σ credit`. Debit/credit chosen by each account's norm
 
 The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper holds the estimated maximum out of the wallet (so the consumer is guaranteed able to pay for what they can consume), charges *actual* metered minutes out of the hold, and releases the remainder at end. A consumer literally cannot start a lease they can't afford, and a host is guaranteed funds exist for metered time.
 
+**Zero-priced images degenerate to zero flows.** A `price_cents_per_min = 0` image (a free tier or a self-hosted operator pricing their own box at cost) makes every figure above `0`: the `lease_hold`, each `lease_charge`, and the `hold_release` are all zero-amount and are therefore **skipped, not posted** — a `0=0` transaction carries no money and the balanced-entry trigger (d, above) exists to guard real movement, so writing one would be vacuous. A free lease thus never touches the ledger, and no balance can go negative from it (`PAYMENTS.md` §4).
+
 ## 9. Stripe integration
 
 - **Consumer side:** `users.stripe_customer_id`; top-ups create `payment_intent`s; the `topup` ledger txn is keyed by the Stripe event id.

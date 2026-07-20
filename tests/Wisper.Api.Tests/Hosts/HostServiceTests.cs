@@ -328,4 +328,61 @@ public class HostServiceTests
                 new PatchImageRequest(PriceCentsPerMin: 1, null, null, null, null, null, null)));
         Assert.Equal(ApiErrorCode.NotFound, ex.Code);
     }
+
+    [Fact]
+    public async Task ReplaceImages_accepts_a_zero_price_for_a_free_self_hosted_image()
+    {
+        // price 0 is a valid price (>= 0) so a self-hosted operator can list their own box at cost — the
+        // wallet gate then places a 0-cent hold and needs no funding (docs/PAYMENTS.md §4, docs/API.md §6).
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 0, new[] { "none", "open" }, 3600, null, null, null, true),
+        }));
+
+        Assert.Equal(0, Assert.Single(result.Data).PriceCentsPerMin); // accepted and persisted, not rejected
+        Assert.Equal(0, (await fx.Images.ListByHostAsync(host.Id))[0].PriceCentsPerMin);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_a_negative_price()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", -1, new[] { "none" }, 3600, null, null, null, true),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // nothing persisted on rejection
+    }
+
+    [Fact]
+    public async Task PatchImage_can_drop_a_paid_image_to_a_free_zero_price()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(PriceCentsPerMin: 0, null, null, null, null, null, null));
+
+        Assert.Equal(0, patched.PriceCentsPerMin);
+    }
 }
