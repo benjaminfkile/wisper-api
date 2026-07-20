@@ -2,6 +2,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Accounts;
 using Wisper.Api.Admin;
+using Wisper.Api.ApiKeys;
 using Wisper.Api.Auth;
 using Wisper.Api.Billing;
 using Wisper.Api.Catalog;
@@ -39,6 +40,12 @@ builder.Services.AddWisperAuth(builder.Configuration);
 // first authenticated call and backs the /v1/me identity/profile endpoints. Depends on the users
 // repository (P2.2) and the shared clock, both registered by AddWisperPersistence above.
 builder.Services.AddSingleton<IUserAccountService, UserAccountService>();
+
+// Self-serve API keys (docs/API.md §2, §5, P3.x): the /v1/me/api-keys lifecycle — mint (JWT-only,
+// scope-capped, shown once, hash-at-rest), list (prefix only), revoke (idempotent). Backs a machine
+// client driving the /v1 surface with one long-lived bearer. Behind the api_keys repository (registered
+// by AddWisperPersistence) + the shared clock; no Postgres needed to test.
+builder.Services.AddSingleton<ApiKeyService>();
 
 // Consumer catalog (docs/API.md §5, P4.1): reads online hosts and their priced, enabled images by
 // joining the host_images allow-list (P2.2) with the live tunnel registry — the authoritative source
@@ -185,6 +192,11 @@ v1.MapGet("/", () => Results.Json(new { service = "wisper-api", version = "v1" }
 // Consumer account surface (docs/API.md §5): GET/PATCH /v1/me, gated on the consumer role, which
 // bootstraps the caller's users row on first authenticated call.
 app.MapMeEndpoints();
+
+// Self-serve API-key surface (docs/API.md §5): POST/GET/DELETE /v1/me/api-keys, consumer-gated. Mint is
+// JWT-only (a key cannot mint more keys — privilege containment, §2) and scope-capped by the caller's roles;
+// the full key is shown once, stored hashed. List returns the prefix only; revoke is idempotent + 404-scoped.
+app.MapApiKeyEndpoints();
 
 // Consumer catalog surface (docs/API.md §5): GET /v1/catalog and GET /v1/hosts/:id, gated on the
 // consumer role, listing online hosts and their priced, enabled images from the live tunnel registry.
