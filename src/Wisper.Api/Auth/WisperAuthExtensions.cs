@@ -29,6 +29,13 @@ public static class WisperAuthExtensions
         services.TryAddSingleton<ISigningKeyProvider, JwksSigningKeyProvider>();
         services.TryAddSingleton<IJwtValidator, CognitoJwtValidator>();
 
+        // API-key auth (docs/API.md §2): a wck_ bearer resolves to its owner via a hashed lookup instead
+        // of JWT validation. The DB-backed authenticator falls back to the config allow-list on a DB-less
+        // boot — the same layering the tunnel's DbHostTokenValidator uses. The api_keys/users repositories
+        // it depends on are registered by AddWisperPersistence (called before this).
+        services.TryAddSingleton<ConfigApiKeyAuthenticator>();
+        services.TryAddSingleton<IApiKeyAuthenticator, DbApiKeyAuthenticator>();
+
         return services;
     }
 
