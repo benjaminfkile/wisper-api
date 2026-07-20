@@ -134,13 +134,17 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "network": "open",
   "resources": { "cpus": 2, "memory_mb": 4096, "pids": 1024 },
   "ttl_seconds": 3600,
-  "userdata": "apt-get install -y git && …" }
+  "userdata": "apt-get install -y git && …",
+  "env": { "API_TOKEN": "…", "REGION": "eu" } }
 // 201
 { "id": "lease_…", "status": "provisioning",
   "price_cents_per_min": 5, "currency": "usd",
-  "hold_cents": 300, "ttl_seconds": 3600, "created_at": "…Z" }
+  "hold_cents": 300, "ttl_seconds": 3600, "created_at": "…Z",
+  "os": "linux" }
 ```
-Server flow: validate image/network/resources against the host's priced allow-list → **place the wallet hold** (`PAYMENTS.md` §4; `402` if insufficient, and **no** `lease.create` frame is sent) → `lease.create` down the host tunnel → `201`. The client polls `GET /v1/leases/:id` (or subscribes via the events stream, below) until `status:"active"`.
+`env` is an **optional, opaque `{string:string}` map** of create-time environment variables forwarded down the host tunnel for secret injection (mirrors `POST /dev/leases`; `lease.create` frame, `TUNNEL.md` §5). Capped like wisp's own limits — at most **128** entries and **256 KiB** serialized, else `validation_error`. Its **values are secrets-in-transit**: never logged, never echoed in errors, and **never persisted** on the lease row (the lease snapshot keeps everything *except* `env`) — and it is **plaintext v1**, so treat it as trusted-network only (`TUNNEL.md` §13). `os` echoes the host's advertised container OS (`"linux"` | `"windows"`, or `null` when the host is offline / its agent advertised none) like `GET /v1/leases/:id` (task #316).
+
+Server flow: validate image/network/resources/env against the host's priced allow-list → **place the wallet hold** (`PAYMENTS.md` §4; `402` if insufficient, and **no** `lease.create` frame is sent) → `lease.create` down the host tunnel → `201`. The client polls `GET /v1/leases/:id` (or subscribes via the events stream, below) until `status:"active"`.
 
 **`GET /v1/leases/:id`**:
 ```json

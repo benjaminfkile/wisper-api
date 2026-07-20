@@ -7,7 +7,10 @@ namespace Wisper.Api.Leases;
 /// Body of <c>POST /v1/leases</c> (docs/API.md §5). All fields are nullable at the wire so the service
 /// can distinguish "omitted" from a supplied value and return a precise <c>validation_error</c>. The
 /// snapshots the lease keeps are resolved server-side from the referenced priced image, not trusted from
-/// the client — only <c>network</c>/<c>resources</c>/<c>ttl_seconds</c>/<c>userdata</c> are request inputs.
+/// the client — only <c>network</c>/<c>resources</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c> are
+/// request inputs. <see cref="Env"/> mirrors the dev harness's create-time env exactly (docs/TUNNEL.md
+/// §5): an optional, opaque <c>{string:string}</c> map forwarded down the tunnel for secret injection —
+/// its values are secrets-in-transit, so they are never logged, echoed in errors, or persisted (§13).
 /// </summary>
 public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("host_id")] string? HostId,
@@ -15,7 +18,8 @@ public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("network")] string? Network,
     [property: JsonPropertyName("resources")] LeaseResourcesRequest? Resources,
     [property: JsonPropertyName("ttl_seconds")] int? TtlSeconds,
-    [property: JsonPropertyName("userdata")] string? Userdata);
+    [property: JsonPropertyName("userdata")] string? Userdata,
+    [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null);
 
 /// <summary>Requested resource ceilings (docs/API.md §5); each is optional and validated against the image.</summary>
 public sealed record LeaseResourcesRequest(
@@ -26,7 +30,10 @@ public sealed record LeaseResourcesRequest(
 /// <summary>
 /// The <c>201</c> body of <c>POST /v1/leases</c> (docs/API.md §5): the new lease id plus the price and
 /// hold snapshot the client needs to reason about cost. The <see cref="Status"/> reflects the persisted
-/// lease state; the console then watches <c>GET /v1/leases/:id</c> for further transitions.
+/// lease state; the console then watches <c>GET /v1/leases/:id</c> for further transitions. <see cref="Os"/>
+/// carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>) like the dev endpoint and
+/// <see cref="LeaseView"/>, or <c>null</c> when the host is offline or its (older) agent advertised none —
+/// so the caller can adapt without a follow-up host fetch, and it never errors (task #316).
 /// </summary>
 public sealed record CreateLeaseResponse(
     [property: JsonPropertyName("id")] string Id,
@@ -35,9 +42,11 @@ public sealed record CreateLeaseResponse(
     [property: JsonPropertyName("currency")] string Currency,
     [property: JsonPropertyName("hold_cents")] long HoldCents,
     [property: JsonPropertyName("ttl_seconds")] int TtlSeconds,
-    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("os")] string? Os = null)
 {
-    /// <summary>Projects a freshly created lease + its hold estimate into the 201 wire shape.</summary>
+    /// <summary>Projects a freshly created lease + its hold estimate into the 201 wire shape, optionally
+    /// carrying the host's live container OS (null when offline/pre-os — surfacing only).</summary>
     public static CreateLeaseResponse From(LeaseCreationResult result)
     {
         var lease = result.Lease;
@@ -48,7 +57,8 @@ public sealed record CreateLeaseResponse(
             Currency: lease.Currency,
             HoldCents: result.HoldCents,
             TtlSeconds: lease.TtlSeconds,
-            CreatedAt: lease.CreatedAt);
+            CreatedAt: lease.CreatedAt,
+            Os: result.Os);
     }
 }
 
@@ -139,9 +149,10 @@ public sealed record LeaseListQuery
 
 /// <summary>
 /// The result of a successful lease-create: the persisted <see cref="Lease"/> plus the
-/// <see cref="HoldCents"/> the wallet gate authorized, which the 201 body echoes.
+/// <see cref="HoldCents"/> the wallet gate authorized, which the 201 body echoes, and the host's
+/// advertised container <see cref="Os"/> at create time (null when offline/pre-os — surfacing only, task #316).
 /// </summary>
-public sealed record LeaseCreationResult(Lease Lease, long HoldCents);
+public sealed record LeaseCreationResult(Lease Lease, long HoldCents, string? Os = null);
 
 /// <summary>
 /// Where a ready lease's exec/shell ops are driven on the tunnel (docs/API.md §7): the host id and the
