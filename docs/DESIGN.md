@@ -1,6 +1,6 @@
 # Wisper — Design Doc
 
-**Status:** Draft / v0 · **Stack:** C# / ASP.NET Core (Kestrel) manager · Go wisp agent · Next.js + MUI frontends · **raw WebSockets end-to-end** (no SignalR) · **Author:** Ben (with Claude)
+**Status:** Draft / v0 · **Stack:** C# / ASP.NET Core (Kestrel) manager · Go wisp agent · Next.js + MUI frontends · **raw WebSockets end-to-end** (no SignalR) · **Author:** Ben
 **One-liner:** Wisper is a hosted marketplace and control-plane for [wisp](../../wisp/docs/DESIGN.md). Hosts run wisp on their own machines and dial out to Wisper; consumers buy metered, per-minute container leases from any host; hosts get paid for the compute they rent out.
 
 ---
