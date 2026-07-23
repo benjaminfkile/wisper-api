@@ -130,6 +130,43 @@ public class InMemoryHostRepositoryTests
     }
 
     [Fact]
+    public async Task Create_defaults_isolation_to_shared()
+    {
+        var repo = new InMemoryHostRepository();
+
+        var created = await repo.CreateAsync(NewHost(Guid.NewGuid()));
+
+        Assert.Equal(new[] { "shared" }, created.IsolationLevels);
+        Assert.Equal("shared", created.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task SetAdvertisedIsolation_stores_levels_and_default_without_touching_presence()
+    {
+        var repo = new InMemoryHostRepository();
+        var created = await repo.CreateAsync(NewHost(Guid.NewGuid()) with { Status = HostStatus.Online });
+
+        var updated = await repo.SetAdvertisedIsolationAsync(
+            created.Id, new[] { "shared", "vm" }, "vm", T0.AddSeconds(30));
+
+        Assert.NotNull(updated);
+        Assert.Equal(new[] { "shared", "vm" }, updated!.IsolationLevels);
+        Assert.Equal("vm", updated.DefaultIsolation);
+        Assert.Equal(HostStatus.Online, updated.Status); // presence untouched
+        Assert.Equal(T0.AddSeconds(30), updated.UpdatedAt);
+        Assert.Equal(updated, await repo.GetByIdAsync(created.Id));
+    }
+
+    [Fact]
+    public async Task SetAdvertisedIsolation_of_a_missing_host_returns_null()
+    {
+        var repo = new InMemoryHostRepository();
+
+        Assert.Null(await repo.SetAdvertisedIsolationAsync(
+            Guid.NewGuid(), new[] { "shared" }, "shared", T0));
+    }
+
+    [Fact]
     public async Task Delete_removes_and_reports()
     {
         var repo = new InMemoryHostRepository();

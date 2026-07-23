@@ -17,6 +17,28 @@ public record HostHeartbeat : ControlEnvelope
 
     [JsonPropertyName("load")]
     public HostLoad? Load { get; init; }
+
+    /// <summary>
+    /// The host's advertised capability, if the heartbeat carries it (task #417). The <c>hello</c> is the
+    /// primary source; a heartbeat that re-advertises lets a host update its offered isolation without a
+    /// reconnect. Null when the heartbeat carries no capability (the common case).
+    /// </summary>
+    [JsonPropertyName("capability")]
+    public HeartbeatCapability? Capability { get; init; }
+}
+
+/// <summary>
+/// The optional capability block on a <see cref="HostHeartbeat"/> (task #417) — currently the advertised
+/// isolation levels and default, so a host can refresh them mid-session. Mirrors the snake_case wire
+/// fields the <c>hello.capability</c> uses.
+/// </summary>
+public record HeartbeatCapability
+{
+    [JsonPropertyName("isolation_levels")]
+    public IReadOnlyList<string> IsolationLevels { get; init; } = Array.Empty<string>();
+
+    [JsonPropertyName("default_isolation")]
+    public string? DefaultIsolation { get; init; }
 }
 
 /// <summary>A single live lease entry in a <see cref="HostHeartbeat"/>.</summary>

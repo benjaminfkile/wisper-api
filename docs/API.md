@@ -112,8 +112,10 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
     "price_cents_per_min": 5, "currency": "usd",
     "networks": ["none","open"], "max_ttl_seconds": 14400,
     "max_cpus": 4, "max_memory_mb": 8192 } ],
+  "isolation_levels": ["shared","vm"], "default_isolation": "shared",
   "online": true }
 ```
+`isolation_levels` are the sandbox levels this host offers and `default_isolation` the one it uses when a lease requests none, mirrored from the host's tunnel capability (`TUNNEL.md` §5, task #417). A host that advertises nothing (an older agent) surfaces `["shared"]` with default `"shared"`; the same two fields appear on `GET /v1/hosts/:id`. Levels are opaque strings, so a consumer can filter on the level it needs without the manager enumerating them.
 
 ### Leases
 | Method | Path | Auth extras | Notes |

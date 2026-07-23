@@ -93,6 +93,80 @@ public class HostPresenceServiceTests
     }
 
     [Fact]
+    public async Task Ready_persists_the_advertised_isolation_capability()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(
+            host.Id.ToString(), new[] { "shared", "vm" }, "vm");
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(HostStatus.Online, reloaded.Status);
+        Assert.Equal(new[] { "shared", "vm" }, reloaded.IsolationLevels);
+        Assert.Equal("vm", reloaded.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task Ready_defaults_an_older_agent_to_shared()
+    {
+        // An older agent advertises nothing (empty list, no default) → persisted as ["shared"]/"shared".
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(host.Id.ToString(), Array.Empty<string>(), null);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "shared" }, reloaded.IsolationLevels);
+        Assert.Equal("shared", reloaded.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task Refresh_updates_a_hosts_advertised_isolation()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None, status: HostStatus.Online);
+
+        await fx.Service.RefreshAdvertisedIsolationAsync(
+            host.Id.ToString(), new[] { "shared", "gvisor" }, "gvisor");
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "shared", "gvisor" }, reloaded.IsolationLevels);
+        Assert.Equal("gvisor", reloaded.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task Refresh_never_touches_a_suspended_host()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None, status: HostStatus.Suspended);
+
+        await fx.Service.RefreshAdvertisedIsolationAsync(
+            host.Id.ToString(), new[] { "shared", "vm" }, "vm");
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "shared" }, reloaded.IsolationLevels); // the seed default, untouched
+    }
+
+    [Fact]
+    public async Task Ready_surfaces_the_isolation_capability_in_the_catalog()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+        fx.Registry.SetOnline(host.Id);
+
+        await fx.Service.GoOnlineIfEligibleAsync(
+            host.Id.ToString(), new[] { "shared", "vm" }, "vm");
+
+        var item = Assert.Single((await fx.Catalog.ListAsync(new CatalogQuery())).Data);
+        Assert.Equal(new[] { "shared", "vm" }, item.IsolationLevels);
+        Assert.Equal("vm", item.DefaultIsolation);
+    }
+
+    [Fact]
     public async Task Ready_flips_online_for_a_connect_enabled_host_even_when_priced()
     {
         var fx = new Fixture();

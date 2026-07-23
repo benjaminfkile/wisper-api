@@ -52,6 +52,17 @@ public interface IHostRepository : IRepository
         Guid id, HostStatus status, DateTimeOffset? lastSeenAt, DateTimeOffset updatedAt,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Persists the host's advertised isolation capability (<c>isolation_levels</c> + <c>default_isolation</c>,
+    /// task #417) and bumps <c>updated_at</c> — the narrow write the tunnel lifecycle uses when an agent
+    /// (re)advertises. <paramref name="isolationLevels"/>/<paramref name="defaultIsolation"/> are expected
+    /// already normalized (see <see cref="Wisper.Api.Domain.HostIsolation.Normalize"/>). Returns the stored
+    /// row, or <c>null</c> if no such host. Presence columns are left untouched.
+    /// </summary>
+    Task<Host?> SetAdvertisedIsolationAsync(
+        Guid id, IReadOnlyList<string> isolationLevels, string defaultIsolation, DateTimeOffset updatedAt,
+        CancellationToken ct = default);
+
     /// <summary>Deletes a host (cascading to its images); <c>true</c> if a row was removed.</summary>
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 }

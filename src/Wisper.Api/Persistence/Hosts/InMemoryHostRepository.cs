@@ -59,7 +59,10 @@ public sealed class InMemoryHostRepository : InMemoryRepositoryBase<Guid, Host>,
 
     public Task<Host> CreateAsync(Host host, CancellationToken ct = default)
     {
-        var stored = host.Id == Guid.Empty ? host with { Id = Guid.NewGuid() } : host;
+        // Mirror the DB NOT NULL/default: a host that carries no advertised isolation stores ["shared"]/"shared".
+        var (levels, defaultIsolation) = HostIsolation.Normalize(host.IsolationLevels, host.DefaultIsolation);
+        var normalized = host with { IsolationLevels = levels, DefaultIsolation = defaultIsolation };
+        var stored = normalized.Id == Guid.Empty ? normalized with { Id = Guid.NewGuid() } : normalized;
         Insert(stored);
         return Task.FromResult(stored);
     }
@@ -88,6 +91,25 @@ public sealed class InMemoryHostRepository : InMemoryRepositoryBase<Guid, Host>,
         {
             Status = status,
             LastSeenAt = lastSeenAt ?? host.LastSeenAt,
+            UpdatedAt = updatedAt,
+        };
+        Upsert(updated);
+        return Task.FromResult<Host?>(updated);
+    }
+
+    public Task<Host?> SetAdvertisedIsolationAsync(
+        Guid id, IReadOnlyList<string> isolationLevels, string defaultIsolation, DateTimeOffset updatedAt,
+        CancellationToken ct = default)
+    {
+        if (Find(id) is not { } host)
+        {
+            return Task.FromResult<Host?>(null);
+        }
+
+        var updated = host with
+        {
+            IsolationLevels = isolationLevels,
+            DefaultIsolation = defaultIsolation,
             UpdatedAt = updatedAt,
         };
         Upsert(updated);

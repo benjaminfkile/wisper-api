@@ -30,7 +30,8 @@ public class CatalogServiceTests
 
         public async Task<Host> AddHostAsync(
             string name, string region, DateTimeOffset createdAt,
-            HostStatus status = HostStatus.Online, bool online = true, Guid? id = null, string? os = null)
+            HostStatus status = HostStatus.Online, bool online = true, Guid? id = null, string? os = null,
+            IReadOnlyList<string>? isolationLevels = null, string? defaultIsolation = null)
         {
             var host = await Hosts.CreateAsync(new Host
             {
@@ -40,6 +41,8 @@ public class CatalogServiceTests
                 Label = region,
                 Status = status,
                 AgentTokenHash = "hash",
+                IsolationLevels = isolationLevels ?? HostIsolation.SharedOnly,
+                DefaultIsolation = defaultIsolation ?? HostIsolation.Shared,
                 CreatedAt = createdAt,
                 UpdatedAt = createdAt,
             });
@@ -227,6 +230,49 @@ public class CatalogServiceTests
 
         Assert.Equal(new[] { a.Id, b.Id }, page.Data.Select(d => d.HostId));
         Assert.Null(page.NextCursor);
+    }
+
+    [Fact]
+    public async Task List_carries_the_hosts_advertised_isolation()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("iso-host", "us", T0, isolationLevels: new[] { "shared", "vm" },
+            defaultIsolation: "vm");
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.Equal(new[] { "shared", "vm" }, item.IsolationLevels);
+        Assert.Equal("vm", item.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task List_defaults_a_host_that_reported_nothing_to_shared()
+    {
+        var h = new Harness();
+        // A host whose row carries no advertised isolation still surfaces ["shared"]/"shared".
+        var host = await h.AddHostAsync("legacy-iso", "us", T0);
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.Equal(new[] { "shared" }, item.IsolationLevels);
+        Assert.Equal("shared", item.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task Get_host_carries_the_advertised_isolation()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("iso-detail", "eu", T0, isolationLevels: new[] { "shared", "gvisor" },
+            defaultIsolation: "gvisor");
+        await h.AddImageAsync(host.Id, "enabled:img", price: 7);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.Equal(new[] { "shared", "gvisor" }, detail!.IsolationLevels);
+        Assert.Equal("gvisor", detail.DefaultIsolation);
     }
 
     [Fact]

@@ -78,4 +78,16 @@ public class CatalogMigrationsTests
         Assert.Contains("CHECK (price_cents_per_min >= 0)", sql, StringComparison.Ordinal);
         Assert.Contains("UNIQUE (host_id, image_ref)", sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Host_isolation_migration_adds_the_capability_columns_with_shared_defaults()
+    {
+        var sql = ReadScript("0010_HostIsolation.sql");
+
+        Assert.Contains("ALTER TABLE hosts", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN isolation_levels  text[] NOT NULL DEFAULT ARRAY['shared']::text[]",
+            sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN default_isolation text   NOT NULL DEFAULT 'shared'",
+            sql, StringComparison.Ordinal);
+    }
 }
