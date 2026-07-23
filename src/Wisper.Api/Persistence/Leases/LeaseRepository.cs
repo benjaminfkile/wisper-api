@@ -15,7 +15,7 @@ namespace Wisper.Api.Persistence.Leases;
 public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
 {
     private const string Columns =
-        "id, consumer_user_id, host_id, host_image_id, image_ref, network::text AS network, cpus, " +
+        "id, consumer_user_id, host_id, host_image_id, image_ref, network::text AS network, isolation, cpus, " +
         "memory_mb, pids, ttl_seconds, price_cents_per_min, currency, status::text AS status, " +
         "end_reason::text AS end_reason, wisp_contract_id, hold_txn_id, created_at, started_at, " +
         "last_metered_at, billable_seconds, ended_at";
@@ -62,12 +62,12 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
     public async Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         const string sql = $"""
-            INSERT INTO leases (id, consumer_user_id, host_id, host_image_id, image_ref, network, cpus,
-                                memory_mb, pids, ttl_seconds, price_cents_per_min, currency, status,
+            INSERT INTO leases (id, consumer_user_id, host_id, host_image_id, image_ref, network, isolation,
+                                cpus, memory_mb, pids, ttl_seconds, price_cents_per_min, currency, status,
                                 end_reason, wisp_contract_id, hold_txn_id, created_at, started_at,
                                 last_metered_at, billable_seconds, ended_at)
             VALUES (COALESCE(@Id, gen_random_uuid()), @ConsumerUserId, @HostId, @HostImageId, @ImageRef,
-                    @Network::network_mode, @Cpus, @MemoryMb, @Pids, @TtlSeconds, @PriceCentsPerMin,
+                    @Network::network_mode, @Isolation, @Cpus, @MemoryMb, @Pids, @TtlSeconds, @PriceCentsPerMin,
                     @Currency, @Status::lease_status, @EndReason::lease_end_reason, @WispContractId,
                     @HoldTxnId, COALESCE(@CreatedAt, now()), @StartedAt, @LastMeteredAt, @BillableSeconds,
                     @EndedAt)
@@ -148,6 +148,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         lease.HostImageId,
         lease.ImageRef,
         Network = PgEnum.ToLabel(lease.Network),
+        lease.Isolation,
         lease.Cpus,
         lease.MemoryMb,
         lease.Pids,
@@ -178,6 +179,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         public Guid HostImageId { get; init; }
         public string ImageRef { get; init; } = string.Empty;
         public string Network { get; init; } = string.Empty;
+        public string Isolation { get; init; } = HostIsolation.Shared;
         public decimal? Cpus { get; init; }
         public int? MemoryMb { get; init; }
         public int? Pids { get; init; }
@@ -202,6 +204,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
             HostImageId = HostImageId,
             ImageRef = ImageRef,
             Network = PgEnum.Parse<NetworkMode>(Network),
+            Isolation = Isolation,
             Cpus = Cpus,
             MemoryMb = MemoryMb,
             Pids = Pids,

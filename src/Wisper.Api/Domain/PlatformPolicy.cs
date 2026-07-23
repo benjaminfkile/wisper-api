@@ -25,6 +25,14 @@ public sealed record PlatformPolicy
     public int? MaxTtlSecondsCap { get; init; }
 
     /// <summary>
+    /// The platform-wide <b>minimum isolation level</b> a lease may be created at (task #418): a floor over
+    /// the per-host advertised levels, using the ordered ranking <c>shared</c> &lt; <c>sandboxed</c> &lt;
+    /// <c>vm</c>. A request below this level is rejected with a validation error. <c>null</c> ⇒ no floor
+    /// (any requestable level is allowed, subject to the target host's advertised levels).
+    /// </summary>
+    public string? MinIsolation { get; init; }
+
+    /// <summary>
     /// Fraud guard — the <b>first-top-up hold</b> (docs/PAYMENTS.md §7): a cap in cents on a user's
     /// <i>first-ever</i> top-up, so a fresh account can't fund a large balance before any charge has
     /// materially cleared the dispute window. <c>null</c> ⇒ no first-top-up cap.

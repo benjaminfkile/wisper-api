@@ -4,6 +4,8 @@ using Wisper.Api.Leases;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
+using Wisper.Api.Persistence.Policy;
+using Wisper.Api.Policy;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
 using Xunit;
@@ -28,6 +30,7 @@ public class LeaseServiceTests
         public FakeTunnelRelay Relay { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public ILeaseWalletGate WalletGate { get; set; } = new AllowWalletGate();
+        public InMemoryPlatformPolicyRepository Policies { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
         public Guid ConsumerId { get; } = Guid.NewGuid();
 
@@ -35,7 +38,19 @@ public class LeaseServiceTests
         public HostImage? Image { get; private set; }
 
         public LeaseService Service() =>
-            new(Leases, Hosts, Images, Relay, Capabilities, WalletGate, Clock);
+            new(Leases, Hosts, Images, Relay, Capabilities, WalletGate,
+                new PlatformPolicyService(Policies, Clock), Clock);
+
+        /// <summary>Publishes a platform policy version setting the minimum isolation floor (task #418).</summary>
+        public Task SetMinIsolationAsync(string? minIsolation) =>
+            new PlatformPolicyService(Policies, Clock).PublishAsync(
+                new PlatformPolicy { FeeBps = 0, MinIsolation = minIsolation, EffectiveFrom = T0 });
+
+        /// <summary>Overwrites the seeded host's advertised isolation levels (task #417).</summary>
+        public async Task SetHostIsolationLevelsAsync(params string[] levels)
+        {
+            Host = await Hosts.UpdateAsync(Host! with { IsolationLevels = levels });
+        }
 
         /// <summary>Declares the live capability (optionally carrying the container OS) for the seeded host.</summary>
         public void SetHostOs(string? os) => Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
@@ -86,14 +101,16 @@ public class LeaseServiceTests
             string? network = "open",
             int? ttlSeconds = 3600,
             LeaseResourcesRequest? resources = null,
-            Dictionary<string, string>? env = null) => new(
+            Dictionary<string, string>? env = null,
+            string? isolation = null) => new(
             HostId: Host!.Id.ToString(),
             HostImageId: Image!.Id.ToString(),
             Network: network,
             Resources: resources,
             TtlSeconds: ttlSeconds,
             Userdata: "apt-get install -y git",
-            Env: env);
+            Env: env,
+            Isolation: isolation);
     }
 
     [Fact]
@@ -372,6 +389,109 @@ public class LeaseServiceTests
         // The env value is a secret-in-transit — it must never surface in the error message or details.
         var rendered = ex.Message + System.Text.Json.JsonSerializer.Serialize(ex.Details);
         Assert.DoesNotContain(big, rendered);
+    }
+
+    [Fact]
+    public async Task Create_defaults_isolation_to_shared_when_omitted()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: null));
+
+        Assert.Equal("shared", created.Lease.Isolation);
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.Equal("shared", spec.Isolation); // passes through the tunnel frame
+    }
+
+    [Theory]
+    [InlineData("sandboxed")]
+    [InlineData("vm")]
+    public async Task Create_accepts_a_known_isolation_level(string level)
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        await fx.SetHostIsolationLevelsAsync("shared", "sandboxed", "vm");
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: level));
+
+        Assert.Equal(level, created.Lease.Isolation);
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.Equal(level, spec.Isolation);
+    }
+
+    [Theory]
+    [InlineData("confidential")]
+    [InlineData("bogus")]
+    public async Task Create_rejects_confidential_and_unknown_isolation(string level)
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: level)));
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls); // rejected before any lease.create frame
+    }
+
+    [Fact]
+    public async Task Create_enforces_the_min_isolation_policy_floor()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        await fx.SetHostIsolationLevelsAsync("shared", "sandboxed", "vm");
+        await fx.SetMinIsolationAsync("sandboxed"); // policy floor
+
+        // 'shared' is below the floor → rejected.
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: "shared")));
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+
+        // At/above the floor is allowed.
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: "vm"));
+        Assert.Equal("vm", created.Lease.Isolation);
+    }
+
+    [Fact]
+    public async Task Create_rejects_a_level_the_target_host_cannot_provide()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        await fx.SetHostIsolationLevelsAsync("shared"); // host offers only shared
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: "vm")));
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Create_passes_through_when_the_host_advertises_no_isolation_levels()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        await fx.SetHostIsolationLevelsAsync(); // none recorded → wisp is the real boundary
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: "vm"));
+
+        Assert.Equal("vm", created.Lease.Isolation);
+    }
+
+    [Fact]
+    public async Task Create_persists_isolation_on_the_snapshot_and_surfaces_it_in_the_view()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        await fx.SetHostIsolationLevelsAsync("shared", "sandboxed");
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: "sandboxed"));
+
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal("sandboxed", stored!.Isolation);
+
+        var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
+        Assert.Equal("sandboxed", view!.Isolation);
     }
 
     [Fact]

@@ -13,7 +13,7 @@ public sealed class PlatformPolicyRepository : RepositoryBase, IPlatformPolicyRe
 {
     private const string SelectColumns =
         "id, fee_bps, min_topup_cents, max_concurrent_leases_per_user, max_ttl_seconds_cap, " +
-        "first_topup_max_cents, new_account_window_hours, new_account_max_topup_cents_per_day, " +
+        "min_isolation, first_topup_max_cents, new_account_window_hours, new_account_max_topup_cents_per_day, " +
         "max_spend_cents_per_day, effective_from, created_by";
 
     public PlatformPolicyRepository(Db db) : base(db)
@@ -24,11 +24,11 @@ public sealed class PlatformPolicyRepository : RepositoryBase, IPlatformPolicyRe
     {
         const string sql = $"""
             INSERT INTO platform_policy (id, fee_bps, min_topup_cents, max_concurrent_leases_per_user,
-                                         max_ttl_seconds_cap, first_topup_max_cents, new_account_window_hours,
-                                         new_account_max_topup_cents_per_day, max_spend_cents_per_day,
-                                         effective_from, created_by)
+                                         max_ttl_seconds_cap, min_isolation, first_topup_max_cents,
+                                         new_account_window_hours, new_account_max_topup_cents_per_day,
+                                         max_spend_cents_per_day, effective_from, created_by)
             VALUES (COALESCE(@Id, gen_random_uuid()), @FeeBps, @MinTopupCents, @MaxConcurrentLeasesPerUser,
-                    @MaxTtlSecondsCap, @FirstTopupMaxCents, @NewAccountWindowHours,
+                    @MaxTtlSecondsCap, @MinIsolation, @FirstTopupMaxCents, @NewAccountWindowHours,
                     @NewAccountMaxTopupCentsPerDay, @MaxSpendCentsPerDay,
                     COALESCE(@EffectiveFrom, now()), @CreatedBy)
             RETURNING {SelectColumns}
@@ -41,6 +41,7 @@ public sealed class PlatformPolicyRepository : RepositoryBase, IPlatformPolicyRe
             policy.MinTopupCents,
             policy.MaxConcurrentLeasesPerUser,
             policy.MaxTtlSecondsCap,
+            policy.MinIsolation,
             policy.FirstTopupMaxCents,
             policy.NewAccountWindowHours,
             policy.NewAccountMaxTopupCentsPerDay,

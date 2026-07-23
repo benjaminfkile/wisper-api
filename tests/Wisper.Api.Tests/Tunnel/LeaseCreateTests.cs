@@ -41,6 +41,41 @@ public class LeaseCreateTests
     }
 
     [Fact]
+    public void Isolation_serializes_under_the_isolation_key()
+    {
+        var frame = new LeaseCreate { Image = "alpine", Isolation = "vm" };
+
+        var json = ControlJson.Serialize(frame);
+        var root = JsonDocument.Parse(json).RootElement;
+
+        Assert.True(root.TryGetProperty("isolation", out var isolation));
+        Assert.Equal("vm", isolation.GetString());
+    }
+
+    [Fact]
+    public void Isolation_defaults_to_shared_on_the_wire()
+    {
+        var frame = new LeaseCreate { Image = "alpine" };
+
+        var json = ControlJson.Serialize(frame);
+        var root = JsonDocument.Parse(json).RootElement;
+
+        Assert.True(root.TryGetProperty("isolation", out var isolation));
+        Assert.Equal("shared", isolation.GetString());
+    }
+
+    [Fact]
+    public void Isolation_round_trips_through_deserialization()
+    {
+        var frame = new LeaseCreate { Isolation = "sandboxed" };
+
+        var back = ControlJson.Deserialize<LeaseCreate>(ControlJson.Serialize(frame));
+
+        Assert.NotNull(back);
+        Assert.Equal("sandboxed", back!.Isolation);
+    }
+
+    [Fact]
     public void Env_round_trips_through_deserialization()
     {
         var frame = new LeaseCreate

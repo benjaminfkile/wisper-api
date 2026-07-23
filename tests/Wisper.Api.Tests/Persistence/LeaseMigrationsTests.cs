@@ -79,6 +79,23 @@ public class LeaseMigrationsTests
     }
 
     [Fact]
+    public void Isolation_migration_adds_the_snapshot_column_and_policy_floor()
+    {
+        var scripts = MigrationRunner.DiscoverScripts();
+        Assert.Contains(scripts, s => s.EndsWith("0011_LeaseIsolation.sql", StringComparison.Ordinal));
+
+        var sql = ReadScript("0011_LeaseIsolation.sql");
+
+        // The immutable per-lease snapshot column, defaulted so existing rows backfill to 'shared'.
+        Assert.Contains("ALTER TABLE leases", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN isolation text NOT NULL DEFAULT 'shared'", sql, StringComparison.Ordinal);
+
+        // The admin-tunable minimum-isolation floor on platform_policy (nullable — no floor by default).
+        Assert.Contains("ALTER TABLE platform_policy", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN min_isolation text", sql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Lease_usage_table_has_money_checks_and_period_uniqueness()
     {
         var sql = ReadScript("0005_Leases.sql");

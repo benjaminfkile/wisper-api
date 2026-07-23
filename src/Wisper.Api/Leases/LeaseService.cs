@@ -4,6 +4,7 @@ using Wisper.Api.Infrastructure;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
+using Wisper.Api.Policy;
 using Wisper.Api.Tunnel;
 using Wisper.Api.Tunnel.Messages;
 
@@ -35,6 +36,7 @@ public sealed class LeaseService : ILeaseService
     private readonly ITunnelRelay _relay;
     private readonly IHostCapabilitySource _capabilities;
     private readonly ILeaseWalletGate _walletGate;
+    private readonly PlatformPolicyService _policy;
     private readonly TimeProvider _time;
 
     public LeaseService(
@@ -44,6 +46,7 @@ public sealed class LeaseService : ILeaseService
         ITunnelRelay relay,
         IHostCapabilitySource capabilities,
         ILeaseWalletGate walletGate,
+        PlatformPolicyService policy,
         TimeProvider time)
     {
         _leases = leases;
@@ -52,6 +55,7 @@ public sealed class LeaseService : ILeaseService
         _relay = relay;
         _capabilities = capabilities;
         _walletGate = walletGate;
+        _policy = policy;
         _time = time;
     }
 
@@ -88,6 +92,7 @@ public sealed class LeaseService : ILeaseService
         ValidateTtl(ttlSeconds, image);
         var resources = ValidateResources(request.Resources, image);
         ValidateEnv(request.Env);
+        var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
 
         // Wallet gate BEFORE any tunnel frame: no compute is provisioned that can't be paid for
         // (docs/DATA_MODEL.md §8, §14, docs/PAYMENTS.md §4). It also enforces the per-user concurrency cap
@@ -116,6 +121,9 @@ public sealed class LeaseService : ILeaseService
             },
             TtlSeconds = ttlSeconds,
             Userdata = request.Userdata,
+            // The resolved isolation level travels down the tunnel to the agent and wisp, which re-validates
+            // it as the real security boundary (task #418, docs/TUNNEL.md §5).
+            Isolation = isolation,
             // Create-time env is forwarded down the tunnel for secret injection, but never lands on the
             // lease snapshot below: env may carry secrets, exists only to provision the container, and is
             // out of scope for the metering/read surface (docs/TUNNEL.md §13). Guarded by ValidateEnv above.
@@ -145,6 +153,7 @@ public sealed class LeaseService : ILeaseService
             HostImageId = image.Id,
             ImageRef = image.ImageRef,
             Network = network,
+            Isolation = isolation,
             Cpus = resources.Cpus,
             MemoryMb = resources.MemoryMb,
             Pids = resources.Pids,
@@ -319,6 +328,50 @@ public sealed class LeaseService : ILeaseService
         }
 
         return ttl;
+    }
+
+    /// <summary>
+    /// Resolves and validates the lease's isolation level (task #418, docs/TUNNEL.md §5). An omitted/blank
+    /// request defaults to <see cref="HostIsolation.Shared"/>; <c>confidential</c> or any unknown value is
+    /// rejected. The resolved level must clear the <c>platform_policy.min_isolation</c> floor (ordered
+    /// <c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>) when one is configured, and — when the target
+    /// <paramref name="host"/> advertises isolation levels — must be one the host can provide (fail fast). A
+    /// host with no advertised levels recorded passes through: wisp re-validates as the real security boundary.
+    /// </summary>
+    private async Task<string> ResolveIsolationAsync(string? requested, Domain.Host host, CancellationToken ct)
+    {
+        var level = string.IsNullOrWhiteSpace(requested) ? HostIsolation.Shared : requested.Trim();
+        if (!HostIsolation.IsRequestable(level))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "Unknown 'isolation'.",
+                new { field = "isolation", allowed = HostIsolation.RequestLevels });
+        }
+
+        // Enforce the platform-wide minimum isolation floor when the active policy sets one (ordered rank).
+        var policy = await _policy.GetActiveAsync(ct);
+        if (policy?.MinIsolation is { } min && HostIsolation.RankOf(min) is var minRank and >= 0 &&
+            HostIsolation.RankOf(level) < minRank)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'isolation' is below the platform minimum.",
+                new { field = "isolation", min_isolation = min });
+        }
+
+        // When the host advertises isolation levels (task #417), the requested level must be one it can
+        // provide. A host with none recorded is allowed through — wisp is the real security boundary.
+        if (host.IsolationLevels.Count > 0 &&
+            !host.IsolationLevels.Contains(level, StringComparer.Ordinal))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "The host cannot provide the requested 'isolation'.",
+                new { field = "isolation", supported = host.IsolationLevels });
+        }
+
+        return level;
     }
 
     private static void ValidateNetwork(NetworkMode network, HostImage image)
