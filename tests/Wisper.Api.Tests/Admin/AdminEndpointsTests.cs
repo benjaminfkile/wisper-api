@@ -177,6 +177,37 @@ public class AdminEndpointsTests
     }
 
     [Fact]
+    public async Task Host_search_exposes_isolation_capabilities_without_the_token_hash()
+    {
+        var fx = new Fixture();
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.Hosts.CreateAsync(new Host
+        {
+            OwnerUserId = owner,
+            Name = "h1",
+            Status = HostStatus.Online,
+            AgentTokenHash = "super-secret-hash",
+            IsolationLevels = new[] { "shared", "vm" },
+            DefaultIsolation = "vm",
+            CreatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        });
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var page = await client.GetFromJsonAsync<HostPageDto>("/v1/admin/hosts");
+
+        var view = Assert.Single(page!.Data);
+        Assert.Equal(host.Id, view.Id);
+        Assert.Equal(new[] { "shared", "vm" }, view.IsolationLevels);
+        Assert.Equal("vm", view.DefaultIsolation);
+
+        // The agent token hash must never be exposed on the admin host view.
+        var raw = await client.GetStringAsync("/v1/admin/hosts");
+        Assert.DoesNotContain("super-secret-hash", raw);
+    }
+
+    [Fact]
     public async Task User_search_narrows_by_query()
     {
         var fx = new Fixture();
@@ -298,6 +329,13 @@ public class AdminEndpointsTests
     private sealed record UserDto(
         [property: JsonPropertyName("id")] Guid Id,
         [property: JsonPropertyName("email")] string Email);
+
+    private sealed record HostPageDto([property: JsonPropertyName("data")] IReadOnlyList<HostDto> Data);
+
+    private sealed record HostDto(
+        [property: JsonPropertyName("id")] Guid Id,
+        [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
+        [property: JsonPropertyName("default_isolation")] string DefaultIsolation);
 
     private sealed record AuditPageDto([property: JsonPropertyName("data")] IReadOnlyList<AuditDto> Data);
 

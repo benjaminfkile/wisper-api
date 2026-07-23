@@ -106,6 +106,8 @@ public sealed record HostAdminView(
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("label")] string? Label,
     [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
+    [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
     [property: JsonPropertyName("last_seen_at")] DateTimeOffset? LastSeenAt,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
 {
@@ -116,6 +118,8 @@ public sealed record HostAdminView(
         host.Name,
         host.Label,
         PgEnum.ToLabel(host.Status),
+        host.IsolationLevels,
+        host.DefaultIsolation,
         host.LastSeenAt,
         host.CreatedAt);
 }
