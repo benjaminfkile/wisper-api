@@ -49,7 +49,8 @@ agent                                   Wisper
   │◀─────────────────────────────────────────│  101 Switching Protocols
   │  {t:"hello", proto, agentVersion,         │
   │   wispVersion, capability:{images,        │
-  │   default, limits}}                       │
+  │   default, limits, os,                    │
+  │   isolation_levels, default_isolation}}   │
   │─────────────────────────────────────────▶│  register host, mark online,
   │◀─────────────────────────────────────────│  {t:"hello.ack", proto, sessionId,
   │                                           │   pingIntervalMs, maxFrameBytes}
@@ -58,7 +59,7 @@ agent                                   Wisper
 ```
 
 1. **Dial + auth.** The agent opens `wss://<wisper-host>/agent` and sends the **host agent token** as an `Authorization: Bearer` header (a native WS client can set headers — unlike a browser). Bad/missing/revoked token → Wisper closes with a **4401** close code before any frames.
-2. **`hello` / `hello.ack`.** The agent advertises its capability — the wisp `GET /images` document (`images[]`, `default`, `limits`) plus versions. Wisper replies with the negotiated protocol version, a `sessionId`, and operational params (`pingIntervalMs`, `maxFrameBytes`). Prices live in Wisper, never here (`DESIGN.md` §1, §12).
+2. **`hello` / `hello.ack`.** The agent advertises its capability — the wisp `GET /images` document (`images[]`, `default`, `limits`, `os`, and the effective `isolation_levels` / `default_isolation`) plus versions. Wisper replies with the negotiated protocol version, a `sessionId`, and operational params (`pingIntervalMs`, `maxFrameBytes`). Prices live in Wisper, never here (`DESIGN.md` §1, §12).
 3. **Steady state.** Multiplexed lease ops + byte streams + `host.heartbeat` + ping/pong.
 3a. **Presence.** Once registered and `hello.ack` is sent, Wisper flips the host `online` **if** it clears the earning gate — the owner is Connect-enabled, or every enabled `host_image` is priced at `0` cents/min (`PAYMENTS.md` §5). A Connect-incomplete host with a priced image, or an admin-suspended host, stays `offline` (the agent is still connected and may test). This is the wiring that makes a live agent's host appear in the consumer catalog.
 4. **Close.** Graceful (WebSocket close frame with a code) or dead (missed pongs → §7). On a durable close Wisper marks the host `offline` and applies the disconnect policy (§8). A momentary blip resolved by a reconnect within grace, or a supersede (a new tunnel replacing the old for the same host), keeps the host `online` throughout.
@@ -86,17 +87,17 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| A→W | `hello` | `proto, agentVersion, wispVersion, capability{images[],default,limits}, capacity{maxLeases,maxStreams}` | first frame after upgrade; `capacity` = how much this host will serve concurrently, **Wisper-enforced** (a lease/stream over capacity is refused with `error{code:"at_capacity"}` before it reaches the host) |
+| A→W | `hello` | `proto, agentVersion, wispVersion, capability{images[],default,limits,os,isolation_levels,default_isolation}, capacity{maxLeases,maxStreams}` | first frame after upgrade; `capacity` = how much this host will serve concurrently, **Wisper-enforced** (a lease/stream over capacity is refused with `error{code:"at_capacity"}` before it reaches the host). `capability.isolation_levels` / `default_isolation` are the host's effective isolation posture (from wisp `GET /images`), surfaced in `GET /v1/catalog` |
 | W→A | `hello.ack` | `proto, sessionId, pingIntervalMs, maxFrameBytes, initialWindowBytes, graceSeconds` | operational params: liveness cadence (§7), max binary payload, per-stream flow window (§9), disconnect grace (§8) |
 | A→W | `capability.update` | `capability{...}, capacity{...}?` | host changed its wisp allow-list/limits/capacity while online |
-| A→W | `host.heartbeat` | `leases:[{leaseId,wispContractId,status}], load?{cpu,mem,running}` | every ~15s; drives reconciliation (§8) |
+| A→W | `host.heartbeat` | `leases:[{leaseId,wispContractId,status}], load?{cpu,mem,running}, capability?{isolation_levels,default_isolation}` | every ~15s; drives reconciliation (§8). Optional `capability` lets a host refresh its offered isolation levels mid-session without reconnecting |
 | W→A | `error` | `rid?, sid?, code, message` | generic failure for a request/stream |
 
 ### Lease lifecycle
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| W→A | `lease.create` | `rid, leaseId, image, network, resources{cpus,memory_mb,pids}, ttlSeconds, userdata?, env?` | Wisper has already authorized + billing-gated. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
+| W→A | `lease.create` | `rid, leaseId, image, network, isolation, resources{cpus,memory_mb,pids}, ttlSeconds, userdata?, env?` | Wisper has already authorized + billing-gated. `isolation` is the resolved ordered level (`shared`<`sandboxed`<`vm`, defaults `shared`); the agent forwards it to wisp, which re-validates as the real security boundary. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
 | A→W | `lease.accepted` | `rid, leaseId, wispContractId, status:"provisioning"` | agent called wisp `POST /contracts` |
 | A→W | `lease.ready` | `leaseId` | wisp reached `ready`; **Wisper starts the meter here** |
 | A→W | `lease.failed` | `rid, leaseId, error` | provisioning/pull failed; nothing billed |
@@ -177,7 +178,7 @@ The agent is a thin translator. Each tunnel op maps to a wisp API call (`--wisp 
 
 | Tunnel | wisp call |
 |---|---|
-| `lease.create` | `POST /contracts {image,network,resources,ttl_seconds,userdata}` → keep `{contract_id, token}`; emit `lease.accepted`, then `lease.ready` when status hits `ready` |
+| `lease.create` | `POST /contracts {image,network,isolation,resources,ttl_seconds,userdata}` → keep `{contract_id, token}`; emit `lease.accepted`, then `lease.ready` when status hits `ready` |
 | `exec.run` | `POST /contracts/:id/exec {command}` (Bearer contract token) → `exec.result` |
 | `exec.open` | `POST /contracts/:id/exec?stream=1` → parse SSE, emit binary frames + `exec.exit` |
 | `shell.open` | `WS /contracts/:id/shell?token=<contract token>` → pipe bytes ↔ `sid` |

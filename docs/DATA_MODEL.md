@@ -89,6 +89,8 @@ Format `wck_live_<64-hex>` (256-bit CSPRNG). Lookup is `token_hash = … AND rev
 | `agent_token_prefix` | `text` | short non-secret prefix for identification/rotation UX |
 | `wisp_version` / `agent_version` | `text` | from `hello` |
 | `max_leases` / `max_streams` | `int` | advertised capacity, Wisper-enforced (`TUNNEL.md` §5) |
+| `isolation_levels` | `text[]` NOT NULL DEFAULT `ARRAY['shared']` | effective isolation levels the host offers, from the `hello`/`heartbeat` capability (`TUNNEL.md` §5); surfaced in `GET /v1/catalog`. Stored as free-form `text` (like `host_images.networks`), not an enum. Migration `0010_HostIsolation` |
+| `default_isolation` | `text` NOT NULL DEFAULT `'shared'` | level applied when a lease omits `isolation`. Migration `0010_HostIsolation` |
 | `last_seen_at` | `timestamptz` | last healthy heartbeat |
 | `created_at` / `updated_at` | `timestamptz` | |
 
@@ -124,6 +126,7 @@ CREATE TABLE leases (
   -- immutable snapshots taken at creation (host may reprice later)
   image_ref           text  NOT NULL,
   network             network_mode NOT NULL,
+  isolation           text  NOT NULL DEFAULT 'shared',  -- ordered shared<sandboxed<vm (migration 0011)
   cpus                numeric(6,3),
   memory_mb           integer,
   pids                integer,
@@ -317,6 +320,7 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 | `min_topup_cents` | `bigint` | |
 | `max_concurrent_leases_per_user` | `int` | |
 | `max_ttl_seconds_cap` | `int` | global ceiling over host limits |
+| `min_isolation` | `text` | global minimum isolation floor, NULL = no floor; a lease below it is rejected (`API.md`). Migration `0011_LeaseIsolation` |
 | `first_topup_max_cents` | `bigint` | fraud guard — first-top-up hold cap (`PAYMENTS.md` §7) |
 | `new_account_window_hours` | `int` | fraud guard — how long an account counts as "new" |
 | `new_account_max_topup_cents_per_day` | `bigint` | fraud guard — new-account top-up velocity (rolling 24h) |
