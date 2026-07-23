@@ -7,8 +7,12 @@ namespace Wisper.Api.Leases;
 /// Body of <c>POST /v1/leases</c> (docs/API.md §5). All fields are nullable at the wire so the service
 /// can distinguish "omitted" from a supplied value and return a precise <c>validation_error</c>. The
 /// snapshots the lease keeps are resolved server-side from the referenced priced image, not trusted from
-/// the client — only <c>network</c>/<c>resources</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c> are
-/// request inputs. <see cref="Env"/> mirrors the dev harness's create-time env exactly (docs/TUNNEL.md
+/// the client — only <c>network</c>/<c>resources</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c>/
+/// <c>isolation</c> are request inputs. <see cref="Isolation"/> is the optional requested sandbox level
+/// (<c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>, task #418): omitted → <c>shared</c>;
+/// <c>confidential</c>/unknown → <c>validation_error</c>; the service enforces the <c>min_isolation</c>
+/// policy ceiling and the target host's advertised levels before it reaches the tunnel. <see cref="Env"/>
+/// mirrors the dev harness's create-time env exactly (docs/TUNNEL.md
 /// §5): an optional, opaque <c>{string:string}</c> map forwarded down the tunnel for secret injection —
 /// its values are secrets-in-transit, so they are never logged, echoed in errors, or persisted (§13).
 /// </summary>
@@ -19,7 +23,8 @@ public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("resources")] LeaseResourcesRequest? Resources,
     [property: JsonPropertyName("ttl_seconds")] int? TtlSeconds,
     [property: JsonPropertyName("userdata")] string? Userdata,
-    [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null);
+    [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null,
+    [property: JsonPropertyName("isolation")] string? Isolation = null);
 
 /// <summary>Requested resource ceilings (docs/API.md §5); each is optional and validated against the image.</summary>
 public sealed record LeaseResourcesRequest(
@@ -94,6 +99,7 @@ public sealed record LeaseView(
     [property: JsonPropertyName("cost_cents_so_far")] long CostCentsSoFar,
     [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt,
     [property: JsonPropertyName("end_reason")] string? EndReason,
+    [property: JsonPropertyName("isolation")] string Isolation,
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a stored <see cref="Lease"/> into its read wire shape, optionally carrying the
@@ -114,6 +120,7 @@ public sealed record LeaseView(
         CostCentsSoFar: RunningCostCents(lease),
         ExpiresAt: ExpiresAtOf(lease),
         EndReason: lease.EndReason is { } reason ? PgEnum.ToSnakeLabel(reason) : null,
+        Isolation: lease.Isolation,
         Os: os);
 
     /// <summary>

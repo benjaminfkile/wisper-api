@@ -137,6 +137,7 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "resources": { "cpus": 2, "memory_mb": 4096, "pids": 1024 },
   "ttl_seconds": 3600,
   "userdata": "apt-get install -y git && …",
+  "isolation": "sandboxed",
   "env": { "API_TOKEN": "…", "REGION": "eu" } }
 // 201
 { "id": "lease_…", "status": "provisioning",
@@ -144,9 +145,11 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "hold_cents": 300, "ttl_seconds": 3600, "created_at": "…Z",
   "os": "linux" }
 ```
+`isolation` is the **optional** requested sandbox level, ordered `shared` < `sandboxed` < `vm` (`TUNNEL.md` §5, task #418). Omitted → `shared`; `confidential` or any unknown value → `validation_error`. It is resolved and validated server-side — against the admin-tunable `platform_policy.min_isolation` floor and, when the target host advertises isolation levels (task #417), against the levels that host can provide (a host with none recorded passes through, since wisp re-validates as the real security boundary) — then snapshotted immutably on the lease, returned on `GET /v1/leases/:id`, and forwarded on the `lease.create` frame.
+
 `env` is an **optional, opaque `{string:string}` map** of create-time environment variables forwarded down the host tunnel for secret injection (mirrors `POST /dev/leases`; `lease.create` frame, `TUNNEL.md` §5). Capped like wisp's own limits — at most **128** entries and **256 KiB** serialized, else `validation_error`. Its **values are secrets-in-transit**: never logged, never echoed in errors, and **never persisted** on the lease row (the lease snapshot keeps everything *except* `env`) — and it is **plaintext v1**, so treat it as trusted-network only (`TUNNEL.md` §13). `os` echoes the host's advertised container OS (`"linux"` | `"windows"`, or `null` when the host is offline / its agent advertised none) like `GET /v1/leases/:id` (task #316).
 
-Server flow: validate image/network/resources/env against the host's priced allow-list → **place the wallet hold** (`PAYMENTS.md` §4; `402` if insufficient, and **no** `lease.create` frame is sent) → `lease.create` down the host tunnel → `201`. The client polls `GET /v1/leases/:id` (or subscribes via the events stream, below) until `status:"active"`.
+Server flow: validate image/network/resources/isolation/env against the host's priced allow-list → **place the wallet hold** (`PAYMENTS.md` §4; `402` if insufficient, and **no** `lease.create` frame is sent) → `lease.create` down the host tunnel → `201`. The client polls `GET /v1/leases/:id` (or subscribes via the events stream, below) until `status:"active"`.
 
 **`GET /v1/leases/:id`**:
 ```json
@@ -154,7 +157,7 @@ Server flow: validate image/network/resources/env against the host's priced allo
   "network":"open","resources":{…},"ttl_seconds":3600,
   "price_cents_per_min":5,"currency":"usd",
   "started_at":"…Z","billable_seconds":742,"cost_cents_so_far":62,
-  "expires_at":"…Z","end_reason":null }
+  "expires_at":"…Z","end_reason":null,"isolation":"sandboxed" }
 ```
 
 ### Billing

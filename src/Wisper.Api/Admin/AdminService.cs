@@ -128,6 +128,18 @@ public sealed class AdminService
         ValidateNonNegative(request.NewAccountMaxTopupCentsPerDay, "new_account_max_topup_cents_per_day");
         ValidateNonNegative(request.MaxSpendCentsPerDay, "max_spend_cents_per_day");
 
+        // The min-isolation floor must be a requestable level (shared/sandboxed/vm) — confidential or an
+        // unknown value could never be satisfied by a lease request (task #418). A blank value is normalized
+        // to "no floor" so the field can be cleared.
+        var minIsolation = string.IsNullOrWhiteSpace(request.MinIsolation) ? null : request.MinIsolation.Trim();
+        if (minIsolation is not null && !HostIsolation.IsRequestable(minIsolation))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'min_isolation' must be one of the requestable levels.",
+                new { field = "min_isolation", allowed = HostIsolation.RequestLevels });
+        }
+
         var previous = await _policy.GetActiveAsync(ct);
 
         var published = await _policy.PublishAsync(new PlatformPolicy
@@ -136,6 +148,7 @@ public sealed class AdminService
             MinTopupCents = request.MinTopupCents ?? 0,
             MaxConcurrentLeasesPerUser = request.MaxConcurrentLeasesPerUser,
             MaxTtlSecondsCap = request.MaxTtlSecondsCap,
+            MinIsolation = minIsolation,
             FirstTopupMaxCents = request.FirstTopupMaxCents,
             NewAccountWindowHours = request.NewAccountWindowHours,
             NewAccountMaxTopupCentsPerDay = request.NewAccountMaxTopupCentsPerDay,

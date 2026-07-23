@@ -34,6 +34,15 @@ public record LeaseCreate : ControlEnvelope
     public string? Userdata { get; init; }
 
     /// <summary>
+    /// The resolved sandbox isolation level for this lease (task #418, wire key <c>isolation</c>):
+    /// <c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>. Wisper resolves and validates it before the frame
+    /// is sent (omitted request → <c>shared</c>), and the agent forwards it to wisp, which re-validates as the
+    /// real security boundary. Always present on the wire; defaults to <c>shared</c>.
+    /// </summary>
+    [JsonPropertyName("isolation")]
+    public string Isolation { get; init; } = Domain.HostIsolation.Shared;
+
+    /// <summary>
     /// Optional, opaque create-time environment variables forwarded down the tunnel with the
     /// lease (generic key→value; never provider-specific). Omitted from the wire when null
     /// (<see cref="ControlJson.Options"/> ignores null). Values are secrets-in-transit — never log

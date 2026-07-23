@@ -29,6 +29,14 @@ public sealed record Lease
     /// <summary>Snapshot: the network mode booked for this lease.</summary>
     public NetworkMode Network { get; init; }
 
+    /// <summary>
+    /// Snapshot: the resolved isolation level booked for this lease (task #418, wire field
+    /// <c>isolation</c>). One of <c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>, resolved server-side at
+    /// create time (omitted request → <see cref="HostIsolation.Shared"/>) after the <c>min_isolation</c>
+    /// policy ceiling and the target host's advertised levels are enforced; immutable thereafter.
+    /// </summary>
+    public string Isolation { get; init; } = HostIsolation.Shared;
+
     /// <summary>Snapshot: CPU ceiling (<c>numeric(6,3)</c>), if set.</summary>
     public decimal? Cpus { get; init; }
 
