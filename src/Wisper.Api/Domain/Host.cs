@@ -41,6 +41,20 @@ public sealed record Host
     /// <summary>Advertised concurrent-stream capacity, Wisper-enforced (docs/TUNNEL.md §5).</summary>
     public int? MaxStreams { get; init; }
 
+    /// <summary>
+    /// The isolation levels this host offers, from its agent capability report (docs/TUNNEL.md §5, wire
+    /// field <c>isolation_levels</c>, task #417). Defaults to <c>["shared"]</c> for a host that reports
+    /// nothing (an older agent); surfaced in the catalog so a consumer can filter by level.
+    /// </summary>
+    public IReadOnlyList<string> IsolationLevels { get; init; } = HostIsolation.SharedOnly;
+
+    /// <summary>
+    /// The isolation level this host places a lease in when none is requested (wire field
+    /// <c>default_isolation</c>). Always one of <see cref="IsolationLevels"/>; <c>"shared"</c> for a host
+    /// that reports nothing.
+    /// </summary>
+    public string DefaultIsolation { get; init; } = HostIsolation.Shared;
+
     /// <summary>Last healthy heartbeat time (UTC).</summary>
     public DateTimeOffset? LastSeenAt { get; init; }
 

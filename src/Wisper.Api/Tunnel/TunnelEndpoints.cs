@@ -111,9 +111,26 @@ public static class TunnelEndpoints
             ControlFrameRouter = relay.RouteAgentFrameAsync,
 
             // Route each heartbeat's live lease list into the disconnect coordinator so a reconnect
-            // reconciles the suspended set via set-diff (docs/TUNNEL.md §8).
-            HeartbeatRouter = (conn, heartbeat, hbCt) =>
-                coordinator.OnHeartbeatAsync(conn.HostId, ParseLiveLeaseIds(heartbeat), hbCt),
+            // reconciles the suspended set via set-diff (docs/TUNNEL.md §8). A heartbeat that re-advertises
+            // capability also refreshes the host's persisted isolation levels (task #417) — fail-safe: a
+            // refresh hiccup must never disturb lease reconciliation or the tunnel.
+            HeartbeatRouter = async (conn, heartbeat, hbCt) =>
+            {
+                await coordinator.OnHeartbeatAsync(conn.HostId, ParseLiveLeaseIds(heartbeat), hbCt);
+                if (heartbeat.Capability is { } cap)
+                {
+                    try
+                    {
+                        await presence.RefreshAdvertisedIsolationAsync(
+                            conn.HostId, cap.IsolationLevels, cap.DefaultIsolation, hbCt);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogError(
+                            ex, "agent tunnel: refreshing host {HostId} isolation from heartbeat failed", conn.HostId);
+                    }
+                }
+            },
         };
 
         logger.LogInformation(
@@ -149,7 +166,8 @@ public static class TunnelEndpoints
             // zero-priced — task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
             try
             {
-                await presence.GoOnlineIfEligibleAsync(hostId, ct);
+                await presence.GoOnlineIfEligibleAsync(
+                    hostId, hello.Capability.IsolationLevels, hello.Capability.DefaultIsolation, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

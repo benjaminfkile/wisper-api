@@ -48,7 +48,11 @@ public sealed class HostPresenceService : IHostPresence
     }
 
     /// <inheritdoc />
-    public async Task GoOnlineIfEligibleAsync(string hostId, CancellationToken ct = default)
+    public async Task GoOnlineIfEligibleAsync(
+        string hostId,
+        IReadOnlyList<string>? isolationLevels = null,
+        string? defaultIsolation = null,
+        CancellationToken ct = default)
     {
         if (!Guid.TryParse(hostId, out var id))
         {
@@ -66,6 +70,15 @@ public sealed class HostPresenceService : IHostPresence
         {
             _logger.LogInformation("host {HostId} tunnel ready but suspended — staying offline", id);
             return;
+        }
+
+        // Persist the advertised isolation capability from this hello regardless of the earning gate, so the
+        // catalog reflects what the (online-or-not-yet) host offers. An older agent advertises nothing, which
+        // normalizes to ["shared"]/"shared" (task #417). A pre-#417 caller passes null/null and skips this.
+        if (isolationLevels is not null || defaultIsolation is not null)
+        {
+            var (levels, def) = HostIsolation.Normalize(isolationLevels, defaultIsolation);
+            await _hosts.SetAdvertisedIsolationAsync(id, levels, def, _time.GetUtcNow(), ct);
         }
 
         var connectStatus = (await _users.GetByIdAsync(host.OwnerUserId, ct))?.ConnectStatus
@@ -99,5 +112,33 @@ public sealed class HostPresenceService : IHostPresence
         await _hosts.SetOnlineStateAsync(
             hostId, HostStatus.Offline, lastSeenAt: lastHealthyAt, updatedAt: _time.GetUtcNow(), ct);
         _logger.LogInformation("host {HostId} offline (tunnel lost)", hostId);
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshAdvertisedIsolationAsync(
+        string hostId,
+        IReadOnlyList<string>? isolationLevels,
+        string? defaultIsolation,
+        CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(hostId, out var id))
+        {
+            return; // dev/no-DB tunnel host id — no row to refresh
+        }
+
+        // Never resurrect isolation on a suspended host, and a missing host has nothing to refresh.
+        if (await _hosts.GetByIdAsync(id, ct) is not { } host || host.Status == HostStatus.Suspended)
+        {
+            return;
+        }
+
+        var (levels, def) = HostIsolation.Normalize(isolationLevels, defaultIsolation);
+        if (def == host.DefaultIsolation && levels.SequenceEqual(host.IsolationLevels, StringComparer.Ordinal))
+        {
+            return; // no change — avoid a pointless write (and updated_at churn) every heartbeat
+        }
+
+        await _hosts.SetAdvertisedIsolationAsync(id, levels, def, _time.GetUtcNow(), ct);
+        _logger.LogInformation("host {HostId} advertised isolation refreshed", id);
     }
 }

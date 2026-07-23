@@ -51,16 +51,26 @@ public sealed record CatalogItem(
     [property: JsonPropertyName("region")] string? Region,
     [property: JsonPropertyName("images")] IReadOnlyList<CatalogImage> Images,
     [property: JsonPropertyName("online")] bool Online,
+    [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
+    [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a host plus its already-filtered priced images into the catalog wire shape.</summary>
-    public static CatalogItem From(Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null) => new(
-        HostId: host.Id,
-        Label: host.Name,
-        Region: host.Label,
-        Images: images,
-        Online: online,
-        Os: os);
+    public static CatalogItem From(Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null)
+    {
+        // Surface the persisted advertised isolation, normalized so a legacy row that stored nothing still
+        // reads as ["shared"]/"shared" — a consumer can filter on the level without a separate fetch (task #417).
+        var (levels, defaultIsolation) = HostIsolation.Normalize(host.IsolationLevels, host.DefaultIsolation);
+        return new(
+            HostId: host.Id,
+            Label: host.Name,
+            Region: host.Label,
+            Images: images,
+            Online: online,
+            IsolationLevels: levels,
+            DefaultIsolation: defaultIsolation,
+            Os: os);
+    }
 }
 
 /// <summary>
@@ -83,14 +93,22 @@ public sealed record HostDetail(
     [property: JsonPropertyName("region")] string? Region,
     [property: JsonPropertyName("online")] bool Online,
     [property: JsonPropertyName("images")] IReadOnlyList<CatalogImage> Images,
+    [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
+    [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a host plus its enabled priced images into the host-detail wire shape.</summary>
-    public static HostDetail From(Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null) => new(
-        HostId: host.Id,
-        Label: host.Name,
-        Region: host.Label,
-        Online: online,
-        Images: images,
-        Os: os);
+    public static HostDetail From(Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null)
+    {
+        var (levels, defaultIsolation) = HostIsolation.Normalize(host.IsolationLevels, host.DefaultIsolation);
+        return new(
+            HostId: host.Id,
+            Label: host.Name,
+            Region: host.Label,
+            Online: online,
+            Images: images,
+            IsolationLevels: levels,
+            DefaultIsolation: defaultIsolation,
+            Os: os);
+    }
 }

@@ -49,6 +49,21 @@ public record HelloCapability
     [JsonPropertyName("os")]
     public string? Os { get; init; }
 
+    /// <summary>
+    /// The sandbox isolation levels this host offers (snake_case wire field <c>isolation_levels</c>,
+    /// task #417). Opaque strings mirrored from the agent's capability report; empty for an older agent
+    /// that does not advertise them, which the manager treats as <c>["shared"]</c>.
+    /// </summary>
+    [JsonPropertyName("isolation_levels")]
+    public IReadOnlyList<string> IsolationLevels { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The isolation level this host uses when a lease requests none (snake_case wire field
+    /// <c>default_isolation</c>). Null/absent for an older agent, normalized to <c>"shared"</c>.
+    /// </summary>
+    [JsonPropertyName("default_isolation")]
+    public string? DefaultIsolation { get; init; }
+
     [JsonPropertyName("limits")]
     public HelloLimits Limits { get; init; } = new();
 }
