@@ -95,6 +95,8 @@ public sealed record HostDetail(
     [property: JsonPropertyName("images")] IReadOnlyList<CatalogImage> Images,
     [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
     [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
+    [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+    [property: JsonPropertyName("gpu_count")] int GpuCount,
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a host plus its enabled priced images into the host-detail wire shape.</summary>
@@ -109,6 +111,10 @@ public sealed record HostDetail(
             Images: images,
             IsolationLevels: levels,
             DefaultIsolation: defaultIsolation,
+            // The advertised GPU, surfaced read-only (task #521); catalog-list surfacing + filters land in
+            // task #523. Normalized so a legacy row still reads as an empty class list.
+            GpuClasses: HostGpu.NormalizeClasses(host.GpuClasses),
+            GpuCount: Math.Max(0, host.GpuCount),
             Os: os);
     }
 }

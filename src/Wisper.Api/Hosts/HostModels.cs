@@ -50,6 +50,8 @@ public sealed record HostSummary(
     [property: JsonPropertyName("agent_version")] string? AgentVersion,
     [property: JsonPropertyName("max_leases")] int? MaxLeases,
     [property: JsonPropertyName("max_streams")] int? MaxStreams,
+    [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+    [property: JsonPropertyName("gpu_count")] int GpuCount,
     [property: JsonPropertyName("agent_token_prefix")] string? AgentTokenPrefix,
     [property: JsonPropertyName("last_seen_at")] DateTimeOffset? LastSeenAt,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
@@ -64,6 +66,9 @@ public sealed record HostSummary(
         AgentVersion: host.AgentVersion,
         MaxLeases: host.MaxLeases,
         MaxStreams: host.MaxStreams,
+        // The advertised GPU, surfaced read-only (task #521) — opaque classes + total device count.
+        GpuClasses: host.GpuClasses,
+        GpuCount: host.GpuCount,
         AgentTokenPrefix: host.AgentTokenPrefix,
         LastSeenAt: host.LastSeenAt,
         CreatedAt: host.CreatedAt);

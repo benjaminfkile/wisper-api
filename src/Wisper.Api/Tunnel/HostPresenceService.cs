@@ -52,6 +52,8 @@ public sealed class HostPresenceService : IHostPresence
         string hostId,
         IReadOnlyList<string>? isolationLevels = null,
         string? defaultIsolation = null,
+        IReadOnlyList<string>? gpuClasses = null,
+        int gpuCount = 0,
         CancellationToken ct = default)
     {
         if (!Guid.TryParse(hostId, out var id))
@@ -79,6 +81,15 @@ public sealed class HostPresenceService : IHostPresence
         {
             var (levels, def) = HostIsolation.Normalize(isolationLevels, defaultIsolation);
             await _hosts.SetAdvertisedIsolationAsync(id, levels, def, _time.GetUtcNow(), ct);
+        }
+
+        // Persist the advertised GPU capability from this hello the same way (task #521). A null gpuClasses is
+        // an absent gpu block (an older agent) — leave the persisted GPU as-is rather than nulling it; a
+        // present-but-empty list is a GPU-aware agent reporting no devices, which resets to []/0.
+        if (gpuClasses is not null)
+        {
+            await _hosts.SetAdvertisedGpuAsync(
+                id, HostGpu.NormalizeClasses(gpuClasses), Math.Max(0, gpuCount), _time.GetUtcNow(), ct);
         }
 
         var connectStatus = (await _users.GetByIdAsync(host.OwnerUserId, ct))?.ConnectStatus
@@ -140,5 +151,34 @@ public sealed class HostPresenceService : IHostPresence
 
         await _hosts.SetAdvertisedIsolationAsync(id, levels, def, _time.GetUtcNow(), ct);
         _logger.LogInformation("host {HostId} advertised isolation refreshed", id);
+    }
+
+    /// <inheritdoc />
+    public async Task RefreshAdvertisedGpuAsync(
+        string hostId,
+        IReadOnlyList<string>? gpuClasses,
+        int gpuCount,
+        CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(hostId, out var id))
+        {
+            return; // dev/no-DB tunnel host id — no row to refresh
+        }
+
+        // Never resurrect GPU on a suspended host, and a missing host has nothing to refresh.
+        if (await _hosts.GetByIdAsync(id, ct) is not { } host || host.Status == HostStatus.Suspended)
+        {
+            return;
+        }
+
+        var classes = HostGpu.NormalizeClasses(gpuClasses);
+        var count = Math.Max(0, gpuCount);
+        if (count == host.GpuCount && classes.SequenceEqual(host.GpuClasses, StringComparer.Ordinal))
+        {
+            return; // no change — avoid a pointless write (and updated_at churn) every heartbeat
+        }
+
+        await _hosts.SetAdvertisedGpuAsync(id, classes, count, _time.GetUtcNow(), ct);
+        _logger.LogInformation("host {HostId} advertised GPU refreshed", id);
     }
 }

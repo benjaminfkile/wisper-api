@@ -18,12 +18,16 @@ public interface IHostPresence
     /// <paramref name="hostId"/> to <see cref="HostStatus.Online"/> when it clears the earning gate (owner
     /// Connect-enabled, or every enabled image is zero-priced). A suspended host, an earning-gated host, an
     /// unknown host, or a non-Guid dev host id all leave presence untouched. Passing <c>null</c> for both
-    /// isolation arguments leaves the persisted capability as-is (the pre-#417 call shape).
+    /// isolation arguments leaves the persisted isolation as-is (the pre-#417 call shape); likewise passing
+    /// <c>null</c> for <paramref name="gpuClasses"/> (an absent <c>gpu</c> block — an older agent) leaves the
+    /// persisted GPU capability as-is rather than nulling it (task #521).
     /// </summary>
     Task GoOnlineIfEligibleAsync(
         string hostId,
         IReadOnlyList<string>? isolationLevels = null,
         string? defaultIsolation = null,
+        IReadOnlyList<string>? gpuClasses = null,
+        int gpuCount = 0,
         CancellationToken ct = default);
 
     /// <summary>
@@ -35,6 +39,19 @@ public interface IHostPresence
         string hostId,
         IReadOnlyList<string>? isolationLevels,
         string? defaultIsolation,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Refreshes a host's persisted advertised GPU capability (<c>gpu_classes</c> + <c>gpu_count</c>) from a
+    /// mid-session source (a heartbeat that re-advertises its <c>gpu</c> block, task #521) — the GPU sibling
+    /// of <see cref="RefreshAdvertisedIsolationAsync"/>. Normalizes the classes (distinct), skips the write
+    /// when nothing changed, and never touches presence. A suspended, unknown, or non-Guid dev host id is a
+    /// no-op.
+    /// </summary>
+    Task RefreshAdvertisedGpuAsync(
+        string hostId,
+        IReadOnlyList<string>? gpuClasses,
+        int gpuCount,
         CancellationToken ct = default);
 
     /// <summary>

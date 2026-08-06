@@ -55,6 +55,21 @@ public sealed record Host
     /// </summary>
     public string DefaultIsolation { get; init; } = HostIsolation.Shared;
 
+    /// <summary>
+    /// The distinct GPU hardware classes this host offers, from its agent capability report (docs/TUNNEL.md
+    /// §5, the wire <c>gpu</c> block, task #521). Opaque strings mirrored from the agent, like
+    /// <see cref="IsolationLevels"/>; empty for a host that advertises no GPU (an older agent, or a machine
+    /// with none). Surfaced read-only on the host views — catalog filtering lands in a later task.
+    /// </summary>
+    public IReadOnlyList<string> GpuClasses { get; init; } = HostGpu.NoClasses;
+
+    /// <summary>
+    /// The total number of GPU devices this host advertises (docs/TUNNEL.md §5, task #521). <c>0</c> for a
+    /// host that advertises no GPU. This is the device count, not the number of distinct
+    /// <see cref="GpuClasses"/>.
+    /// </summary>
+    public int GpuCount { get; init; }
+
     /// <summary>Last healthy heartbeat time (UTC).</summary>
     public DateTimeOffset? LastSeenAt { get; init; }
 

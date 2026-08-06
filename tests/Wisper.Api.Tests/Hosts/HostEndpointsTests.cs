@@ -146,6 +146,9 @@ public class HostEndpointsTests
         Assert.Single(mine!.Data);
         Assert.Equal(registered!.Id, mine.Data[0].Id);
         Assert.False(mine.Data[0].Online);
+        // A freshly registered host advertises no GPU yet — the summary surfaces the empty defaults (#521).
+        Assert.Empty(mine.Data[0].GpuClasses);
+        Assert.Equal(0, mine.Data[0].GpuCount);
         Assert.Equal("usd", mine.Earnings.Currency);
     }
 
@@ -330,7 +333,9 @@ public class HostEndpointsTests
 
     private sealed record HostSummaryDto(
         [property: JsonPropertyName("id")] Guid Id,
-        [property: JsonPropertyName("online")] bool Online);
+        [property: JsonPropertyName("online")] bool Online,
+        [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+        [property: JsonPropertyName("gpu_count")] int GpuCount);
 
     private sealed record EarningsDto(
         [property: JsonPropertyName("currency")] string Currency);

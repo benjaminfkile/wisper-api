@@ -123,11 +123,19 @@ public static class TunnelEndpoints
                     {
                         await presence.RefreshAdvertisedIsolationAsync(
                             conn.HostId, cap.IsolationLevels, cap.DefaultIsolation, hbCt);
+
+                        // A heartbeat that re-advertises its gpu block refreshes the persisted GPU the same
+                        // way (task #521); a heartbeat with no gpu block leaves it as-is.
+                        if (cap.Gpu is { } gpu)
+                        {
+                            await presence.RefreshAdvertisedGpuAsync(
+                                conn.HostId, gpu.DeviceClasses, gpu.Devices.Count, hbCt);
+                        }
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         logger.LogError(
-                            ex, "agent tunnel: refreshing host {HostId} isolation from heartbeat failed", conn.HostId);
+                            ex, "agent tunnel: refreshing host {HostId} capability from heartbeat failed", conn.HostId);
                     }
                 }
             },
@@ -166,8 +174,12 @@ public static class TunnelEndpoints
             // zero-priced — task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
             try
             {
+                // Persist the advertised GPU alongside isolation (task #521). An absent gpu block (an older
+                // agent) passes null classes, which leaves the persisted GPU untouched rather than nulling it.
+                var gpu = hello.Capability.Gpu;
                 await presence.GoOnlineIfEligibleAsync(
-                    hostId, hello.Capability.IsolationLevels, hello.Capability.DefaultIsolation, ct);
+                    hostId, hello.Capability.IsolationLevels, hello.Capability.DefaultIsolation,
+                    gpu?.DeviceClasses, gpu?.Devices.Count ?? 0, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

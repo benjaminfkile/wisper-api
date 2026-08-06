@@ -15,7 +15,7 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
     private const string Columns =
         "id, owner_user_id, name, label, status::text AS status, agent_token_hash, agent_token_prefix, " +
         "wisp_version, agent_version, max_leases, max_streams, isolation_levels::text[] AS isolation_levels, " +
-        "default_isolation, last_seen_at, created_at, updated_at";
+        "default_isolation, gpu_classes::text[] AS gpu_classes, gpu_count, last_seen_at, created_at, updated_at";
 
     public HostRepository(Db db) : base(db)
     {
@@ -89,10 +89,10 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
         const string sql = $"""
             INSERT INTO hosts (id, owner_user_id, name, label, status, agent_token_hash, agent_token_prefix,
                                wisp_version, agent_version, max_leases, max_streams, isolation_levels,
-                               default_isolation, last_seen_at, created_at, updated_at)
+                               default_isolation, gpu_classes, gpu_count, last_seen_at, created_at, updated_at)
             VALUES (COALESCE(@Id, gen_random_uuid()), @OwnerUserId, @Name, @Label, @Status::host_status,
                     @AgentTokenHash, @AgentTokenPrefix, @WispVersion, @AgentVersion, @MaxLeases, @MaxStreams,
-                    @IsolationLevels::text[], @DefaultIsolation, @LastSeenAt,
+                    @IsolationLevels::text[], @DefaultIsolation, @GpuClasses::text[], @GpuCount, @LastSeenAt,
                     COALESCE(@CreatedAt, now()), COALESCE(@UpdatedAt, now()))
             RETURNING {Columns}
             """;
@@ -117,6 +117,8 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
                    max_streams        = @MaxStreams,
                    isolation_levels   = @IsolationLevels::text[],
                    default_isolation  = @DefaultIsolation,
+                   gpu_classes        = @GpuClasses::text[],
+                   gpu_count          = @GpuCount,
                    last_seen_at       = @LastSeenAt,
                    updated_at         = COALESCE(@UpdatedAt, now())
              WHERE id = @Id
@@ -181,6 +183,32 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
             new CommandDefinition(sql, parameters, cancellationToken: ct));
     }
 
+    public async Task<Host?> SetAdvertisedGpuAsync(
+        Guid id, IReadOnlyList<string> gpuClasses, int gpuCount, DateTimeOffset updatedAt,
+        CancellationToken ct = default)
+    {
+        const string sql = $"""
+            UPDATE hosts
+               SET gpu_classes = @GpuClasses::text[],
+                   gpu_count   = @GpuCount,
+                   updated_at  = @UpdatedAt
+             WHERE id = @Id
+            RETURNING {Columns}
+            """;
+
+        var parameters = new
+        {
+            Id = id,
+            GpuClasses = gpuClasses.ToArray(),
+            GpuCount = gpuCount,
+            UpdatedAt = updatedAt,
+        };
+
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<Host>(
+            new CommandDefinition(sql, parameters, cancellationToken: ct));
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await using var conn = await OpenConnectionAsync(ct);
@@ -205,6 +233,8 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
         host.MaxStreams,
         IsolationLevels = host.IsolationLevels.ToArray(),
         host.DefaultIsolation,
+        GpuClasses = host.GpuClasses.ToArray(),
+        host.GpuCount,
         host.LastSeenAt,
         CreatedAt = host.CreatedAt == default ? (DateTimeOffset?)null : host.CreatedAt,
         UpdatedAt = host.UpdatedAt == default ? (DateTimeOffset?)null : host.UpdatedAt,

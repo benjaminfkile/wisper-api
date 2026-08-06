@@ -34,6 +34,10 @@ public sealed class RegistryHostCapabilitySource : IHostCapabilitySource
             }
         }
 
+        // The advertised GPU facts a later task validates a GPU lease against (task #521): the per-lease
+        // device ceiling and the distinct opaque device classes. Absent gpu block ⇒ 0 / empty (no GPU).
+        var gpu = capability.Gpu;
+
         return new HostCapabilitySnapshot(
             capability.Images,
             networks,
@@ -43,6 +47,8 @@ public sealed class RegistryHostCapabilitySource : IHostCapabilitySource
             limits.PidsLimit,
             // The host's advertised container OS ("linux"|"windows"), or null for an older agent that
             // did not send it — surfacing only, back-compatible (docs/TUNNEL.md §5).
-            capability.Os);
+            capability.Os,
+            MaxGpus: gpu?.MaxGpus ?? 0,
+            GpuClasses: HostGpu.NormalizeClasses(gpu?.DeviceClasses));
     }
 }

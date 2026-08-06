@@ -177,6 +177,7 @@ public class CatalogEndpointsTests
     {
         var fx = new Fixture();
         var host = await fx.SeedOnlineHostAsync("home", "reg/img:1", price: 8);
+        await fx.Hosts.SetAdvertisedGpuAsync(host.Id, new[] { "nvidia-a100" }, 2, T0);
         using var factory = fx.Build();
 
         var detail = await Authed(factory).GetFromJsonAsync<HostDetailDto>($"/v1/hosts/{host.Id}");
@@ -186,6 +187,9 @@ public class CatalogEndpointsTests
         Assert.True(detail.Online);
         var image = Assert.Single(detail.Images);
         Assert.Equal("reg/img:1", image.ImageRef);
+        // The host detail surfaces the advertised GPU read-only (task #521).
+        Assert.Equal(new[] { "nvidia-a100" }, detail.GpuClasses);
+        Assert.Equal(2, detail.GpuCount);
     }
 
     [Fact]
@@ -230,7 +234,9 @@ public class CatalogEndpointsTests
         [property: JsonPropertyName("label")] string? Label,
         [property: JsonPropertyName("region")] string? Region,
         [property: JsonPropertyName("online")] bool Online,
-        [property: JsonPropertyName("images")] IReadOnlyList<CatalogImageDto> Images);
+        [property: JsonPropertyName("images")] IReadOnlyList<CatalogImageDto> Images,
+        [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+        [property: JsonPropertyName("gpu_count")] int GpuCount);
 
     private sealed record CatalogImageDto(
         [property: JsonPropertyName("host_image_id")] Guid HostImageId,
