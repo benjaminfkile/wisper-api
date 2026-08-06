@@ -118,6 +118,7 @@ public sealed class LeaseService : ILeaseService
                 Cpus = resources.Cpus is { } c ? (double)c : 0,
                 MemoryMb = resources.MemoryMb ?? 0,
                 Pids = resources.Pids ?? 0,
+                Gpus = resources.Gpus,
             },
             TtlSeconds = ttlSeconds,
             Userdata = request.Userdata,
@@ -157,6 +158,7 @@ public sealed class LeaseService : ILeaseService
             Cpus = resources.Cpus,
             MemoryMb = resources.MemoryMb,
             Pids = resources.Pids,
+            Gpus = resources.Gpus,
             TtlSeconds = ttlSeconds,
             PriceCentsPerMin = image.PriceCentsPerMin,
             Currency = Usd,
@@ -402,14 +404,16 @@ public sealed class LeaseService : ILeaseService
 
     /// <summary>
     /// Validates the requested resource ceilings against the image's offered limits and returns the
-    /// snapshot to persist (missing dimensions stay null — the host applies its own default).
+    /// snapshot to persist (missing dimensions stay null — the host applies its own default). GPU is the one
+    /// exception to the clamp-friendly ceilings: it is priced into the offer, so an over-ask is rejected
+    /// rather than silently reduced (task #522), and it snapshots as a concrete count (0 when none requested).
     /// </summary>
-    private static (decimal? Cpus, int? MemoryMb, int? Pids) ValidateResources(
+    private static (decimal? Cpus, int? MemoryMb, int? Pids, int Gpus) ValidateResources(
         LeaseResourcesRequest? resources, HostImage image)
     {
         if (resources is null)
         {
-            return (null, null, null);
+            return (null, null, null, 0);
         }
 
         decimal? cpus = null;
@@ -434,7 +438,38 @@ public sealed class LeaseService : ILeaseService
         var memoryMb = ValidateCeiling(
             resources.MemoryMb, image.MaxMemoryMb, "resources.memory_mb");
         var pids = ValidateCeiling(resources.Pids, image.MaxPids, "resources.pids");
-        return (cpus, memoryMb, pids);
+        var gpus = ValidateGpus(resources.Gpus, image.MaxGpus);
+        return (cpus, memoryMb, pids, gpus);
+    }
+
+    /// <summary>
+    /// Validates the requested whole-device GPU count against the offer's <c>max_gpus</c> ceiling (task #522)
+    /// and returns the concrete snapshot count (0 when omitted). Unlike the clampable ceilings an over-ask is
+    /// <b>rejected</b> with the standard validation error, never clamped: GPU access is priced into the offer,
+    /// so silently reducing it would change what the consumer thinks they bought. A negative count is rejected.
+    /// </summary>
+    private static int ValidateGpus(int? requested, int max)
+    {
+        if (requested is not { } value)
+        {
+            return 0;
+        }
+
+        if (value < 0)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError, "'resources.gpus' must be non-negative.",
+                new { field = "resources.gpus" });
+        }
+
+        if (value > max)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError, "'resources.gpus' exceeds the image's maximum.",
+                new { field = "resources.gpus", max });
+        }
+
+        return value;
     }
 
     private static int? ValidateCeiling(int? requested, int? max, string field)

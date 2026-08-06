@@ -97,13 +97,17 @@ public class HostServiceTests
         }
 
         /// <summary>A generous capability so valid entries pass; callers override for negative cases.</summary>
-        public HostCapabilitySnapshot Capability(params string[] images) => new(
+        public HostCapabilitySnapshot Capability(params string[] images) => Capability(0, images);
+
+        /// <summary>As <see cref="Capability(string[])"/> but advertising <paramref name="maxGpus"/> GPU devices.</summary>
+        public HostCapabilitySnapshot Capability(int maxGpus, params string[] images) => new(
             Images: images.Length == 0 ? new[] { "alpine:latest" } : images,
             Networks: new[] { NetworkMode.None, NetworkMode.Open },
             MaxTtlSeconds: 14400,
             MaxCpus: 8,
             MaxMemoryMb: 16384,
-            MaxPids: 4096);
+            MaxPids: 4096,
+            MaxGpus: maxGpus);
     }
 
     [Fact]
@@ -345,6 +349,120 @@ public class HostServiceTests
                 owner, host.Id, imageId,
                 new PatchImageRequest(null, null, MaxTtlSeconds: 999999, null, null, null, null)));
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_accepts_max_gpus_within_the_live_capability_and_persists_it()
+    {
+        // GPU access is priced into the offer (task #522): a host advertising GPU devices may offer a
+        // max_gpus ceiling up to its advertised count, validated live exactly like the cpu/mem/pid ceilings.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 4, "alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 2),
+        }));
+
+        Assert.Equal(2, Assert.Single(result.Data).MaxGpus);
+        Assert.Equal(2, (await fx.Images.ListByHostAsync(host.Id))[0].MaxGpus);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_max_gpus_over_the_live_capability()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 1, "alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 2),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // nothing persisted on rejection
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_any_gpu_offer_on_a_gpu_less_host()
+    {
+        // A host advertising 0 GPU devices genuinely has none — there is no "0 means unlimited" escape here,
+        // so any offer above 0 is rejected (unlike the cpu/mem/pid ceilings, where 0 means unadvertised).
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 0, "alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 1),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_defaults_max_gpus_to_zero_when_omitted()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 4, "alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+
+        Assert.Equal(0, Assert.Single(result.Data).MaxGpus); // no GPU offered by default
+    }
+
+    [Fact]
+    public async Task PatchImage_rejects_max_gpus_over_the_live_capability()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 2, "alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 1),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.PatchImageAsync(
+                owner, host.Id, imageId,
+                new PatchImageRequest(null, null, null, null, null, null, null, MaxGpus: 3)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Equal(1, (await fx.Images.ListByHostAsync(host.Id))[0].MaxGpus); // unchanged on rejection
+    }
+
+    [Fact]
+    public async Task PatchImage_updates_max_gpus_within_the_live_capability()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 4, "alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 1),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(null, null, null, null, null, null, null, MaxGpus: 3));
+
+        Assert.Equal(3, patched.MaxGpus);
     }
 
     [Fact]

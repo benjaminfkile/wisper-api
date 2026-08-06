@@ -111,6 +111,7 @@ The overlay of *price* on wisp's capability (`DESIGN.md` §12); wisp itself stay
 | `networks` | `network_mode[]` NOT NULL | subset the host permits for this image |
 | `max_ttl_seconds` | `int` NOT NULL | |
 | `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | resource ceilings offered |
+| `max_gpus` | `int` NOT NULL DEFAULT `0` | GPU device ceiling offered (0 = no GPU access on this offer); validated live against `hosts.gpu_count` like the other ceilings — GPU access is priced into this offer, not a separate rate table. Migration `0013_ImageAndLeaseGpu` (task #522) |
 | `enabled` | `bool` NOT NULL DEFAULT `true` | |
 | `created_at` / `updated_at` | `timestamptz` | |
 
@@ -132,6 +133,7 @@ CREATE TABLE leases (
   cpus                numeric(6,3),
   memory_mb           integer,
   pids                integer,
+  gpus                integer NOT NULL DEFAULT 0,  -- whole exclusive GPU devices booked; over-ask rejects, never clamps (migration 0013)
   ttl_seconds         integer NOT NULL CHECK (ttl_seconds > 0),
   price_cents_per_min bigint  NOT NULL CHECK (price_cents_per_min >= 0),
   currency            text    NOT NULL DEFAULT 'usd',

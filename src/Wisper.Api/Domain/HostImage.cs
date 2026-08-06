@@ -35,6 +35,13 @@ public sealed record HostImage
     /// <summary>PID ceiling offered.</summary>
     public int? MaxPids { get; init; }
 
+    /// <summary>
+    /// GPU ceiling offered — the maximum whole exclusive GPU devices a lease against this offer may request
+    /// (task #522). <c>0</c> means no GPU access on this offer. Validated live against the host's advertised
+    /// GPU capability (<see cref="HostGpu"/>); GPU access is priced into this offer, not a separate rate table.
+    /// </summary>
+    public int MaxGpus { get; init; }
+
     /// <summary>Whether the entry is offered to consumers.</summary>
     public bool Enabled { get; init; } = true;
 

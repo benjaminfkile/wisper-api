@@ -76,6 +76,34 @@ public class LeaseCreateTests
     }
 
     [Fact]
+    public void Resources_gpus_serializes_under_the_gpus_key()
+    {
+        var frame = new LeaseCreate
+        {
+            Image = "alpine",
+            Resources = new LeaseResources { Cpus = 2, MemoryMb = 4096, Pids = 1024, Gpus = 2 },
+        };
+
+        var json = ControlJson.Serialize(frame);
+        var resources = JsonDocument.Parse(json).RootElement.GetProperty("resources");
+
+        Assert.Equal(2, resources.GetProperty("gpus").GetInt32());
+    }
+
+    [Fact]
+    public void Resources_gpus_is_omitted_from_the_wire_when_zero()
+    {
+        // Like cpus/memory_mb/pids, a zero gpus count is omitted (WhenWritingDefault) — the agent/wisp then
+        // apply their own default. Only a non-zero booked count travels on the frame.
+        var frame = new LeaseCreate { Image = "alpine", Resources = new LeaseResources { Cpus = 2 } };
+
+        var json = ControlJson.Serialize(frame);
+        var resources = JsonDocument.Parse(json).RootElement.GetProperty("resources");
+
+        Assert.False(resources.TryGetProperty("gpus", out _));
+    }
+
+    [Fact]
     public void Env_round_trips_through_deserialization()
     {
         var frame = new LeaseCreate

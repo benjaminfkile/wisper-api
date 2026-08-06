@@ -177,7 +177,7 @@ public sealed class HostService
             var networks = ParseNetworks(entry.Networks);
             ValidateAgainstCapability(
                 capability, imageRef, entry.PriceCentsPerMin, entry.MaxTtlSeconds, networks,
-                entry.MaxCpus, entry.MaxMemoryMb, entry.MaxPids);
+                entry.MaxCpus, entry.MaxMemoryMb, entry.MaxPids, entry.MaxGpus);
 
             // A new entry defaults enabled; an update keeps the stored flag unless overridden. Charging a
             // non-Connect-enabled owner's image is rejected here so the online gate stays consistent (§6).
@@ -208,6 +208,7 @@ public sealed class HostService
                         MaxCpus = spec.MaxCpus,
                         MaxMemoryMb = spec.MaxMemoryMb,
                         MaxPids = spec.MaxPids,
+                        MaxGpus = spec.MaxGpus,
                         Enabled = spec.Enabled ?? current.Enabled,
                         UpdatedAt = now,
                     },
@@ -225,6 +226,7 @@ public sealed class HostService
                     MaxCpus = spec.MaxCpus,
                     MaxMemoryMb = spec.MaxMemoryMb,
                     MaxPids = spec.MaxPids,
+                    MaxGpus = spec.MaxGpus,
                     Enabled = spec.Enabled ?? true,
                     CreatedAt = now,
                     UpdatedAt = now,
@@ -260,10 +262,11 @@ public sealed class HostService
         var maxCpus = request.MaxCpus ?? image.MaxCpus;
         var maxMemoryMb = request.MaxMemoryMb ?? image.MaxMemoryMb;
         var maxPids = request.MaxPids ?? image.MaxPids;
+        var maxGpus = request.MaxGpus ?? image.MaxGpus;
         var enabled = request.Enabled ?? image.Enabled;
 
         ValidateAgainstCapability(
-            capability, image.ImageRef, price, maxTtl, networks, maxCpus, maxMemoryMb, maxPids);
+            capability, image.ImageRef, price, maxTtl, networks, maxCpus, maxMemoryMb, maxPids, maxGpus);
 
         // Enabling a non-zero-priced image requires Connect onboarding (§6): reject before persisting so a
         // non-Connect owner can never move into the earning arm of the online gate mid-tunnel.
@@ -278,6 +281,7 @@ public sealed class HostService
                 MaxCpus = maxCpus,
                 MaxMemoryMb = maxMemoryMb,
                 MaxPids = maxPids,
+                MaxGpus = maxGpus,
                 Enabled = enabled,
                 UpdatedAt = _time.GetUtcNow(),
             },
@@ -341,7 +345,7 @@ public sealed class HostService
     /// Validates one priced image against the host's advertised capability (docs/API.md §6,
     /// docs/DATA_MODEL.md §4): the ref must be in the allow-list, the price non-negative, the TTL positive
     /// and within the host limit, every network a subset the host permits, and each resource ceiling within
-    /// the host's advertised ceiling.
+    /// the host's advertised ceiling — including the GPU device ceiling (<c>max_gpus</c>, task #522).
     /// </summary>
     private static void ValidateAgainstCapability(
         HostCapabilitySnapshot capability,
@@ -351,7 +355,8 @@ public sealed class HostService
         IReadOnlyList<NetworkMode> networks,
         decimal? maxCpus,
         int? maxMemoryMb,
-        int? maxPids)
+        int? maxPids,
+        int maxGpus)
     {
         if (!capability.AllowsImage(imageRef))
         {
@@ -448,6 +453,24 @@ public sealed class HostService
                     $"max_pids ({pids}) exceeds the host's advertised limit ({capability.MaxPids}).",
                     new { field = "max_pids", limit = capability.MaxPids });
             }
+        }
+
+        // GPU is priced into the offer (task #522): max_gpus is the whole-device ceiling this offer sells, and
+        // it may not exceed the host's advertised GPU device count. Unlike the cpu/mem/pids checks there is no
+        // "advertised 0 means unlimited/unknown" escape — 0 devices genuinely means no GPU, so a host with no
+        // GPU rejects any offer above 0. The default (0) always passes on a GPU-less host.
+        if (maxGpus < 0)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError, "max_gpus must be non-negative.", new { field = "max_gpus" });
+        }
+
+        if (maxGpus > capability.MaxGpus)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                $"max_gpus ({maxGpus}) exceeds the host's advertised GPU count ({capability.MaxGpus}).",
+                new { field = "max_gpus", limit = capability.MaxGpus });
         }
     }
 

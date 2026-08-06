@@ -66,4 +66,12 @@ public record LeaseResources
 
     [JsonPropertyName("pids")]
     public int Pids { get; init; }
+
+    /// <summary>
+    /// Whole exclusive GPU devices booked for this lease (task #522), forwarded to wisp verbatim under the
+    /// <c>gpus</c> key. Wisper validates the count against the offer's ceiling before the frame is sent; wisp
+    /// enforces the real isolation/allocation. Defaults to <c>0</c> (no GPU).
+    /// </summary>
+    [JsonPropertyName("gpus")]
+    public int Gpus { get; init; }
 }

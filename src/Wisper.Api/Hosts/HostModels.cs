@@ -96,6 +96,7 @@ public sealed record HostImageView(
     [property: JsonPropertyName("max_cpus")] decimal? MaxCpus,
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
+    [property: JsonPropertyName("max_gpus")] int MaxGpus,
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt)
@@ -113,6 +114,7 @@ public sealed record HostImageView(
         MaxCpus: image.MaxCpus,
         MaxMemoryMb: image.MaxMemoryMb,
         MaxPids: image.MaxPids,
+        MaxGpus: image.MaxGpus,
         Enabled: image.Enabled,
         CreatedAt: image.CreatedAt,
         UpdatedAt: image.UpdatedAt);
@@ -126,7 +128,12 @@ public sealed record HostImagesResponse(
 public sealed record ReplaceImagesRequest(
     [property: JsonPropertyName("images")] IReadOnlyList<ImageUpsert>? Images);
 
-/// <summary>One entry in a <see cref="ReplaceImagesRequest"/> — a priced image and its offered ceilings.</summary>
+/// <summary>
+/// One entry in a <see cref="ReplaceImagesRequest"/> — a priced image and its offered ceilings.
+/// <see cref="MaxGpus"/> is the offered whole-device GPU ceiling (0 = no GPU access on this offer, the
+/// default); it is validated live against the host's advertised GPU capability like the other ceilings (task
+/// #522). GPU access is priced into this offer, not a separate rate table.
+/// </summary>
 public sealed record ImageUpsert(
     [property: JsonPropertyName("image_ref")] string? ImageRef,
     [property: JsonPropertyName("price_cents_per_min")] long PriceCentsPerMin,
@@ -135,7 +142,8 @@ public sealed record ImageUpsert(
     [property: JsonPropertyName("max_cpus")] decimal? MaxCpus,
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
-    [property: JsonPropertyName("enabled")] bool? Enabled);
+    [property: JsonPropertyName("enabled")] bool? Enabled,
+    [property: JsonPropertyName("max_gpus")] int MaxGpus = 0);
 
 /// <summary>
 /// Body of <c>PATCH /v1/hosts/:id/images/:imageId</c> (docs/API.md §6): price/enable/limits/networks for one
@@ -149,4 +157,5 @@ public sealed record PatchImageRequest(
     [property: JsonPropertyName("max_cpus")] decimal? MaxCpus,
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
-    [property: JsonPropertyName("enabled")] bool? Enabled);
+    [property: JsonPropertyName("enabled")] bool? Enabled,
+    [property: JsonPropertyName("max_gpus")] int? MaxGpus = null);

@@ -15,7 +15,7 @@ public sealed class HostImageRepository : RepositoryBase, IHostImageRepository
     // networks cast to text[] so it maps to Row.Networks; scalar snake_case columns map by underscore.
     private const string Columns =
         "id, host_id, image_ref, price_cents_per_min, networks::text[] AS networks, max_ttl_seconds, " +
-        "max_cpus, max_memory_mb, max_pids, enabled, created_at, updated_at";
+        "max_cpus, max_memory_mb, max_pids, max_gpus, enabled, created_at, updated_at";
 
     public HostImageRepository(Db db) : base(db)
     {
@@ -54,10 +54,10 @@ public sealed class HostImageRepository : RepositoryBase, IHostImageRepository
     {
         const string sql = $"""
             INSERT INTO host_images (id, host_id, image_ref, price_cents_per_min, networks, max_ttl_seconds,
-                                     max_cpus, max_memory_mb, max_pids, enabled, created_at, updated_at)
+                                     max_cpus, max_memory_mb, max_pids, max_gpus, enabled, created_at, updated_at)
             VALUES (COALESCE(@Id, gen_random_uuid()), @HostId, @ImageRef, @PriceCentsPerMin,
-                    @Networks::network_mode[], @MaxTtlSeconds, @MaxCpus, @MaxMemoryMb, @MaxPids, @Enabled,
-                    COALESCE(@CreatedAt, now()), COALESCE(@UpdatedAt, now()))
+                    @Networks::network_mode[], @MaxTtlSeconds, @MaxCpus, @MaxMemoryMb, @MaxPids, @MaxGpus,
+                    @Enabled, COALESCE(@CreatedAt, now()), COALESCE(@UpdatedAt, now()))
             RETURNING {Columns}
             """;
 
@@ -77,6 +77,7 @@ public sealed class HostImageRepository : RepositoryBase, IHostImageRepository
                    max_cpus             = @MaxCpus,
                    max_memory_mb        = @MaxMemoryMb,
                    max_pids             = @MaxPids,
+                   max_gpus             = @MaxGpus,
                    enabled              = @Enabled,
                    updated_at           = COALESCE(@UpdatedAt, now())
              WHERE id = @Id
@@ -109,6 +110,7 @@ public sealed class HostImageRepository : RepositoryBase, IHostImageRepository
         image.MaxCpus,
         image.MaxMemoryMb,
         image.MaxPids,
+        image.MaxGpus,
         image.Enabled,
         CreatedAt = image.CreatedAt == default ? (DateTimeOffset?)null : image.CreatedAt,
         UpdatedAt = image.UpdatedAt == default ? (DateTimeOffset?)null : image.UpdatedAt,
@@ -131,6 +133,7 @@ public sealed class HostImageRepository : RepositoryBase, IHostImageRepository
         public decimal? MaxCpus { get; init; }
         public int? MaxMemoryMb { get; init; }
         public int? MaxPids { get; init; }
+        public int MaxGpus { get; init; }
         public bool Enabled { get; init; }
         public DateTimeOffset CreatedAt { get; init; }
         public DateTimeOffset UpdatedAt { get; init; }
@@ -146,6 +149,7 @@ public sealed class HostImageRepository : RepositoryBase, IHostImageRepository
             MaxCpus = MaxCpus,
             MaxMemoryMb = MaxMemoryMb,
             MaxPids = MaxPids,
+            MaxGpus = MaxGpus,
             Enabled = Enabled,
             CreatedAt = CreatedAt,
             UpdatedAt = UpdatedAt,
