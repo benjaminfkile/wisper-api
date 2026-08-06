@@ -134,7 +134,7 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
 // request  (Idempotency-Key: <uuid>)
 { "host_id": "…", "host_image_id": "…",
   "network": "open",
-  "resources": { "cpus": 2, "memory_mb": 4096, "pids": 1024 },
+  "resources": { "cpus": 2, "memory_mb": 4096, "pids": 1024, "gpus": 1 },
   "ttl_seconds": 3600,
   "userdata": "apt-get install -y git && …",
   "isolation": "sandboxed",
@@ -146,6 +146,8 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "os": "linux" }
 ```
 `isolation` is the **optional** requested sandbox level, ordered `shared` < `sandboxed` < `vm` (`TUNNEL.md` §5, task #418). Omitted → `shared`; `confidential` or any unknown value → `validation_error`. It is resolved and validated server-side — against the admin-tunable `platform_policy.min_isolation` floor and, when the target host advertises isolation levels (task #417), against the levels that host can provide (a host with none recorded passes through, since wisp re-validates as the real security boundary) — then snapshotted immutably on the lease, returned on `GET /v1/leases/:id`, and forwarded on the `lease.create` frame.
+
+`resources.gpus` is the **optional** count of whole exclusive GPU devices to book (default `0` = none, task #522). It is validated against the offer's `max_gpus` ceiling and — unlike the other resource dimensions — an **over-ask is rejected** with `validation_error`, never silently clamped, because GPU access is priced into the offer. The booked count is snapshotted immutably on the lease, surfaced under `resources.gpus` on `GET /v1/leases/:id`, and forwarded verbatim on the `lease.create` frame; wisp enforces the real isolation/allocation.
 
 `env` is an **optional, opaque `{string:string}` map** of create-time environment variables forwarded down the host tunnel for secret injection (mirrors `POST /dev/leases`; `lease.create` frame, `TUNNEL.md` §5). Capped like wisp's own limits — at most **128** entries and **256 KiB** serialized, else `validation_error`. Its **values are secrets-in-transit**: never logged, never echoed in errors, and **never persisted** on the lease row (the lease snapshot keeps everything *except* `env`) — and it is **plaintext v1**, so treat it as trusted-network only (`TUNNEL.md` §13). `os` echoes the host's advertised container OS (`"linux"` | `"windows"`, or `null` when the host is offline / its agent advertised none) like `GET /v1/leases/:id` (task #316).
 

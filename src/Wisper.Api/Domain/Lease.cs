@@ -46,6 +46,13 @@ public sealed record Lease
     /// <summary>Snapshot: PID ceiling, if set.</summary>
     public int? Pids { get; init; }
 
+    /// <summary>
+    /// Snapshot: whole exclusive GPU devices booked for this lease (task #522). <c>0</c> when the offer has no
+    /// GPU access or the consumer requested none; immutable once booked. Validated at create time against the
+    /// offer's <see cref="HostImage.MaxGpus"/> ceiling (over-ask rejects, never clamps — it is priced-in).
+    /// </summary>
+    public int Gpus { get; init; }
+
     /// <summary>Snapshot: lease TTL in seconds (<c>&gt; 0</c>).</summary>
     public int TtlSeconds { get; init; }
 

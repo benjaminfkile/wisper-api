@@ -26,11 +26,17 @@ public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null,
     [property: JsonPropertyName("isolation")] string? Isolation = null);
 
-/// <summary>Requested resource ceilings (docs/API.md §5); each is optional and validated against the image.</summary>
+/// <summary>
+/// Requested resource ceilings (docs/API.md §5); each is optional and validated against the image.
+/// <see cref="Gpus"/> is the count of whole exclusive GPU devices to book (default 0 = none); it is
+/// validated against the offer's <c>max_gpus</c> ceiling and — unlike the clampable dimensions — an over-ask
+/// is <b>rejected</b>, never clamped, because GPU access is priced into the offer (task #522).
+/// </summary>
 public sealed record LeaseResourcesRequest(
     [property: JsonPropertyName("cpus")] double? Cpus,
     [property: JsonPropertyName("memory_mb")] int? MemoryMb,
-    [property: JsonPropertyName("pids")] int? Pids);
+    [property: JsonPropertyName("pids")] int? Pids,
+    [property: JsonPropertyName("gpus")] int? Gpus = null);
 
 /// <summary>
 /// The <c>201</c> body of <c>POST /v1/leases</c> (docs/API.md §5): the new lease id plus the price and
@@ -67,11 +73,15 @@ public sealed record CreateLeaseResponse(
     }
 }
 
-/// <summary>The lease resource snapshot as it appears on the read surface (docs/API.md §5).</summary>
+/// <summary>
+/// The lease resource snapshot as it appears on the read surface (docs/API.md §5). <see cref="Gpus"/> is the
+/// booked whole-device GPU count (0 when none), an immutable snapshot like the other dimensions (task #522).
+/// </summary>
 public sealed record LeaseResourcesView(
     [property: JsonPropertyName("cpus")] decimal? Cpus,
     [property: JsonPropertyName("memory_mb")] int? MemoryMb,
-    [property: JsonPropertyName("pids")] int? Pids);
+    [property: JsonPropertyName("pids")] int? Pids,
+    [property: JsonPropertyName("gpus")] int Gpus);
 
 /// <summary>
 /// The read shape of a lease (docs/API.md §5, <c>GET /v1/leases</c> and <c>GET /v1/leases/:id</c>): the
@@ -110,7 +120,7 @@ public sealed record LeaseView(
         HostId: lease.HostId,
         ImageRef: lease.ImageRef,
         Network: PgEnum.ToLabel(lease.Network),
-        Resources: new LeaseResourcesView(lease.Cpus, lease.MemoryMb, lease.Pids),
+        Resources: new LeaseResourcesView(lease.Cpus, lease.MemoryMb, lease.Pids, lease.Gpus),
         TtlSeconds: lease.TtlSeconds,
         PriceCentsPerMin: lease.PriceCentsPerMin,
         Currency: lease.Currency,
