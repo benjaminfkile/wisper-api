@@ -63,6 +63,18 @@ public interface IHostRepository : IRepository
         Guid id, IReadOnlyList<string> isolationLevels, string defaultIsolation, DateTimeOffset updatedAt,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Persists the host's advertised GPU capability (<c>gpu_classes</c> + <c>gpu_count</c>, task #521) and
+    /// bumps <c>updated_at</c> — the narrow write the tunnel lifecycle uses when an agent (re)advertises,
+    /// mirroring <see cref="SetAdvertisedIsolationAsync"/>. <paramref name="gpuClasses"/> is expected already
+    /// normalized (distinct, see <see cref="Wisper.Api.Domain.HostGpu.NormalizeClasses"/>) and
+    /// <paramref name="gpuCount"/> is the total advertised devices. Returns the stored row, or <c>null</c> if
+    /// no such host. Presence and isolation columns are left untouched.
+    /// </summary>
+    Task<Host?> SetAdvertisedGpuAsync(
+        Guid id, IReadOnlyList<string> gpuClasses, int gpuCount, DateTimeOffset updatedAt,
+        CancellationToken ct = default);
+
     /// <summary>Deletes a host (cascading to its images); <c>true</c> if a row was removed.</summary>
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 }

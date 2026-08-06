@@ -167,6 +167,44 @@ public class InMemoryHostRepositoryTests
     }
 
     [Fact]
+    public async Task Create_defaults_gpu_to_empty_and_zero()
+    {
+        var repo = new InMemoryHostRepository();
+
+        var created = await repo.CreateAsync(NewHost(Guid.NewGuid()));
+
+        Assert.Empty(created.GpuClasses);
+        Assert.Equal(0, created.GpuCount);
+    }
+
+    [Fact]
+    public async Task SetAdvertisedGpu_stores_classes_and_count_without_touching_presence()
+    {
+        var repo = new InMemoryHostRepository();
+        var created = await repo.CreateAsync(NewHost(Guid.NewGuid()) with { Status = HostStatus.Online });
+
+        var updated = await repo.SetAdvertisedGpuAsync(
+            created.Id, new[] { "nvidia-a100", "nvidia-h100" }, 4, T0.AddSeconds(30));
+
+        Assert.NotNull(updated);
+        Assert.Equal(new[] { "nvidia-a100", "nvidia-h100" }, updated!.GpuClasses);
+        Assert.Equal(4, updated.GpuCount);
+        Assert.Equal(HostStatus.Online, updated.Status); // presence untouched
+        Assert.Equal(new[] { "shared" }, updated.IsolationLevels); // isolation untouched
+        Assert.Equal(T0.AddSeconds(30), updated.UpdatedAt);
+        Assert.Equal(updated, await repo.GetByIdAsync(created.Id));
+    }
+
+    [Fact]
+    public async Task SetAdvertisedGpu_of_a_missing_host_returns_null()
+    {
+        var repo = new InMemoryHostRepository();
+
+        Assert.Null(await repo.SetAdvertisedGpuAsync(
+            Guid.NewGuid(), new[] { "nvidia-a100" }, 1, T0));
+    }
+
+    [Fact]
     public async Task Delete_removes_and_reports()
     {
         var repo = new InMemoryHostRepository();

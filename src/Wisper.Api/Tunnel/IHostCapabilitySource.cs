@@ -20,7 +20,9 @@ public interface IHostCapabilitySource
 /// refs plus the host-wide per-lease ceilings a priced image may not exceed. Network labels that do not map
 /// to a known <see cref="NetworkMode"/> are dropped (forward-compatible with additive modes). <see cref="Os"/>
 /// carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>), or <c>null</c> when an
-/// older agent's hello did not advertise it — surfacing only, it gates no routing.
+/// older agent's hello did not advertise it — surfacing only, it gates no routing. <see cref="MaxGpus"/> and
+/// <see cref="GpuClasses"/> carry the live advertised GPU facts a later task validates a GPU lease against
+/// (task #521); a host that advertises no GPU has <c>0</c> / an empty list.
 /// </summary>
 public sealed record HostCapabilitySnapshot(
     IReadOnlyList<string> Images,
@@ -29,8 +31,16 @@ public sealed record HostCapabilitySnapshot(
     double MaxCpus,
     long MaxMemoryMb,
     long MaxPids,
-    string? Os = null)
+    string? Os = null,
+    int MaxGpus = 0,
+    IReadOnlyList<string>? GpuClasses = null)
 {
+    /// <summary>
+    /// The distinct GPU hardware classes this host advertises live, in advertised order — opaque strings
+    /// (task #521). Never null: an empty list means the host advertises no GPU.
+    /// </summary>
+    public IReadOnlyList<string> GpuClasses { get; init; } = GpuClasses ?? HostGpu.NoClasses;
+
     /// <summary>Whether <paramref name="imageRef"/> is in the host's advertised allow-list (ordinal match).</summary>
     public bool AllowsImage(string imageRef) => Images.Contains(imageRef, StringComparer.Ordinal);
 }

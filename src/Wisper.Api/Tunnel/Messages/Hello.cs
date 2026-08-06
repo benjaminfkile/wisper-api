@@ -64,8 +64,61 @@ public record HelloCapability
     [JsonPropertyName("default_isolation")]
     public string? DefaultIsolation { get; init; }
 
+    /// <summary>
+    /// The host's advertised GPU capability (snake_case wire block <c>gpu</c>, task #521). Opaque to this
+    /// service — device classes and isolation strings inside it are mirrored, never interpreted. Null/absent
+    /// for an older agent, which the manager treats as <c>supported=false</c> (no GPU).
+    /// </summary>
+    [JsonPropertyName("gpu")]
+    public HelloGpu? Gpu { get; init; }
+
     [JsonPropertyName("limits")]
     public HelloLimits Limits { get; init; } = new();
+}
+
+/// <summary>
+/// The <c>gpu</c> block of a hello/heartbeat capability (task #521): whether the host serves GPU, the devices
+/// it exposes, its per-lease device ceiling, and the GPU isolation modes it offers. Every class and isolation
+/// string inside is <b>opaque</b> to this service — stored/surfaced, never interpreted (like the sandbox
+/// isolation levels). Absent for an older agent, which is treated as <c>supported=false</c>.
+/// </summary>
+public record HelloGpu
+{
+    /// <summary>Whether this host serves GPU at all. An absent <c>gpu</c> block is treated as <c>false</c>.</summary>
+    [JsonPropertyName("supported")]
+    public bool Supported { get; init; }
+
+    /// <summary>The GPU devices the host exposes; empty when the host serves none.</summary>
+    [JsonPropertyName("devices")]
+    public IReadOnlyList<HelloGpuDevice> Devices { get; init; } = Array.Empty<HelloGpuDevice>();
+
+    /// <summary>The most GPUs a single lease may request on this host (Wisper-enforced in a later task).</summary>
+    [JsonPropertyName("max_gpus")]
+    public int MaxGpus { get; init; }
+
+    /// <summary>The GPU isolation modes this host offers — opaque strings, mirrored from the agent.</summary>
+    [JsonPropertyName("isolations")]
+    public IReadOnlyList<string> Isolations { get; init; } = Array.Empty<string>();
+
+    /// <summary>
+    /// The advertised device class strings in order (may contain duplicates across identical devices) — the
+    /// input the manager de-dupes into the host's distinct <c>gpu_classes</c>. Never null.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> DeviceClasses => Devices.Select(d => d.Class).ToList();
+}
+
+/// <summary>One GPU device in a <see cref="HelloGpu"/> — its opaque id, opaque hardware class, and VRAM.</summary>
+public record HelloGpuDevice
+{
+    [JsonPropertyName("id")]
+    public string Id { get; init; } = string.Empty;
+
+    [JsonPropertyName("class")]
+    public string Class { get; init; } = string.Empty;
+
+    [JsonPropertyName("vram_mb")]
+    public int VramMb { get; init; }
 }
 
 /// <summary>Per-lease limits wisp enforces on the host (snake_case, mirroring wisp's API).</summary>

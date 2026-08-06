@@ -151,6 +151,82 @@ public class HostPresenceServiceTests
     }
 
     [Fact]
+    public async Task Ready_persists_the_advertised_gpu_capability()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(
+            host.Id.ToString(), gpuClasses: new[] { "nvidia-a100", "nvidia-a100", "nvidia-h100" }, gpuCount: 3);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(HostStatus.Online, reloaded.Status);
+        Assert.Equal(new[] { "nvidia-a100", "nvidia-h100" }, reloaded.GpuClasses); // distinct, order-preserving
+        Assert.Equal(3, reloaded.GpuCount); // total advertised devices, not distinct classes
+    }
+
+    [Fact]
+    public async Task Ready_leaves_gpu_empty_for_an_older_agent_without_a_gpu_block()
+    {
+        // An older agent advertises no gpu block (null classes) → the fresh host keeps its zero/empty defaults.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(host.Id.ToString(), gpuClasses: null, gpuCount: 0);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Empty(reloaded.GpuClasses);
+        Assert.Equal(0, reloaded.GpuCount);
+    }
+
+    [Fact]
+    public async Task Ready_without_a_gpu_block_does_not_null_a_previously_advertised_host()
+    {
+        // A host that previously advertised GPU then sends a hello with no gpu block (null classes) keeps its
+        // persisted GPU — matching the isolation refresh, an absent block leaves the capability as-is (#521).
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+        await fx.Hosts.SetAdvertisedGpuAsync(host.Id, new[] { "nvidia-a100" }, 2, T0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(host.Id.ToString(), gpuClasses: null, gpuCount: 0);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "nvidia-a100" }, reloaded.GpuClasses); // untouched
+        Assert.Equal(2, reloaded.GpuCount);
+    }
+
+    [Fact]
+    public async Task Refresh_updates_a_hosts_advertised_gpu()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None, status: HostStatus.Online);
+
+        await fx.Service.RefreshAdvertisedGpuAsync(
+            host.Id.ToString(), new[] { "nvidia-h100" }, 1);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "nvidia-h100" }, reloaded.GpuClasses);
+        Assert.Equal(1, reloaded.GpuCount);
+    }
+
+    [Fact]
+    public async Task Refresh_gpu_never_touches_a_suspended_host()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None, status: HostStatus.Suspended);
+
+        await fx.Service.RefreshAdvertisedGpuAsync(
+            host.Id.ToString(), new[] { "nvidia-a100" }, 4);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Empty(reloaded.GpuClasses); // the seed default, untouched
+        Assert.Equal(0, reloaded.GpuCount);
+    }
+
+    [Fact]
     public async Task Ready_surfaces_the_isolation_capability_in_the_catalog()
     {
         var fx = new Fixture();

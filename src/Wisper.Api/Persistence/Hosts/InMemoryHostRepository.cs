@@ -59,9 +59,16 @@ public sealed class InMemoryHostRepository : InMemoryRepositoryBase<Guid, Host>,
 
     public Task<Host> CreateAsync(Host host, CancellationToken ct = default)
     {
-        // Mirror the DB NOT NULL/default: a host that carries no advertised isolation stores ["shared"]/"shared".
+        // Mirror the DB NOT NULL/default: a host that carries no advertised isolation stores ["shared"]/"shared",
+        // and a host that carries no advertised GPU stores an empty class list / count 0 (task #521).
         var (levels, defaultIsolation) = HostIsolation.Normalize(host.IsolationLevels, host.DefaultIsolation);
-        var normalized = host with { IsolationLevels = levels, DefaultIsolation = defaultIsolation };
+        var normalized = host with
+        {
+            IsolationLevels = levels,
+            DefaultIsolation = defaultIsolation,
+            GpuClasses = HostGpu.NormalizeClasses(host.GpuClasses),
+            GpuCount = Math.Max(0, host.GpuCount),
+        };
         var stored = normalized.Id == Guid.Empty ? normalized with { Id = Guid.NewGuid() } : normalized;
         Insert(stored);
         return Task.FromResult(stored);
@@ -110,6 +117,25 @@ public sealed class InMemoryHostRepository : InMemoryRepositoryBase<Guid, Host>,
         {
             IsolationLevels = isolationLevels,
             DefaultIsolation = defaultIsolation,
+            UpdatedAt = updatedAt,
+        };
+        Upsert(updated);
+        return Task.FromResult<Host?>(updated);
+    }
+
+    public Task<Host?> SetAdvertisedGpuAsync(
+        Guid id, IReadOnlyList<string> gpuClasses, int gpuCount, DateTimeOffset updatedAt,
+        CancellationToken ct = default)
+    {
+        if (Find(id) is not { } host)
+        {
+            return Task.FromResult<Host?>(null);
+        }
+
+        var updated = host with
+        {
+            GpuClasses = gpuClasses,
+            GpuCount = gpuCount,
             UpdatedAt = updatedAt,
         };
         Upsert(updated);

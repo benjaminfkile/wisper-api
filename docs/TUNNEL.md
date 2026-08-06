@@ -50,7 +50,8 @@ agent                                   Wisper
   │  {t:"hello", proto, agentVersion,         │
   │   wispVersion, capability:{images,        │
   │   default, limits, os,                    │
-  │   isolation_levels, default_isolation}}   │
+  │   isolation_levels, default_isolation,    │
+  │   gpu?}}                                   │
   │─────────────────────────────────────────▶│  register host, mark online,
   │◀─────────────────────────────────────────│  {t:"hello.ack", proto, sessionId,
   │                                           │   pingIntervalMs, maxFrameBytes}
@@ -59,7 +60,7 @@ agent                                   Wisper
 ```
 
 1. **Dial + auth.** The agent opens `wss://<wisper-host>/agent` and sends the **host agent token** as an `Authorization: Bearer` header (a native WS client can set headers — unlike a browser). Bad/missing/revoked token → Wisper closes with a **4401** close code before any frames.
-2. **`hello` / `hello.ack`.** The agent advertises its capability — the wisp `GET /images` document (`images[]`, `default`, `limits`, `os`, and the effective `isolation_levels` / `default_isolation`) plus versions. Wisper replies with the negotiated protocol version, a `sessionId`, and operational params (`pingIntervalMs`, `maxFrameBytes`). Prices live in Wisper, never here (`DESIGN.md` §1, §12).
+2. **`hello` / `hello.ack`.** The agent advertises its capability — the wisp `GET /images` document (`images[]`, `default`, `limits`, `os`, the effective `isolation_levels` / `default_isolation`, and the optional `gpu` block — task #521) plus versions. Wisper replies with the negotiated protocol version, a `sessionId`, and operational params (`pingIntervalMs`, `maxFrameBytes`). Prices live in Wisper, never here (`DESIGN.md` §1, §12).
 3. **Steady state.** Multiplexed lease ops + byte streams + `host.heartbeat` + ping/pong.
 3a. **Presence.** Once registered and `hello.ack` is sent, Wisper flips the host `online` **if** it clears the earning gate — the owner is Connect-enabled, or every enabled `host_image` is priced at `0` cents/min (`PAYMENTS.md` §5). A Connect-incomplete host with a priced image, or an admin-suspended host, stays `offline` (the agent is still connected and may test). This is the wiring that makes a live agent's host appear in the consumer catalog.
 4. **Close.** Graceful (WebSocket close frame with a code) or dead (missed pongs → §7). On a durable close Wisper marks the host `offline` and applies the disconnect policy (§8). A momentary blip resolved by a reconnect within grace, or a supersede (a new tunnel replacing the old for the same host), keeps the host `online` throughout.
@@ -87,10 +88,10 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| A→W | `hello` | `proto, agentVersion, wispVersion, capability{images[],default,limits,os,isolation_levels,default_isolation}, capacity{maxLeases,maxStreams}` | first frame after upgrade; `capacity` = how much this host will serve concurrently, **Wisper-enforced** (a lease/stream over capacity is refused with `error{code:"at_capacity"}` before it reaches the host). `capability.isolation_levels` / `default_isolation` are the host's effective isolation posture (from wisp `GET /images`), surfaced in `GET /v1/catalog` |
+| A→W | `hello` | `proto, agentVersion, wispVersion, capability{images[],default,limits,os,isolation_levels,default_isolation,gpu?{supported,devices[{id,class,vram_mb}],max_gpus,isolations[]}}, capacity{maxLeases,maxStreams}` | first frame after upgrade; `capacity` = how much this host will serve concurrently, **Wisper-enforced** (a lease/stream over capacity is refused with `error{code:"at_capacity"}` before it reaches the host). `capability.isolation_levels` / `default_isolation` are the host's effective isolation posture (from wisp `GET /images`), surfaced in `GET /v1/catalog`. `capability.gpu` (task #521) carries the host's advertised GPU; the manager persists the distinct device `class` strings as `hosts.gpu_classes` and the device count as `hosts.gpu_count`, treating class/isolation strings as **opaque** (like `isolation_levels`). A missing `gpu` block ⇒ `supported=false` (older agents keep working) |
 | W→A | `hello.ack` | `proto, sessionId, pingIntervalMs, maxFrameBytes, initialWindowBytes, graceSeconds` | operational params: liveness cadence (§7), max binary payload, per-stream flow window (§9), disconnect grace (§8) |
 | A→W | `capability.update` | `capability{...}, capacity{...}?` | host changed its wisp allow-list/limits/capacity while online |
-| A→W | `host.heartbeat` | `leases:[{leaseId,wispContractId,status}], load?{cpu,mem,running}, capability?{isolation_levels,default_isolation}` | every ~15s; drives reconciliation (§8). Optional `capability` lets a host refresh its offered isolation levels mid-session without reconnecting |
+| A→W | `host.heartbeat` | `leases:[{leaseId,wispContractId,status}], load?{cpu,mem,running}, capability?{isolation_levels,default_isolation,gpu?}` | every ~15s; drives reconciliation (§8). Optional `capability` lets a host refresh its offered isolation levels — and its `gpu` block (task #521) — mid-session without reconnecting |
 | W→A | `error` | `rid?, sid?, code, message` | generic failure for a request/stream |
 
 ### Lease lifecycle

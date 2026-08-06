@@ -91,6 +91,8 @@ Format `wck_live_<64-hex>` (256-bit CSPRNG). Lookup is `token_hash = … AND rev
 | `max_leases` / `max_streams` | `int` | advertised capacity, Wisper-enforced (`TUNNEL.md` §5) |
 | `isolation_levels` | `text[]` NOT NULL DEFAULT `ARRAY['shared']` | effective isolation levels the host offers, from the `hello`/`heartbeat` capability (`TUNNEL.md` §5); surfaced in `GET /v1/catalog`. Stored as free-form `text` (like `host_images.networks`), not an enum. Migration `0010_HostIsolation` |
 | `default_isolation` | `text` NOT NULL DEFAULT `'shared'` | level applied when a lease omits `isolation`. Migration `0010_HostIsolation` |
+| `gpu_classes` | `text[]` NOT NULL DEFAULT `'{}'` | distinct GPU hardware classes the host advertises, from the `hello`/`heartbeat` `gpu` block (`TUNNEL.md` §5). Opaque free-form `text` (like `isolation_levels`), never interpreted; empty for a host with no GPU (an older agent). Migration `0012_HostGpu` |
+| `gpu_count` | `int` NOT NULL DEFAULT `0` | total GPU devices the host advertises (not distinct classes). Migration `0012_HostGpu` |
 | `last_seen_at` | `timestamptz` | last healthy heartbeat |
 | `created_at` / `updated_at` | `timestamptz` | |
 

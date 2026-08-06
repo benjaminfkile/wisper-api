@@ -39,6 +39,14 @@ public record HeartbeatCapability
 
     [JsonPropertyName("default_isolation")]
     public string? DefaultIsolation { get; init; }
+
+    /// <summary>
+    /// The host's advertised GPU (snake_case wire block <c>gpu</c>, task #521), so a host can refresh its
+    /// offered classes/count mid-session the same way it refreshes isolation. Null when the heartbeat carries
+    /// no GPU block (the common case, and every older agent).
+    /// </summary>
+    [JsonPropertyName("gpu")]
+    public HelloGpu? Gpu { get; init; }
 }
 
 /// <summary>A single live lease entry in a <see cref="HostHeartbeat"/>.</summary>

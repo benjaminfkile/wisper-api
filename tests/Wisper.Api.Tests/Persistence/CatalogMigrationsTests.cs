@@ -90,4 +90,14 @@ public class CatalogMigrationsTests
         Assert.Contains("ADD COLUMN default_isolation text   NOT NULL DEFAULT 'shared'",
             sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Host_gpu_migration_adds_the_capability_columns_with_empty_defaults()
+    {
+        var sql = ReadScript("0012_HostGpu.sql");
+
+        Assert.Contains("ALTER TABLE hosts", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN gpu_classes text[] NOT NULL DEFAULT '{}'", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN gpu_count   int    NOT NULL DEFAULT 0", sql, StringComparison.Ordinal);
+    }
 }

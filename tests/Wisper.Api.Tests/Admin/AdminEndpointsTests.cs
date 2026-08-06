@@ -189,6 +189,8 @@ public class AdminEndpointsTests
             AgentTokenHash = "super-secret-hash",
             IsolationLevels = new[] { "shared", "vm" },
             DefaultIsolation = "vm",
+            GpuClasses = new[] { "nvidia-a100", "nvidia-h100" },
+            GpuCount = 4,
             CreatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
             UpdatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
         });
@@ -201,6 +203,8 @@ public class AdminEndpointsTests
         Assert.Equal(host.Id, view.Id);
         Assert.Equal(new[] { "shared", "vm" }, view.IsolationLevels);
         Assert.Equal("vm", view.DefaultIsolation);
+        Assert.Equal(new[] { "nvidia-a100", "nvidia-h100" }, view.GpuClasses);
+        Assert.Equal(4, view.GpuCount);
 
         // The agent token hash must never be exposed on the admin host view.
         var raw = await client.GetStringAsync("/v1/admin/hosts");
@@ -335,7 +339,9 @@ public class AdminEndpointsTests
     private sealed record HostDto(
         [property: JsonPropertyName("id")] Guid Id,
         [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
-        [property: JsonPropertyName("default_isolation")] string DefaultIsolation);
+        [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
+        [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+        [property: JsonPropertyName("gpu_count")] int GpuCount);
 
     private sealed record AuditPageDto([property: JsonPropertyName("data")] IReadOnlyList<AuditDto> Data);
 
