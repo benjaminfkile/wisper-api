@@ -48,7 +48,9 @@ public class CatalogEndpointsTests
                     services.AddSingleton<IHostRegistry>(Registry);
                 }));
 
-        public async Task<Host> SeedOnlineHostAsync(string name, string image, long price)
+        public async Task<Host> SeedOnlineHostAsync(
+            string name, string image, long price,
+            IReadOnlyList<string>? gpuClasses = null, int gpuCount = 0, int maxGpus = 0)
         {
             var host = await Hosts.CreateAsync(new Host
             {
@@ -58,6 +60,8 @@ public class CatalogEndpointsTests
                 Label = "us",
                 Status = HostStatus.Online,
                 AgentTokenHash = "hash",
+                GpuClasses = gpuClasses ?? HostGpu.NoClasses,
+                GpuCount = gpuCount,
                 CreatedAt = T0,
                 UpdatedAt = T0,
             });
@@ -72,6 +76,7 @@ public class CatalogEndpointsTests
                 MaxCpus = 4,
                 MaxMemoryMb = 8192,
                 MaxPids = 1024,
+                MaxGpus = maxGpus,
                 CreatedAt = T0,
                 UpdatedAt = T0,
             });
@@ -147,6 +152,8 @@ public class CatalogEndpointsTests
     [InlineData("/v1/catalog?limit=abc")]
     [InlineData("/v1/catalog?network=lan")]
     [InlineData("/v1/catalog?max_price_cents_per_min=-1")]
+    [InlineData("/v1/catalog?min_gpus=-1")]
+    [InlineData("/v1/catalog?min_gpus=abc")]
     [InlineData("/v1/catalog?cursor=not-a-cursor!!")]
     public async Task Catalog_rejects_malformed_query_params(string url)
     {
@@ -158,6 +165,46 @@ public class CatalogEndpointsTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var envelope = await response.Content.ReadFromJsonAsync<ErrorEnvelopeDto>();
         Assert.Equal("validation_error", envelope!.Error.Code);
+    }
+
+    [Fact]
+    public async Task Catalog_surfaces_gpu_fields_and_filters_by_min_gpus_and_gpu_class()
+    {
+        var fx = new Fixture();
+        await fx.SeedOnlineHostAsync("gpu-host", "reg/gpu:1", price: 5,
+            gpuClasses: new[] { "nvidia-a100" }, gpuCount: 4, maxGpus: 2);
+        await fx.SeedOnlineHostAsync("cpu-host", "reg/cpu:1", price: 5);
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        // Both filters set: only the GPU host with an offer whose ceiling ≥ 1 survives.
+        var page = await client.GetFromJsonAsync<CatalogPageDto>(
+            "/v1/catalog?min_gpus=1&gpu_class=nvidia-a100");
+
+        var item = Assert.Single(page!.Data);
+        Assert.Equal("gpu-host", item.Label);
+        Assert.Equal(new[] { "nvidia-a100" }, item.GpuClasses);
+        Assert.Equal(4, item.GpuCount);
+        Assert.Equal(2, Assert.Single(item.Images).MaxGpus);
+    }
+
+    [Fact]
+    public async Task Catalog_without_gpu_filters_lists_every_host_with_gpu_fields()
+    {
+        var fx = new Fixture();
+        await fx.SeedOnlineHostAsync("gpu-host", "reg/gpu:1", price: 5,
+            gpuClasses: new[] { "nvidia-a100" }, gpuCount: 4, maxGpus: 2);
+        await fx.SeedOnlineHostAsync("cpu-host", "reg/cpu:1", price: 5);
+        using var factory = fx.Build();
+
+        var page = await Authed(factory).GetFromJsonAsync<CatalogPageDto>("/v1/catalog");
+
+        // No filters → both hosts; the CPU host surfaces empty/0 GPU fields.
+        Assert.Equal(2, page!.Data.Count);
+        var cpu = Assert.Single(page.Data, d => d.Label == "cpu-host");
+        Assert.Empty(cpu.GpuClasses);
+        Assert.Equal(0, cpu.GpuCount);
+        Assert.Equal(0, Assert.Single(cpu.Images).MaxGpus);
     }
 
     [Fact]
@@ -227,7 +274,9 @@ public class CatalogEndpointsTests
         [property: JsonPropertyName("label")] string? Label,
         [property: JsonPropertyName("region")] string? Region,
         [property: JsonPropertyName("images")] IReadOnlyList<CatalogImageDto> Images,
-        [property: JsonPropertyName("online")] bool Online);
+        [property: JsonPropertyName("online")] bool Online,
+        [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+        [property: JsonPropertyName("gpu_count")] int GpuCount);
 
     private sealed record HostDetailDto(
         [property: JsonPropertyName("host_id")] Guid HostId,
@@ -242,7 +291,8 @@ public class CatalogEndpointsTests
         [property: JsonPropertyName("host_image_id")] Guid HostImageId,
         [property: JsonPropertyName("image_ref")] string ImageRef,
         [property: JsonPropertyName("price_cents_per_min")] long PriceCentsPerMin,
-        [property: JsonPropertyName("currency")] string Currency);
+        [property: JsonPropertyName("currency")] string Currency,
+        [property: JsonPropertyName("max_gpus")] int MaxGpus);
 
     private sealed record ErrorEnvelopeDto(
         [property: JsonPropertyName("error")] ErrorBodyDto Error);

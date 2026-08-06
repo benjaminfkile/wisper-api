@@ -102,7 +102,7 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
 ### Catalog
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/v1/catalog` | online hosts and their **priced, enabled** images; filter `?image=&max_price_cents_per_min=&network=`; paginated |
+| GET | `/v1/catalog` | online hosts and their **priced, enabled** images; filter `?image=&max_price_cents_per_min=&network=&min_gpus=&gpu_class=`; paginated |
 | GET | `/v1/hosts/:id` | one host's public detail + priced images + limits |
 
 `GET /v1/catalog` item shape:
@@ -111,11 +111,14 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "images": [ { "host_image_id": "…", "image_ref": "…/wisp-base:latest",
     "price_cents_per_min": 5, "currency": "usd",
     "networks": ["none","open"], "max_ttl_seconds": 14400,
-    "max_cpus": 4, "max_memory_mb": 8192 } ],
+    "max_cpus": 4, "max_memory_mb": 8192, "max_gpus": 2 } ],
   "isolation_levels": ["shared","vm"], "default_isolation": "shared",
+  "gpu_classes": ["nvidia-a100"], "gpu_count": 4,
   "online": true }
 ```
 `isolation_levels` are the sandbox levels this host offers and `default_isolation` the one it uses when a lease requests none, mirrored from the host's tunnel capability (`TUNNEL.md` §5, task #417). A host that advertises nothing (an older agent) surfaces `["shared"]` with default `"shared"`; the same two fields appear on `GET /v1/hosts/:id`. Levels are opaque strings, so a consumer can filter on the level it needs without the manager enumerating them.
+
+`gpu_classes`/`gpu_count` mirror the host's advertised GPU (the distinct opaque device classes and total device count, `TUNNEL.md` §5, task #521); each image's `max_gpus` is the GPU device ceiling that offer grants (`0` = no GPU access). Both appear on `GET /v1/hosts/:id` too. The catalog filters `?min_gpus=` (keep only offers whose `max_gpus` ≥ the floor — inclusive) and `?gpu_class=` (keep only hosts advertising that exact opaque class) compose with the price/network/image filters; a host advertising no GPU is dropped by `gpu_class` and an offer with `max_gpus: 0` is dropped by any `min_gpus ≥ 1` (task #523).
 
 ### Leases
 | Method | Path | Auth extras | Notes |
@@ -244,7 +247,7 @@ Every admin write records an `audit_log` row with actor + before/after (`DATA_MO
 ## 10. Pagination, filtering, sorting
 
 - Cursor-based: `?limit=&cursor=`; opaque `next_cursor` (null at end). Cursors encode a stable sort key (usually `created_at,id` desc), so inserts during paging don't duplicate/skip.
-- Documented filters per endpoint (e.g. leases `?status=`, catalog `?image=&network=&max_price_cents_per_min=`). Unknown query params are ignored, not errored.
+- Documented filters per endpoint (e.g. leases `?status=`, catalog `?image=&network=&max_price_cents_per_min=&min_gpus=&gpu_class=`). Unknown query params are ignored, not errored.
 
 ## 11. Rate limiting & quotas
 
