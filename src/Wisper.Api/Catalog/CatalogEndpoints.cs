@@ -62,6 +62,8 @@ public static class CatalogEndpoints
             ImageRef = NonEmpty(q["image"]),
             Network = ParseNetwork(q["network"]),
             MaxPriceCentsPerMin = ParseMaxPrice(q["max_price_cents_per_min"]),
+            MinGpus = ParseMinGpus(q["min_gpus"]),
+            GpuClass = NonEmpty(q["gpu_class"]),
             Limit = ParseLimit(q["limit"]),
             Cursor = ParseCursor(q["cursor"]),
         };
@@ -105,6 +107,24 @@ public static class CatalogEndpoints
         }
 
         return max;
+    }
+
+    private static int? ParseMinGpus(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        if (!int.TryParse(value, out var min) || min < 0)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'min_gpus' must be a non-negative integer.",
+                new { field = "min_gpus" });
+        }
+
+        return min;
     }
 
     private static int ParseLimit(string? value)

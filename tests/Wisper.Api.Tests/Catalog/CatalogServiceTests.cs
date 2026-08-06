@@ -31,7 +31,8 @@ public class CatalogServiceTests
         public async Task<Host> AddHostAsync(
             string name, string region, DateTimeOffset createdAt,
             HostStatus status = HostStatus.Online, bool online = true, Guid? id = null, string? os = null,
-            IReadOnlyList<string>? isolationLevels = null, string? defaultIsolation = null)
+            IReadOnlyList<string>? isolationLevels = null, string? defaultIsolation = null,
+            IReadOnlyList<string>? gpuClasses = null, int gpuCount = 0)
         {
             var host = await Hosts.CreateAsync(new Host
             {
@@ -43,6 +44,8 @@ public class CatalogServiceTests
                 AgentTokenHash = "hash",
                 IsolationLevels = isolationLevels ?? HostIsolation.SharedOnly,
                 DefaultIsolation = defaultIsolation ?? HostIsolation.Shared,
+                GpuClasses = gpuClasses ?? HostGpu.NoClasses,
+                GpuCount = gpuCount,
                 CreatedAt = createdAt,
                 UpdatedAt = createdAt,
             });
@@ -65,7 +68,7 @@ public class CatalogServiceTests
 
         public Task<HostImage> AddImageAsync(
             Guid hostId, string imageRef, long price, bool enabled = true,
-            NetworkMode[]? networks = null) =>
+            NetworkMode[]? networks = null, int maxGpus = 0) =>
             Images.CreateAsync(new HostImage
             {
                 HostId = hostId,
@@ -76,6 +79,7 @@ public class CatalogServiceTests
                 MaxCpus = 4,
                 MaxMemoryMb = 8192,
                 MaxPids = 1024,
+                MaxGpus = maxGpus,
                 Enabled = enabled,
                 CreatedAt = T0,
                 UpdatedAt = T0,
@@ -186,6 +190,157 @@ public class CatalogServiceTests
         var item = Assert.Single(page.Data);
         var image = Assert.Single(item.Images);
         Assert.Equal("cheap", image.ImageRef);
+    }
+
+    [Fact]
+    public async Task Filters_by_min_gpus_excluding_zero_ceiling_offers()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("h", "us", T0);
+        await h.AddImageAsync(host.Id, "cpu-only", price: 5, maxGpus: 0);
+        await h.AddImageAsync(host.Id, "one-gpu", price: 5, maxGpus: 1);
+        await h.AddImageAsync(host.Id, "four-gpu", price: 5, maxGpus: 4);
+
+        var page = await h.Service.ListAsync(new CatalogQuery { MinGpus = 1 });
+
+        var item = Assert.Single(page.Data);
+        // The 0-ceiling offer is excluded; the two GPU offers survive (order-independent).
+        Assert.Equal(
+            new[] { "four-gpu", "one-gpu" },
+            item.Images.Select(i => i.ImageRef).OrderBy(r => r));
+    }
+
+    [Fact]
+    public async Task Min_gpus_includes_an_offer_whose_ceiling_equals_the_floor()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("h", "us", T0);
+        await h.AddImageAsync(host.Id, "two-gpu", price: 5, maxGpus: 2);
+        await h.AddImageAsync(host.Id, "one-gpu", price: 5, maxGpus: 1);
+
+        var page = await h.Service.ListAsync(new CatalogQuery { MinGpus = 2 });
+
+        var item = Assert.Single(page.Data);
+        // Boundary is inclusive: max_gpus == min_gpus qualifies; the smaller ceiling drops out.
+        var image = Assert.Single(item.Images);
+        Assert.Equal("two-gpu", image.ImageRef);
+    }
+
+    [Fact]
+    public async Task Filters_by_exact_gpu_class_against_a_multi_class_host()
+    {
+        var h = new Harness();
+        var match = await h.AddHostAsync("a100-box", "us", T0.AddMinutes(1),
+            gpuClasses: new[] { "nvidia-a100", "nvidia-t4" }, gpuCount: 3);
+        var other = await h.AddHostAsync("t4-box", "us", T0,
+            gpuClasses: new[] { "nvidia-t4" }, gpuCount: 1);
+        await h.AddImageAsync(match.Id, "img", price: 5, maxGpus: 2);
+        await h.AddImageAsync(other.Id, "img", price: 5, maxGpus: 1);
+
+        var page = await h.Service.ListAsync(new CatalogQuery { GpuClass = "nvidia-a100" });
+
+        // Only the host advertising the exact class survives; a partial/substring never matches.
+        var item = Assert.Single(page.Data);
+        Assert.Equal(match.Id, item.HostId);
+    }
+
+    [Fact]
+    public async Task Gpu_filters_compose_with_price_and_network()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("gpu-host", "us", T0,
+            gpuClasses: new[] { "nvidia-a100" }, gpuCount: 4);
+        // Only this offer clears every filter: right class host, GPU ceiling ≥ 2, price ≤ 5, open network.
+        await h.AddImageAsync(host.Id, "good", price: 5, networks: new[] { NetworkMode.Open }, maxGpus: 2);
+        await h.AddImageAsync(host.Id, "too-pricey", price: 9, networks: new[] { NetworkMode.Open }, maxGpus: 2);
+        await h.AddImageAsync(host.Id, "no-gpu", price: 5, networks: new[] { NetworkMode.Open }, maxGpus: 0);
+        await h.AddImageAsync(host.Id, "wrong-net", price: 5, networks: new[] { NetworkMode.None }, maxGpus: 2);
+
+        var page = await h.Service.ListAsync(new CatalogQuery
+        {
+            GpuClass = "nvidia-a100",
+            MinGpus = 2,
+            MaxPriceCentsPerMin = 5,
+            Network = NetworkMode.Open,
+        });
+
+        var item = Assert.Single(page.Data);
+        var image = Assert.Single(item.Images);
+        Assert.Equal("good", image.ImageRef);
+    }
+
+    [Fact]
+    public async Task Gpu_class_filter_drops_a_host_with_no_advertised_gpu()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("legacy", "us", T0);
+        await h.AddImageAsync(host.Id, "img", price: 5, maxGpus: 0);
+
+        var page = await h.Service.ListAsync(new CatalogQuery { GpuClass = "nvidia-a100" });
+
+        Assert.Empty(page.Data);
+    }
+
+    [Fact]
+    public async Task Absent_gpu_filters_leave_results_unchanged()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("h", "us", T0, gpuClasses: new[] { "nvidia-a100" }, gpuCount: 2);
+        await h.AddImageAsync(host.Id, "cpu-only", price: 5, maxGpus: 0);
+        await h.AddImageAsync(host.Id, "one-gpu", price: 5, maxGpus: 1);
+
+        // No min_gpus / gpu_class set — every enabled priced image is returned, GPU ceilings ignored.
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        var item = Assert.Single(page.Data);
+        Assert.Equal(
+            new[] { "cpu-only", "one-gpu" },
+            item.Images.Select(i => i.ImageRef).OrderBy(r => r));
+    }
+
+    [Fact]
+    public async Task List_surfaces_max_gpus_and_the_hosts_advertised_gpu()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("gpu-host", "us", T0,
+            gpuClasses: new[] { "nvidia-a100", "nvidia-t4" }, gpuCount: 3);
+        await h.AddImageAsync(host.Id, "img", price: 5, maxGpus: 2);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.Equal(new[] { "nvidia-a100", "nvidia-t4" }, item.GpuClasses);
+        Assert.Equal(3, item.GpuCount);
+        Assert.Equal(2, Assert.Single(item.Images).MaxGpus);
+    }
+
+    [Fact]
+    public async Task List_surfaces_empty_gpu_for_a_host_that_advertises_none()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("cpu-host", "us", T0);
+        await h.AddImageAsync(host.Id, "img", price: 5);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.Empty(item.GpuClasses);
+        Assert.Equal(0, item.GpuCount);
+        Assert.Equal(0, Assert.Single(item.Images).MaxGpus);
+    }
+
+    [Fact]
+    public async Task Get_host_surfaces_max_gpus_on_each_image()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("gpu-detail", "eu", T0,
+            gpuClasses: new[] { "nvidia-a100" }, gpuCount: 2);
+        await h.AddImageAsync(host.Id, "img", price: 7, maxGpus: 2);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.Equal(new[] { "nvidia-a100" }, detail!.GpuClasses);
+        Assert.Equal(2, detail.GpuCount);
+        Assert.Equal(2, Assert.Single(detail.Images).MaxGpus);
     }
 
     [Fact]

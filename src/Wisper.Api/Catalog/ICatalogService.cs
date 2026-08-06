@@ -18,6 +18,19 @@ public sealed record CatalogQuery
     /// <summary>Inclusive ceiling on <c>price_cents_per_min</c>, or null for no price filter.</summary>
     public long? MaxPriceCentsPerMin { get; init; }
 
+    /// <summary>
+    /// Inclusive floor on an offer's GPU ceiling (<c>host_images.max_gpus</c>): keep only offers that can
+    /// grant at least this many devices, or null for no GPU-count filter (task #523).
+    /// </summary>
+    public int? MinGpus { get; init; }
+
+    /// <summary>
+    /// Opaque GPU class a host must advertise (exact ordinal match against its persisted
+    /// <c>gpu_classes</c>), or null for no GPU-class filter. The manager never interprets the string
+    /// (task #523).
+    /// </summary>
+    public string? GpuClass { get; init; }
+
     /// <summary>Page size, already clamped to <c>[1, 100]</c> (default 25).</summary>
     public int Limit { get; init; } = 25;
 

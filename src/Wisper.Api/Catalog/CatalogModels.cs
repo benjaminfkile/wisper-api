@@ -18,7 +18,8 @@ public sealed record CatalogImage(
     [property: JsonPropertyName("max_ttl_seconds")] int MaxTtlSeconds,
     [property: JsonPropertyName("max_cpus")] decimal? MaxCpus,
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
-    [property: JsonPropertyName("max_pids")] int? MaxPids)
+    [property: JsonPropertyName("max_pids")] int? MaxPids,
+    [property: JsonPropertyName("max_gpus")] int MaxGpus)
 {
     /// <summary>Currency is USD-only in v0 (docs/API.md §1 — integer cents + <c>"usd"</c>).</summary>
     private const string Usd = "usd";
@@ -33,7 +34,10 @@ public sealed record CatalogImage(
         MaxTtlSeconds: image.MaxTtlSeconds,
         MaxCpus: image.MaxCpus,
         MaxMemoryMb: image.MaxMemoryMb,
-        MaxPids: image.MaxPids);
+        MaxPids: image.MaxPids,
+        // The offer's GPU ceiling — the max exclusive devices a lease against this offer may request
+        // (task #522); 0 means no GPU access on this offer. Surfaced so a consumer can size before leasing.
+        MaxGpus: image.MaxGpus);
 }
 
 /// <summary>
@@ -44,6 +48,8 @@ public sealed record CatalogImage(
 /// <c>os</c> carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>, mirroring
 /// the wisp <c>/images</c> document), or <c>null</c> when the live capability has none — a client can
 /// adapt to a Windows host without a separate fetch, and an older agent that omits it never errors.
+/// <c>gpu_classes</c>/<c>gpu_count</c> mirror the host's advertised GPU (task #523) so a consumer can
+/// filter/size without a per-host fetch; empty/0 for a host that advertises none.
 /// </summary>
 public sealed record CatalogItem(
     [property: JsonPropertyName("host_id")] Guid HostId,
@@ -53,6 +59,8 @@ public sealed record CatalogItem(
     [property: JsonPropertyName("online")] bool Online,
     [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
     [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
+    [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
+    [property: JsonPropertyName("gpu_count")] int GpuCount,
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a host plus its already-filtered priced images into the catalog wire shape.</summary>
@@ -69,6 +77,10 @@ public sealed record CatalogItem(
             Online: online,
             IsolationLevels: levels,
             DefaultIsolation: defaultIsolation,
+            // Mirror the host's advertised GPU onto the catalog entry (task #523); normalized so a legacy row
+            // still reads as an empty class list / 0 count, matching the host-detail surfacing.
+            GpuClasses: HostGpu.NormalizeClasses(host.GpuClasses),
+            GpuCount: Math.Max(0, host.GpuCount),
             Os: os);
     }
 }
