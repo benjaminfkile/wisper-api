@@ -199,9 +199,14 @@ CREATE TABLE ledger_accounts (
   -- normal side: user_wallet/host_earnings/lease_holds/platform_revenue = credit; platform_cash/stripe_fees = debit
   balance_cents  bigint NOT NULL DEFAULT 0,    -- maintained by trigger; = natural positive balance
   created_at     timestamptz NOT NULL DEFAULT now(),
-  -- one wallet & one earnings account per user; singletons are unique by kind
+  -- one wallet & one earnings account per user
   UNIQUE (kind, owner_user_id)
 );
+
+-- Platform singletons (owner NULL) need their own partial unique index: in Postgres,
+-- NULLs are distinct, so UNIQUE (kind, owner_user_id) alone would allow duplicates.
+CREATE UNIQUE INDEX ledger_accounts_singleton_idx
+  ON ledger_accounts (kind) WHERE owner_user_id IS NULL;
 
 CREATE TABLE ledger_transactions (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -248,7 +253,7 @@ FOR EACH ROW EXECUTE FUNCTION assert_txn_balanced();
 **(c) Balances are maintained, never authored** — `AFTER INSERT` on `ledger_entries` updates `ledger_accounts.balance_cents` by the account's normal side:
 `credit-normal: balance += credit − debit; debit-normal: balance += debit − credit`.
 
-**(d) Non-negative earmarked liabilities** — the same trigger `RAISE`s if a `user_wallet` or `lease_holds` account would go **below zero**. This is the hard guarantee that a consumer can never outspend their wallet and a hold can't be over-drawn.
+**(d) Non-negative earmarked liabilities** — the same trigger `RAISE`s if a `user_wallet` or `lease_holds` account would go **below zero**. This is the hard guarantee that a consumer can never outspend their wallet and a hold can't be over-drawn — with **one deliberate exception**: a `chargeback` transaction may drive a `user_wallet` negative (the trigger checks the transaction kind), because a chargeback is a genuine debt the platform records rather than refuses (`PAYMENTS.md` §7). `lease_holds` is guarded unconditionally.
 
 **(e) Reconciliation job** (scheduled) re-derives `SUM` per account from `ledger_entries` and asserts it equals `balance_cents`; any drift pages an operator. Balances are a cache; the journal is truth.
 
@@ -268,7 +273,7 @@ Every flow is `Σ debit = Σ credit`. Debit/credit chosen by each account's norm
 
 The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper holds the estimated maximum out of the wallet (so the consumer is guaranteed able to pay for what they can consume), charges *actual* metered minutes out of the hold, and releases the remainder at end. A consumer literally cannot start a lease they can't afford, and a host is guaranteed funds exist for metered time.
 
-**Zero-priced images degenerate to zero flows.** A `price_cents_per_min = 0` image (a free tier or a self-hosted operator pricing their own box at cost) makes every figure above `0`: the `lease_hold`, each `lease_charge`, and the `hold_release` are all zero-amount and are therefore **skipped, not posted** — a `0=0` transaction carries no money and the balanced-entry trigger (d, above) exists to guard real movement, so writing one would be vacuous. A free lease thus never touches the ledger, and no balance can go negative from it (`PAYMENTS.md` §4).
+**Zero-priced images degenerate to zero flows.** A `price_cents_per_min = 0` image (a free tier or a self-hosted operator pricing their own box at cost) makes every figure above `0`: the `lease_hold`, each `lease_charge`, and the `hold_release` are all zero-amount and are therefore **skipped, not posted** — a `0=0` transaction carries no money, and the `ledger_entries` CHECK (`(debit_cents = 0) <> (credit_cents = 0)`, exactly one side per entry) hard-rejects a `0/0` row anyway, so writing one is impossible as well as vacuous. A free lease thus never touches the ledger, and no balance can go negative from it (`PAYMENTS.md` §4).
 
 ## 9. Stripe integration
 
@@ -279,10 +284,10 @@ The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper
 | column | type | notes |
 |---|---|---|
 | `id` | `text` PK | Stripe event id (dedupe key) |
-| `type` | `text` | `payment_intent.succeeded`, `account.updated`, `transfer.*`, … |
-| `payload` | `jsonb` | raw event |
-| `status` | `stripe_event_status` | received→processed/ignored/failed |
-| `received_at` / `processed_at` | `timestamptz` | |
+| `type` | `text` NOT NULL | `payment_intent.succeeded`, `account.updated`, `transfer.*`, … |
+| `payload` | `jsonb` NOT NULL | raw event |
+| `status` | `stripe_event_status` NOT NULL DEFAULT `'received'` | received→processed/ignored/failed |
+| `received_at` / `processed_at` | `timestamptz` | `received_at` NOT NULL DEFAULT `now()` |
 | `error` | `text` | on failure, for retry/inspection |
 
 - **`payouts`** — draining `host_earnings` via Connect transfers:
@@ -290,12 +295,14 @@ The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper
 | column | type | notes |
 |---|---|---|
 | `id` | `uuid` PK | |
-| `host_user_id` | `uuid` → `users(id)` | |
+| `host_user_id` | `uuid` NOT NULL → `users(id)` | |
 | `amount_cents` | `bigint` CHECK (`> 0`) | |
+| `currency` | `text` NOT NULL DEFAULT `'usd'` | |
 | `period_start` / `period_end` | `timestamptz` | earnings window paid |
 | `status` | `payout_status` | pending→in_transit→paid/failed |
 | `stripe_transfer_id` | `text` UNIQUE | |
 | `payout_txn_id` | `uuid` → `ledger_transactions(id)` | the `payout` entry |
+| `error` | `text` | on failure, for retry/inspection |
 | `created_at` / `updated_at` | `timestamptz` | |
 
 ## 10. Idempotency — `idempotency_keys`
@@ -321,7 +328,7 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 |---|---|---|
 | `id` | `uuid` PK | |
 | `fee_bps` | `int` NOT NULL CHECK (0..10000) | platform cut in basis points |
-| `min_topup_cents` | `bigint` | |
+| `min_topup_cents` | `bigint` NOT NULL DEFAULT 0 CHECK (`>= 0`) | |
 | `max_concurrent_leases_per_user` | `int` | |
 | `max_ttl_seconds_cap` | `int` | global ceiling over host limits |
 | `min_isolation` | `text` | global minimum isolation floor, NULL = no floor; a lease below it is rejected (`API.md`). Migration `0011_LeaseIsolation` |
@@ -332,11 +339,11 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 | `effective_from` | `timestamptz` NOT NULL | |
 | `created_by` | `uuid` → `users(id)` | admin |
 
-The four fraud-guard columns are all NULL-able (NULL = "no limit"); they carry the day-one, deterministic fraud controls (`PAYMENTS.md` §7, §13) the billing paths enforce at top-up and lease start.
+The four fraud-guard columns are all NULL-able (NULL = "no limit"), each with a `CHECK (>= 0)` on non-NULL values (`0008_FraudPolicy`); they carry the day-one, deterministic fraud controls (`PAYMENTS.md` §7, §13) the billing paths enforce at top-up and lease start.
 
 ## 12. Audit — `audit_log`
 
-Append-only record of every admin/policy/money-sensitive action.
+Append-only record of every admin/policy/money-sensitive action. Append-only is DB-enforced, not just convention: a `BEFORE UPDATE OR DELETE` trigger (`audit_log_immutable`, reusing the ledger's `ledger_forbid_mutation()`) raises on any mutation.
 
 | column | type | notes |
 |---|---|---|
@@ -351,11 +358,14 @@ Append-only record of every admin/policy/money-sensitive action.
 
 - `users(cognito_sub)`, `users(email)`, `users(stripe_customer_id)`, `users(connect_account_id)` — unique.
 - `api_keys(token_hash)` — unique (backs the hashed auth lookup); `api_keys(user_id)`.
-- `hosts(owner_user_id)`; partial `hosts(status) WHERE 'online'`; `host_images(host_id,image_ref)` unique.
+- `hosts(owner_user_id)`; `hosts(agent_token_hash)`; partial `hosts(status) WHERE 'online'`; `host_images(host_id,image_ref)` unique; `host_images(host_id)`.
 - `leases(consumer_user_id, created_at DESC)`; partial `leases(host_id) WHERE status IN ('active','suspended')`.
-- `lease_usage(lease_id, period_start)` unique.
+- `lease_usage(lease_id, period_start)` unique; `lease_usage(lease_id)`.
 - `ledger_entries(account_id, id)`, `(transaction_id)`, partial `(lease_id)`.
-- `ledger_transactions(idempotency_key)` unique; `stripe_events(id)` PK dedupe; `payouts(stripe_transfer_id)` unique.
+- `ledger_transactions(idempotency_key)` unique; partial unique `ledger_accounts(kind) WHERE owner_user_id IS NULL` (platform singletons, §7); `stripe_events(id)` PK dedupe.
+- `payouts(stripe_transfer_id)` unique; `payouts(host_user_id, created_at DESC)`.
+- `idempotency_keys(expires_at)` (TTL sweep); `platform_policy(effective_from DESC)` (active-row lookup).
+- `audit_log(actor_user_id, created_at DESC)`; `audit_log(target_type, target_id)`.
 
 ## 14. Crash-safety & consistency
 

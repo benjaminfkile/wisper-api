@@ -15,7 +15,7 @@ The external surface of Wisper: what the two Next.js apps and third-party client
 - **Request tracing:** every response carries `X-Request-Id`; clients should log it. It correlates with tunnel/ledger logs server-side.
 - **Idempotency:** money-mutating `POST`s **require** an `Idempotency-Key` header (§9).
 - **Pagination:** cursor-based — `?limit=` (default 25, max 100) `&cursor=`; responses return `{ "data": [...], "next_cursor": "…"|null }` (§10).
-- **Rate limits:** per-user token bucket; `X-RateLimit-Limit/Remaining/Reset` headers; `429` with `Retry-After` on exhaustion (§11).
+- **Rate limits:** *designed, not yet implemented* — the intended shape is a per-user token bucket with `X-RateLimit-Limit/Remaining/Reset` headers and `429` + `Retry-After` on exhaustion (§11). Today no generic rate limiter runs; the only 429s are the deterministic fraud-guard caps (`limit_exceeded`, §3).
 
 ## 2. Authentication & roles
 
@@ -51,9 +51,11 @@ Uniform envelope on every non-2xx:
 | `conflict` | 409 | idempotency mismatch, illegal state transition |
 | `host_offline` | 409 | target host has no live tunnel |
 | `lease_not_ready` | 409 | exec/shell before the lease is `active` |
-| `at_capacity` | 409 | host or per-user concurrency limit reached |
+| `at_capacity` | 409 | per-user concurrency limit reached (also accepted as an agent-reported error) |
 | `image_not_allowed` | 400 | requested image not in the host's priced allow-list |
-| `rate_limited` | 429 | token bucket exhausted (`Retry-After`) |
+| `limit_exceeded` | 429 | a fraud-guard cap hit: first-top-up cap, new-account top-up velocity, or daily lease-spend cap (`PAYMENTS.md` §7) |
+| `lease_failed` | 502 | the host/agent failed the lease operation (unrecognized agent error, wisp non-2xx) |
+| `rate_limited` | 429 | *reserved* — declared for the planned token bucket (§1); nothing emits it today |
 | `upstream_timeout` | 504 | tunnel op exceeded its deadline (`TUNNEL.md` §12) |
 | `internal` | 500 | unexpected fault (already logged with `request_id`) |
 
@@ -63,7 +65,9 @@ Ownership failures return `404` (not `403`) so the API never reveals the existen
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/healthz` | none | liveness `{ "status": "ok" }` |
+| GET | `/healthz` | none | health `{ "status": "ok"\|"degraded"\|"error", "checks": {...} }`; **503** when unhealthy |
+| GET | `/api/health` | none | same handler at the fleet gateway's conventional path |
+| GET | `/v1/` | none | service banner `{ service, version }` |
 | POST | `/stripe/webhook` | Stripe sig | webhook ingest (`PAYMENTS.md` §8) |
 
 ## 5. Consumer API (min role: `consumer`)
@@ -111,10 +115,10 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "images": [ { "host_image_id": "…", "image_ref": "…/wisp-base:latest",
     "price_cents_per_min": 5, "currency": "usd",
     "networks": ["none","open"], "max_ttl_seconds": 14400,
-    "max_cpus": 4, "max_memory_mb": 8192, "max_gpus": 2 } ],
+    "max_cpus": 4, "max_memory_mb": 8192, "max_pids": 1024, "max_gpus": 2 } ],
   "isolation_levels": ["shared","vm"], "default_isolation": "shared",
   "gpu_classes": ["nvidia-a100"], "gpu_count": 4,
-  "online": true }
+  "os": "linux", "online": true }
 ```
 `isolation_levels` are the sandbox levels this host offers and `default_isolation` the one it uses when a lease requests none, mirrored from the host's tunnel capability (`TUNNEL.md` §5, task #417). A host that advertises nothing (an older agent) surfaces `["shared"]` with default `"shared"`; the same two fields appear on `GET /v1/hosts/:id`. Levels are opaque strings, so a consumer can filter on the level it needs without the manager enumerating them.
 
@@ -160,9 +164,9 @@ Server flow: validate image/network/resources/isolation/env against the host's p
 ```json
 { "id":"lease_…","status":"active","host_id":"…","image_ref":"…",
   "network":"open","resources":{…},"ttl_seconds":3600,
-  "price_cents_per_min":5,"currency":"usd",
+  "price_cents_per_min":5,"currency":"usd","created_at":"…Z",
   "started_at":"…Z","billable_seconds":742,"cost_cents_so_far":62,
-  "expires_at":"…Z","end_reason":null,"isolation":"sandboxed" }
+  "expires_at":"…Z","end_reason":null,"isolation":"sandboxed","os":"linux" }
 ```
 
 ### Billing
@@ -172,7 +176,7 @@ Server flow: validate image/network/resources/isolation/env against the host's p
 | GET | `/v1/billing/transactions` | | the caller's ledger view (top-ups, charges, refunds); paginated |
 | POST | `/v1/billing/topup` | `Idempotency-Key` | create a PaymentIntent → `{ client_secret }` (`PAYMENTS.md` §3) |
 | POST | `/v1/billing/payment-methods` | | SetupIntent to save a method → `{ client_secret }` |
-| GET/PUT | `/v1/billing/auto-recharge` | | threshold + amount + on/off |
+| GET/PUT | `/v1/billing/auto-recharge` | | *planned, not implemented* — threshold + amount + on/off (`PAYMENTS.md` §3) |
 | POST | `/v1/billing/refund` | `Idempotency-Key` | refund unspent wallet credits |
 
 ## 6. Host API (min role: `host`)
@@ -183,8 +187,8 @@ Becoming a host is additive — a `consumer` gains the `host` group on first hos
 |---|---|---|---|
 | POST | `/v1/hosts` | | register a wisp host → returns the **agent token once** (never retrievable again) |
 | GET | `/v1/hosts/mine` | | caller's hosts, online state, capacity, earnings summary |
-| GET | `/v1/hosts/:id` (owned) | | full host detail |
-| DELETE | `/v1/hosts/:id` | | deregister (drains pending earnings first) |
+| GET | `/v1/hosts/:id` | | the same public detail as the catalog route (§5) — there is no separate owner-scoped variant today |
+| DELETE | `/v1/hosts/:id` | | *planned, not implemented* — deregister (drains pending earnings first) |
 | POST | `/v1/hosts/:id/agent-token` | | rotate the agent token (old one revoked, tunnel closed `4402`) |
 | GET | `/v1/hosts/:id/images` | | priced allow-list |
 | PUT | `/v1/hosts/:id/images` | `validation_error` if a priced image is enabled without Connect | replace the priced allow-list (validated live against the host's advertised wisp capability) |
@@ -219,7 +223,7 @@ The consumer console and live output flow **through** Wisper to the host tunnel 
   2. **Connect:** `WS /v1/leases/:id/shell?ticket=tkt_…`. Wisper redeems the ticket (one-time), then bridges to a tunnel `shell` stream. **The JWT never appears in a URL** — the ticket does, and it's single-use and short-lived.
   3. **Frames:** **binary** frames carry terminal bytes (client→PTY stdin, PTY→client stdout); a small **JSON text** control frame `{ "t":"resize", "cols":120, "rows":32 }` sends window size. This mirrors the tunnel's shell framing so the relay is a passthrough.
   4. **Backpressure:** the relay honors the tunnel's per-stream credit flow control (`TUNNEL.md` §9) end-to-end to the browser socket.
-- **Lease events (optional live status):** `WS /v1/leases/:id/events?ticket=…` (same ticket scheme) streams lifecycle JSON (`provisioning→active→…`), so the UI needn't poll. Backed by the Redis backplane so it works across manager instances.
+- **Lease events (optional live status):** *planned, not implemented* — `WS /v1/leases/:id/events?ticket=…` (same ticket scheme) streaming lifecycle JSON (`provisioning→active→…`) so the UI needn't poll. Today clients poll `GET /v1/leases/:id`.
 
 ## 8. Admin API (min role: `admin`)
 
@@ -246,13 +250,13 @@ Every admin write records an `audit_log` row with actor + before/after (`DATA_MO
 
 ## 10. Pagination, filtering, sorting
 
-- Cursor-based: `?limit=&cursor=`; opaque `next_cursor` (null at end). Cursors encode a stable sort key (usually `created_at,id` desc), so inserts during paging don't duplicate/skip.
+- Cursor-based: `?limit=&cursor=`; opaque `next_cursor` (null at end). Cursors encode a stable sort key (usually `created_at,id` desc), so inserts during paging don't duplicate/skip. (Exception: `GET /v1/admin/hosts` and `/v1/admin/users` use plain `?limit=&offset=` paging.)
 - Documented filters per endpoint (e.g. leases `?status=`, catalog `?image=&network=&max_price_cents_per_min=&min_gpus=&gpu_class=`). Unknown query params are ignored, not errored.
 
 ## 11. Rate limiting & quotas
 
-- Per-user token bucket (tighter anonymous/`/healthz` excluded). Money endpoints and lease creation get stricter buckets. `429 rate_limited` + `Retry-After`; `X-RateLimit-*` on every response.
-- **Business quotas** (distinct from rate limits): `max_concurrent_leases_per_user` and per-user spend caps come from `platform_policy` and return `409 at_capacity` / `402` respectively — enforced server-side regardless of client behavior.
+- *Planned, not implemented:* per-user token bucket (anonymous/`/healthz` excluded), stricter buckets on money endpoints and lease creation, `429 rate_limited` + `Retry-After`, `X-RateLimit-*` on every response. No generic rate limiter runs today.
+- **Business quotas** (distinct from rate limits, and fully implemented): `max_concurrent_leases_per_user` returns `409 at_capacity`; the fraud-guard caps (first-top-up, new-account top-up velocity, daily lease spend — `PAYMENTS.md` §7) return `429 limit_exceeded`; an unaffordable hold returns `402 insufficient_funds`. All come from `platform_policy` and are enforced server-side regardless of client behavior.
 
 ## 12. Observability & correlation
 

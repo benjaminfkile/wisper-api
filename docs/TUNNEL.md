@@ -38,7 +38,7 @@ Raw WebSocket (`System.Net.WebSockets` on Kestrel; `gorilla/websocket` or `nhooy
 | `rid` | uint32 | **request id** — correlates a request control frame with its response | Wisper (monotonic per connection) |
 | `sid` | uint32 | **stream id** — a long-lived byte stream (shell or exec-stream) | Wisper |
 
-Agent-initiated *unsolicited* frames (`host.heartbeat`, `lease.ended`) carry neither. Agent *responses* echo the `rid`/`sid` Wisper sent.
+Agent-initiated *unsolicited* frames (`host.heartbeat`, `lease.ready`, `lease.ended`) carry neither (`lease.ready` correlates by `leaseId`). Agent *responses* echo the `rid`/`sid` Wisper sent.
 
 ## 3. Connection lifecycle
 
@@ -71,14 +71,14 @@ agent                                   Wisper
 |---|---|
 | 1000 | normal shutdown (either side) |
 | 4401 | bad / missing / expired host token — reauth needed |
-| 4403 | host suspended by admin |
-| 4409 | protocol version incompatible (see `hello`) |
-| 4408 | liveness timeout (missed pongs) |
+| 4403 | *reserved* — host suspended by admin. Not sent today: a suspended host's tunnel stays up; suspension is enforced by presence never flipping the host `online` (§3a) |
+| 4409 | protocol version incompatible (see `hello`) — also sent when the first frame is missing or not a valid `hello` |
+| 4408 | liveness timeout (no frame within the inactivity window — §7) |
 | 4402 | host token **revoked** mid-session (agent must not auto-reconnect until re-provisioned) |
 
 ## 4. Protocol versioning
 
-`hello.proto` is an integer (starts at `1`). Wisper answers with the highest version it and the agent both support in `hello.ack.proto`; if there is no overlap it closes **4409**. New frame types are additive; a receiver **ignores unknown control `t` values** with an `rid` by replying `error{code:"unsupported"}`, and ignores unknown unsolicited frames. This lets agent and manager roll independently.
+`hello.proto` is an integer (starts at `1`). Wisper answers with the highest version it and the agent both support in `hello.ack.proto`; if there is no overlap it closes **4409**. New frame types are additive; a receiver **ignores unknown control `t` values** — today they are silently dropped with a debug log (no `error{code:"unsupported"}` reply is implemented), and malformed control JSON is likewise dropped with a warning. This lets agent and manager roll independently.
 
 ## 5. Control frame catalog
 
@@ -88,17 +88,17 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| A→W | `hello` | `proto, agentVersion, wispVersion, capability{images[],default,limits,os,isolation_levels,default_isolation,gpu?{supported,devices[{id,class,vram_mb}],max_gpus,isolations[]}}, capacity{maxLeases,maxStreams}` | first frame after upgrade; `capacity` = how much this host will serve concurrently, **Wisper-enforced** (a lease/stream over capacity is refused with `error{code:"at_capacity"}` before it reaches the host). `capability.isolation_levels` / `default_isolation` are the host's effective isolation posture (from wisp `GET /images`), surfaced in `GET /v1/catalog`. `capability.gpu` (task #521) carries the host's advertised GPU; the manager persists the distinct device `class` strings as `hosts.gpu_classes` and the device count as `hosts.gpu_count`, treating class/isolation strings as **opaque** (like `isolation_levels`). A missing `gpu` block ⇒ `supported=false` (older agents keep working) |
+| A→W | `hello` | `proto, agentVersion, wispVersion, capability{images[],default,limits,os,isolation_levels,default_isolation,gpu?{supported,devices[{id,class,vram_mb}],max_gpus,isolations[]}}, capacity{maxLeases,maxStreams}` | first frame after upgrade; `capacity` is advisory today — it is parsed but **not enforced** (the `at_capacity` error that exists is the per-**user** concurrency cap from platform policy, and agents may also report `at_capacity` themselves). `capability.isolation_levels` / `default_isolation` are the host's effective isolation posture (from wisp `GET /images`), surfaced in `GET /v1/catalog`. `capability.gpu` (task #521) carries the host's advertised GPU; the manager persists the distinct device `class` strings as `hosts.gpu_classes` and the device count as `hosts.gpu_count` (an absent block leaves previously persisted values untouched), treating class strings as **opaque**. `gpu.max_gpus` is **live-only**: it exists on the in-memory capability snapshot and is the ceiling offer upserts are validated against, never persisted. `gpu.isolations[]` is accepted but currently **dropped** (not snapshotted, surfaced, or validated) — wisp is the enforcer of GPU-per-isolation. A missing `gpu` block ⇒ `supported=false` (older agents keep working) |
 | W→A | `hello.ack` | `proto, sessionId, pingIntervalMs, maxFrameBytes, initialWindowBytes, graceSeconds` | operational params: liveness cadence (§7), max binary payload, per-stream flow window (§9), disconnect grace (§8) |
-| A→W | `capability.update` | `capability{...}, capacity{...}?` | host changed its wisp allow-list/limits/capacity while online |
+| A→W | `capability.update` | `capability{...}, capacity{...}?` | *reserved, not implemented* — the frame type constant exists but nothing sends or handles it (an incoming one is dropped). Mid-session capability refresh happens **only** via `host.heartbeat.capability` below |
 | A→W | `host.heartbeat` | `leases:[{leaseId,wispContractId,status}], load?{cpu,mem,running}, capability?{isolation_levels,default_isolation,gpu?}` | every ~15s; drives reconciliation (§8). Optional `capability` lets a host refresh its offered isolation levels — and its `gpu` block (task #521) — mid-session without reconnecting |
-| W→A | `error` | `rid?, sid?, code, message` | generic failure for a request/stream |
+| both | `error` | `rid?, sid?, code, message` | generic failure for a request/stream; agent-sent errors are mapped to consumer-facing codes (§12) |
 
 ### Lease lifecycle
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| W→A | `lease.create` | `rid, leaseId, image, network, isolation, resources{cpus,memory_mb,pids}, ttlSeconds, userdata?, env?` | Wisper has already authorized + billing-gated. `isolation` is the resolved ordered level (`shared`<`sandboxed`<`vm`, defaults `shared`); the agent forwards it to wisp, which re-validates as the real security boundary. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
+| W→A | `lease.create` | `rid, leaseId, image, network, isolation, resources{cpus,memory_mb,pids,gpus}, ttl_seconds, userdata?, env?` | Wisper has already authorized + billing-gated. `isolation` is the resolved ordered level (`shared`<`sandboxed`<`vm`, defaults `shared`); the agent forwards it to wisp, which re-validates as the real security boundary. `resources.gpus` (task #522) is the count of whole exclusive GPUs, forwarded verbatim — wisp allocates and enforces. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
 | A→W | `lease.accepted` | `rid, leaseId, wispContractId, status:"provisioning"` | agent called wisp `POST /contracts` |
 | A→W | `lease.ready` | `leaseId` | wisp reached `ready`; **Wisper starts the meter here** |
 | A→W | `lease.failed` | `rid, leaseId, error` | provisioning/pull failed; nothing billed |
@@ -111,7 +111,7 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
 | W→A | `exec.run` | `rid, leaseId, command` | agent calls wisp `POST /exec` |
-| A→W | `exec.result` | `rid, stdout, stderr, exitCode` | fully buffered |
+| A→W | `exec.result` | `rid, stdout, stderr, exit_code` | fully buffered |
 
 ### Exec (streamed) & shell — open a byte stream `sid`
 
@@ -119,7 +119,7 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 |---|---|---|---|
 | W→A | `exec.open` | `rid, sid, leaseId, command` | agent calls wisp `POST /exec?stream=1` |
 | A→W | `exec.opened` | `rid, sid` | then binary frames flow A→W on `sid` (ch 1/2) |
-| A→W | `exec.exit` | `sid, exitCode` | stream complete |
+| A→W | `exec.exit` | `sid, exit_code` | stream complete |
 | W→A | `shell.open` | `rid, sid, leaseId, cols, rows` | agent opens wisp `WS /contracts/:id/shell` |
 | A→W | `shell.opened` | `rid, sid` | then binary frames flow **both** ways on `sid` (ch 0 in, ch 1 out) |
 | W→A | `shell.resize` | `sid, cols, rows` | window resize (agent forwards to the PTY) |
@@ -137,7 +137,7 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 
 Two independent mechanisms:
 
-- **WebSocket ping/pong (liveness).** Both peers send a protocol-level **ping every 30s** (`pingIntervalMs`) and expect a pong. Missing **2 consecutive pongs (~60–90s)** ⇒ the peer is dead: close **4408**, agent reconnects (§8). This keeps NAT bindings and the **load-balancer idle timeout (e.g. 900 s)** alive with wide margin and detects half-open TCP fast.
+- **Liveness (inactivity timer).** The server sets the protocol-level keep-alive (`pingIntervalMs`, 30s) but does not count pongs. Liveness is an **application inactivity window**: if *no frame of any kind* arrives within the timeout (default 2.5 × ping ≈ 75 s), the peer is presumed dead: close **4408**, agent reconnects (§8). The ~15 s heartbeat guarantees a healthy agent always beats the window. This also keeps NAT bindings and the **load-balancer idle timeout (e.g. 900 s)** alive with wide margin.
 - **Application heartbeat (state).** `host.heartbeat` every ~15s carries the host's live lease list + load. It is *not* liveness (ping/pong is) — it is the truth source Wisper reconciles against after a reconnect and the signal for host load/health in the UI.
 
 ## 8. Disconnect, grace, reconnect & resync
@@ -179,7 +179,7 @@ The agent is a thin translator. Each tunnel op maps to a wisp API call (`--wisp 
 
 | Tunnel | wisp call |
 |---|---|
-| `lease.create` | `POST /contracts {image,network,isolation,resources,ttl_seconds,userdata}` → keep `{contract_id, token}`; emit `lease.accepted`, then `lease.ready` when status hits `ready` |
+| `lease.create` | `POST /contracts {image,network,isolation,resources(incl. gpus),ttl_seconds,userdata,env}` → keep `{contract_id, token}`; emit `lease.accepted`, then `lease.ready` when status hits `ready` |
 | `exec.run` | `POST /contracts/:id/exec {command}` (Bearer contract token) → `exec.result` |
 | `exec.open` | `POST /contracts/:id/exec?stream=1` → parse SSE, emit binary frames + `exec.exit` |
 | `shell.open` | `WS /contracts/:id/shell?token=<contract token>` → pipe bytes ↔ `sid` |
@@ -204,8 +204,8 @@ The consumer never touches the tunnel; Wisper relays (routing across instances v
 ## 12. Errors & timeouts
 
 - Every `rid` request has a Wisper-side **deadline** (e.g. `lease.create` 120s to cover image pull, `exec.run` per-command). On timeout Wisper fails the consumer call and may send `stream.close`/`lease.release` to clean up the host.
-- `error{rid,code,message}` carries typed failures: `unsupported`, `not_ready` (lease not `ready`), `unknown_lease`, `wisp_error` (local wisp returned non-2xx), `overflow`, `internal`.
-- Malformed frames (bad JSON, unknown binary `sid`, oversize) ⇒ `error` + optional close if the connection state is unrecoverable.
+- `error{rid,code,message}` carries typed failures. Wisper maps agent-reported codes to consumer errors: `not_ready` (lease not `ready`), `unknown_lease`, and `at_capacity` are recognized and mapped to their consumer equivalents; **any other code** (e.g. a wisp non-2xx) collapses to `lease_failed` (502). There is no distinct `unsupported`/`wisp_error`/`overflow`/`internal` handling.
+- Malformed control frames (bad JSON) are dropped with a warning; unknown binary `sid`s / flow violations tear the stream down (§9). No `error` reply is emitted for malformed input today.
 
 ## 13. Security
 
@@ -247,7 +247,7 @@ Everything required for a correct, production-grade tunnel is specified above an
 
 **Settled — chosen, not punted:**
 - **JSON control frames** (not MessagePack). The control channel is low-volume — a handful of small frames per lease op; the high-volume path (PTY/exec bytes) is already raw binary (§2). JSON's debuggability wins on the control plane; MessagePack would optimize a channel that isn't the bottleneck.
-- **`permessage-deflate` enabled** for text (control) frames and exec/log byte streams; **disabled for the shell channel** (interactive PTY is latency-sensitive and low-volume, and compression adds head-of-line latency). Negotiated at handshake.
+- **`permessage-deflate`** — *designed but not implemented*: nothing negotiates compression today (the accept sets only the keep-alive interval). The design intent stands — enable for text (control) frames and exec/log byte streams, disable for the shell channel (interactive PTY is latency-sensitive; compression adds head-of-line latency) — but note the per-channel split needs a different accept API than the one in use.
 
 **Out of scope — because it isn't needed for correctness, not because it's hard:**
 - **Multiple concurrent tunnels per host (redundancy).** One tunnel per host with fast reconnect (§8) and a bounded grace window is the standard, sufficient model; a second live tunnel per host adds split-brain/ordering complexity for redundancy that reconnect already provides. A new connection from a host **supersedes** the prior one (the old socket is closed 1000); this cleanly covers rolling agent restarts. If a concrete availability requirement ever demands hot-standby tunnels, it is an additive change (a tunnel-generation id in `hello`), not a redesign.
