@@ -140,15 +140,18 @@ public sealed class LeaseService : ILeaseService
             throw new ApiException(ApiErrorCode.Internal, "The relay returned a malformed lease id.");
         }
 
-        // Earmark the hold now the lease id exists (docs/PAYMENTS.md §4): wallet → lease_holds. The meter
-        // debits it per tick; the remainder is released at lease end. A free image places no hold.
-        var holdTxnId = await _walletGate.PlaceHoldAsync(consumerUserId, leaseId, holdCents, Usd, ct);
-
+        // Persist the lease row BEFORE earmarking the hold (task #540). The hold's ledger transaction (and
+        // its entries) carry this lease_id under a FK → leases.id (docs/DATA_MODEL.md §7); posting it before
+        // the row exists violates ledger_transactions_lease_id_fkey against the real SQL store, 500s the
+        // create, and leaks the host contract. hold_txn_id starts null (a valid state for the reverse FK
+        // leases.hold_txn_id → ledger_transactions.id) and is stamped once the hold posts below. The balance/
+        // caps authorization ran above, before any tunnel frame, so the 402 gate is unaffected — only the
+        // hold *posting* moves after persistence, not the *authorization check*.
         var now = _time.GetUtcNow();
         var lease = new Lease
         {
             Id = leaseId,
-            HoldTxnId = holdTxnId,
+            HoldTxnId = null,
             ConsumerUserId = consumerUserId,
             HostId = host.Id,
             HostImageId = image.Id,
@@ -171,9 +174,64 @@ public sealed class LeaseService : ILeaseService
         };
         var stored = await _leases.CreateAsync(lease, ct);
 
+        // Earmark the hold now the lease ROW exists (docs/PAYMENTS.md §4): wallet → lease_holds. The meter
+        // debits it per tick; the remainder is released at lease end. A free image places no hold. If the
+        // hold fails here — the wallet drained in the AuthorizeHold→PlaceHold race (→ 402), or any ledger
+        // error — the container is already provisioned on the host: tear that downstream contract down and
+        // mark the lease failed so no zombie contract rides out its TTL (task #540, docs/TUNNEL.md §8).
+        Guid? holdTxnId;
+        try
+        {
+            holdTxnId = await _walletGate.PlaceHoldAsync(consumerUserId, leaseId, holdCents, Usd, ct);
+        }
+        catch
+        {
+            await TearDownFailedCreateAsync(host.Id, result.LeaseId, leaseId, now, ct);
+            throw;
+        }
+
+        // Stamp the hold transaction id onto the persisted row now it exists (a free image leaves it null).
+        if (holdTxnId is { } txnId)
+        {
+            stored = await _leases.UpdateAsync(stored with { HoldTxnId = txnId }, ct);
+        }
+
         // Surface the host's advertised container OS on the 201, like the dev endpoint and LeaseView do
         // (task #316) — read from the live capability, null-safe when offline/pre-os (surfacing only).
         return new LeaseCreationResult(stored, holdCents, OsOf(host.Id));
+    }
+
+    /// <summary>
+    /// Undoes a create that provisioned the container on the host but could not complete (the wallet hold
+    /// failed to post). It tears the downstream contract down over the tunnel — the same <c>lease.release</c>
+    /// teardown <see cref="ReleaseAsync"/> uses — so it does not ride out its TTL as a zombie contract
+    /// (task #540, docs/TUNNEL.md §8), and marks the persisted lease row <c>failed</c>. Both steps are
+    /// best-effort: a host that is already gone (<c>host_offline</c>) means the container is gone too, and a
+    /// teardown error must never mask the original failure the caller is about to see re-thrown.
+    /// </summary>
+    private async Task TearDownFailedCreateAsync(
+        Guid hostId, string tunnelLeaseId, Guid leaseId, DateTimeOffset now, CancellationToken ct)
+    {
+        try
+        {
+            await _relay.ReleaseAsync(hostId.ToString(), tunnelLeaseId, ct);
+        }
+        catch (ApiException)
+        {
+            // Best-effort: the container is either torn down or already unreachable. Either way the create
+            // still fails; don't let a teardown error replace the real cause on its way up.
+        }
+
+        try
+        {
+            await _leases.TransitionStateAsync(
+                leaseId, LeaseStatus.Failed, endReason: LeaseEndReason.PaymentFailed, endedAt: now, ct: ct);
+        }
+        catch (Exception)
+        {
+            // Marking the row failed is best-effort cleanup too; the original hold exception is the one that
+            // matters, so a failure to flip the status here must not shadow it.
+        }
     }
 
     public async Task<LeasePage> ListAsync(
