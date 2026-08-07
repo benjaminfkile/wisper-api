@@ -354,6 +354,62 @@ public class LeaseServiceTests
         Assert.Empty(fx.Relay.CreateCalls); // gated BEFORE any lease.create frame
     }
 
+    [Fact]
+    public async Task Create_tears_down_the_contract_and_marks_the_lease_failed_when_the_hold_post_fails()
+    {
+        // task #540: the hold posts AFTER the lease row is persisted and the container is already live on the
+        // host. If it fails (e.g. the wallet drained in the AuthorizeHold→PlaceHold race), the downstream
+        // contract must be torn down (no zombie riding out its TTL) and the lease row marked failed.
+        var fx = new Fixture
+        {
+            WalletGate = new HoldFailsWalletGate(
+                new ApiException(ApiErrorCode.InsufficientFunds, "wallet drained between gate and hold")),
+        };
+        await fx.SeedImageAsync(price: 5);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+        Assert.Equal(ApiErrorCode.InsufficientFunds, ex.Code);
+
+        // The container was provisioned, so exactly one lease.create reached the host — and its contract was
+        // torn down with a matching lease.release addressed by the same lease id.
+        var (_, createdSpec) = Assert.Single(fx.Relay.CreateCalls);
+        var (releaseHostId, releaseLeaseId) = Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.Equal(fx.Host!.Id.ToString(), releaseHostId);
+        Assert.Equal(fx.Relay.LastLeaseId, releaseLeaseId);
+
+        // The persisted row exists but is failed (not left active/zombie), keyed by the same relay lease id.
+        Assert.True(TunnelLeaseId.TryParse(fx.Relay.LastLeaseId, out var leaseGuid));
+        var stored = await fx.Leases.GetByIdAsync(leaseGuid);
+        Assert.NotNull(stored);
+        Assert.Equal(LeaseStatus.Failed, stored!.Status);
+        Assert.Equal(LeaseEndReason.PaymentFailed, stored.EndReason);
+        Assert.NotNull(stored.EndedAt);
+    }
+
+    [Fact]
+    public async Task Create_still_fails_when_the_hold_fails_and_the_host_is_already_offline_for_teardown()
+    {
+        // The teardown is best-effort: if the host has since gone offline, the container is already gone, so a
+        // host_offline on lease.release must not mask the original hold failure — the create still fails and
+        // the lease row is still marked failed.
+        var fx = new Fixture
+        {
+            WalletGate = new HoldFailsWalletGate(
+                new ApiException(ApiErrorCode.InsufficientFunds, "wallet drained")),
+        };
+        await fx.SeedImageAsync(price: 5);
+        fx.Relay.ReleaseError = new ApiException(ApiErrorCode.HostOffline, "no live tunnel");
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+        Assert.Equal(ApiErrorCode.InsufficientFunds, ex.Code); // the hold failure, not the teardown's offline
+
+        Assert.True(TunnelLeaseId.TryParse(fx.Relay.LastLeaseId, out var leaseGuid));
+        var stored = await fx.Leases.GetByIdAsync(leaseGuid);
+        Assert.Equal(LeaseStatus.Failed, stored!.Status);
+    }
+
     [Theory]
     [InlineData(ApiErrorCode.HostOffline)]
     [InlineData(ApiErrorCode.UpstreamTimeout)]
@@ -814,6 +870,28 @@ public class LeaseServiceTests
         public Task<Guid?> PlaceHoldAsync(
             Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
             Task.FromResult<Guid?>(null); // never reached — the deny gates before provisioning
+
+        public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A gate that authorizes the hold (so the create provisions the container) but then throws when the hold
+    /// is placed — the post-provision failure the task-#540 teardown must handle (tear the contract down, mark
+    /// the lease failed). Models the rare AuthorizeHold→PlaceHold drain race and any ledger error.
+    /// </summary>
+    private sealed class HoldFailsWalletGate : ILeaseWalletGate
+    {
+        private readonly Exception _failure;
+
+        public HoldFailsWalletGate(Exception failure) => _failure = failure;
+
+        public Task<WalletGateDecision> AuthorizeHoldAsync(
+            Guid consumerUserId, long holdCents, string currency, CancellationToken ct = default) =>
+            Task.FromResult(WalletGateDecision.Allow());
+
+        public Task<Guid?> PlaceHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+            throw _failure;
 
         public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
     }
