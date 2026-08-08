@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Wisper.Api.Auth;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Payouts;
@@ -28,6 +29,7 @@ public sealed class HostService
     private readonly IHostCapabilitySource _capabilities;
     private readonly IAgentTunnelCloser _tunnelCloser;
     private readonly PayoutService _payouts;
+    private readonly IUserRoleGranter _roleGranter;
     private readonly TunnelOptions _tunnel;
     private readonly TimeProvider _time;
     private readonly ILogger<HostService> _logger;
@@ -40,6 +42,7 @@ public sealed class HostService
         IHostCapabilitySource capabilities,
         IAgentTunnelCloser tunnelCloser,
         PayoutService payouts,
+        IUserRoleGranter roleGranter,
         IOptions<TunnelOptions> tunnel,
         TimeProvider time,
         ILogger<HostService> logger)
@@ -51,6 +54,7 @@ public sealed class HostService
         _capabilities = capabilities;
         _tunnelCloser = tunnelCloser;
         _payouts = payouts;
+        _roleGranter = roleGranter;
         _tunnel = tunnel.Value;
         _time = time;
         _logger = logger;
@@ -60,9 +64,19 @@ public sealed class HostService
     /// Registers a new wisp host for the caller (docs/API.md §6): mints an agent token, stores only its hash +
     /// prefix, and returns the clear token <b>once</b> along with the <c>manager_ws</c> the agent dials. The
     /// host starts <c>offline</c> — pricing/earning stay inert until Connect is enabled and the agent connects.
+    /// Becoming a host is additive (docs/API.md §184, docs/DESIGN.md §199): on success the caller gains the
+    /// <c>host</c> group so their next token carries it. The grant is best-effort — a transient failure is
+    /// logged loudly but never fails registration, because the live session already reflects the new role
+    /// (<c>GET /v1/me</c> treats owning ≥1 host as implying <c>host</c>) and the next login reconciles the
+    /// group from the persisted host row.
     /// </summary>
+    /// <param name="ownerCognitoSub">
+    /// The caller's Cognito subject to add to the <c>host</c> group, or <c>null</c> to skip the grant (api-key
+    /// principals, whose roles come from explicit scopes rather than Cognito groups — docs/API.md §2).
+    /// </param>
     public async Task<HostRegisteredResponse> RegisterAsync(
-        Guid ownerUserId, RegisterHostRequest request, CancellationToken ct = default)
+        Guid ownerUserId, RegisterHostRequest request, string? ownerCognitoSub = null,
+        CancellationToken ct = default)
     {
         var issued = HostAgentToken.Issue();
         var now = _time.GetUtcNow();
@@ -83,9 +97,38 @@ public sealed class HostService
             "host {Host} registered by user {User} (token prefix {Prefix})",
             host.Id, ownerUserId, issued.TokenPrefix);
 
+        await GrantHostRoleAsync(ownerUserId, ownerCognitoSub, ct);
+
         return new HostRegisteredResponse(
             host.Id, host.Name, issued.Token, issued.TokenPrefix, _tunnel.ManagerWebSocketUrl,
             PgEnum.ToLabel(host.Status));
+    }
+
+    /// <summary>
+    /// Best-effort grant of the <c>host</c> group on first host action (docs/API.md §184). The host row is
+    /// already committed, so a transient group-write failure is logged loudly and swallowed — never propagated
+    /// — leaving the persisted host to reconcile the role on the next login while the current session is
+    /// covered by the owns-a-host role projection on <c>GET /v1/me</c>.
+    /// </summary>
+    private async Task GrantHostRoleAsync(Guid ownerUserId, string? ownerCognitoSub, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(ownerCognitoSub))
+        {
+            return;
+        }
+
+        try
+        {
+            await _roleGranter.GrantHostAsync(ownerCognitoSub, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "failed to grant the host group to user {User} (subject {Subject}) after host registration; "
+                + "the host row is created and the role will reconcile on the next login",
+                ownerUserId, ownerCognitoSub);
+        }
     }
 
     /// <summary>
