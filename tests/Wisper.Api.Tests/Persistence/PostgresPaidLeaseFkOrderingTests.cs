@@ -27,9 +27,12 @@ namespace Wisper.Api.Tests.Persistence;
 /// the hold and persists both the lease row and the ledger transaction, and (b) the store really does
 /// enforce that FK, so the pre-fix ordering would have failed with the exact <c>23503</c> from the report.
 /// <para>
-/// When no PostgreSQL server binaries are installed the fixture reports unavailable and each test skips (a
-/// green no-op), so the suite still passes on a machine with no Postgres; wherever the binaries exist (this
-/// repo ships PostgreSQL 15) the regression runs for real.
+/// These stand up a real server, so they are gated behind an explicit <c>WISPER_RUN_PG_TESTS</c> opt-in
+/// (task #558). When it is unset — the default, including normal CI — the fixture reports unavailable and each
+/// test is reported <b>skipped</b> (a visible <c>[SkippableFact]</c> skip, not a hidden no-op), so the suite
+/// stays deterministically green regardless of whatever Postgres the runner happens to ship. Set
+/// <c>WISPER_RUN_PG_TESTS=1</c> to run the regression for real (this repo ships PostgreSQL 15); see
+/// <see cref="EphemeralPostgres"/> and the README's "Develop" section.
 /// </para>
 /// </summary>
 public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPaidLeaseFkOrderingTests.PgFixture>
@@ -40,13 +43,10 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
 
     public PostgresPaidLeaseFkOrderingTests(PgFixture pg) => _pg = pg;
 
-    [Fact]
+    [SkippableFact]
     public async Task Paid_lease_create_posts_the_hold_and_persists_both_the_lease_row_and_the_ledger_txn()
     {
-        if (!_pg.Available)
-        {
-            return; // no Postgres server binaries — skip; runs for real wherever they exist
-        }
+        Skip.IfNot(_pg.Available, PgFixture.SkipReason); // visible skip unless WISPER_RUN_PG_TESTS opted in
 
         var env = new Harness(_pg.DataSource!);
         var (consumerId, host, image) = await env.SeedPricedOfferAsync(priceCentsPerMin: 2);
@@ -83,13 +83,10 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         Assert.Equal(100_000 - 120, wallet.BalanceCents);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task The_sql_store_enforces_the_lease_id_fk_so_the_pre_fix_ordering_fails_with_23503()
     {
-        if (!_pg.Available)
-        {
-            return;
-        }
+        Skip.IfNot(_pg.Available, PgFixture.SkipReason);
 
         var env = new Harness(_pg.DataSource!);
         var (consumerId, _, _) = await env.SeedPricedOfferAsync(priceCentsPerMin: 2);
@@ -209,11 +206,15 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
     }
 
     /// <summary>
-    /// Class fixture: stands up one throwaway server and runs the migrations once for the whole class. When
-    /// the server binaries are absent it reports <see cref="Available"/> = <c>false</c> and the tests skip.
+    /// Class fixture: stands up one throwaway server and runs the migrations once for the whole class. Unless
+    /// the <c>WISPER_RUN_PG_TESTS</c> opt-in is set it reports <see cref="Available"/> = <c>false</c> and the
+    /// tests report a visible skip.
     /// </summary>
     public sealed class PgFixture : IAsyncLifetime
     {
+        public const string SkipReason =
+            "ephemeral-Postgres regression is opt-in: set WISPER_RUN_PG_TESTS=1 to run it (task #558)";
+
         private EphemeralPostgres? _server;
 
         public NpgsqlDataSource? DataSource { get; private set; }

@@ -12,14 +12,44 @@ namespace Wisper.Api.Tests.TestSupport;
 /// <c>initdb</c>'s a fresh data directory under the temp folder, starts a private server on a free loopback
 /// TCP port with <c>trust</c> auth, and tears both down on dispose.
 /// <para>
-/// When the PostgreSQL <b>server</b> binaries are not installed the harness is unavailable and
-/// <see cref="TryStartAsync"/> returns <c>null</c> so the caller skips the regression — the unit suite stays
-/// green on a machine with no Postgres (Grunt), while the regression actually runs wherever the binaries
-/// exist. Set <c>WISPER_TEST_PG_BIN</c> to point at a <c>bin</c> directory to override discovery.
+/// <b>Opt-in (task #558).</b> These regressions stand up a real server, so they are gated behind an explicit
+/// <c>WISPER_RUN_PG_TESTS</c> env var. When it is unset (the default — including normal CI on GitHub's
+/// ubuntu-latest, which ships Postgres under <c>/usr/lib/postgresql/*/bin</c>) <see cref="TryStartAsync"/>
+/// returns <c>null</c> and the callers skip <i>visibly</i> — deterministically, regardless of whether ambient
+/// Postgres binaries happen to exist. The first CI run hung for 14+ minutes precisely because discovery keyed
+/// off ambient binaries rather than an explicit opt-in; it no longer does. Set <c>WISPER_RUN_PG_TESTS=1</c> to
+/// run the regression for real. Set <c>WISPER_TEST_PG_BIN</c> to point at a <c>bin</c> directory to override
+/// binary discovery.
+/// </para>
+/// <para>
+/// <b>Bounded startup.</b> Even when opted in, every external process (<c>initdb</c>, <c>pg_ctl</c>) and the
+/// readiness wait honour an overall <see cref="DeadlineSeconds"/> deadline and the caller's
+/// <see cref="CancellationToken"/>; <see cref="StartAsync"/> throws rather than blocking indefinitely, and
+/// <see cref="RunToolAsync"/> kills a process that overruns the deadline. See the class remarks in the source
+/// for why <c>pg_ctl -w -t 60</c> alone did not bound the observed hang.
 /// </para>
 /// </summary>
+// Why pg_ctl -w -t 60 did NOT bound the original 14-minute hang, and what actually fixes it:
+//   * `pg_ctl start` launches the long-lived postgres server as a child that INHERITS this process's
+//     redirected stdout/stderr pipes. pg_ctl itself exits after the readiness wait (bounded by -w -t), but the
+//     daemon keeps the WRITE end of those pipes open — so `StandardOutput/StandardError.ReadToEndAsync()` never
+//     observes EOF and blocks for the life of the server (i.e. until the test host is killed). The `-t 60` only
+//     bounds pg_ctl's own wait, never that dangling read. Fix: pass `-l <root>/server.log` so the server's
+//     output goes to a file and pg_ctl's inherited pipes close cleanly on exit.
+//   * `initdb` has no `-t`-style timeout at all, so a slow/prompting initdb (entropy, a version-mismatched data
+//     directory, a stdin prompt) is unbounded. Fix: every tool runs under an overall deadline that KILLS the
+//     process on overrun (RunToolAsync), so nothing can wedge the job.
+//   * Discovery can surface several candidate bin dirs; a data directory initted by one major version cannot be
+//     started by pg_ctl of another, which manifests as a wedged/looping start. Fix: EnsureMatchingMajorAsync
+//     verifies the chosen dir's initdb and pg_ctl are the same PostgreSQL major before we init anything.
 public sealed class EphemeralPostgres : IAsyncDisposable
 {
+    /// <summary>Overall wall-clock budget for the whole startup (initdb + readiness wait), and per tool.</summary>
+    private const int DeadlineSeconds = 60;
+
+    /// <summary>Explicit opt-in: real-server regressions run only when this env var is set to a truthy value.</summary>
+    public const string OptInEnvVar = "WISPER_RUN_PG_TESTS";
+
     private readonly string _root;
     private readonly string _dataDir;
     private readonly string _binDir;
@@ -39,12 +69,20 @@ public sealed class EphemeralPostgres : IAsyncDisposable
         $"Host=127.0.0.1;Port={_port};Username=postgres;Database=wisper_test;Include Error Detail=true";
 
     /// <summary>
-    /// Stands up a throwaway server, or returns <c>null</c> when the PostgreSQL server binaries
-    /// (<c>initdb</c>/<c>pg_ctl</c>) are not available — the signal for callers to skip. When the binaries
-    /// <i>are</i> present a startup failure throws, so a genuinely broken server is not silently skipped.
+    /// Stands up a throwaway server, or returns <c>null</c> when the regression is not opted in
+    /// (<see cref="OptInEnvVar"/> unset — the default, so the caller skips) or the PostgreSQL server binaries
+    /// (<c>initdb</c>/<c>pg_ctl</c>) are not available. When opted in <i>and</i> the binaries are present a
+    /// startup failure throws (bounded by the deadline), so a genuinely broken server is not silently skipped.
     /// </summary>
     public static async Task<EphemeralPostgres?> TryStartAsync(CancellationToken ct = default)
     {
+        // Explicit opt-in gate: the regression NEVER runs off the mere presence of ambient binaries. This is the
+        // whole fix for task #558 — CI is deterministic regardless of what Postgres the runner happens to ship.
+        if (!OptedIn())
+        {
+            return null;
+        }
+
         var binDir = FindBinDir();
         if (binDir is null)
         {
@@ -66,17 +104,39 @@ public sealed class EphemeralPostgres : IAsyncDisposable
         }
     }
 
+    /// <summary>Whether the caller has explicitly opted into the real-server regressions.</summary>
+    public static bool OptedIn()
+    {
+        var v = Environment.GetEnvironmentVariable(OptInEnvVar);
+        return !string.IsNullOrWhiteSpace(v)
+            && !v.Equals("0", StringComparison.OrdinalIgnoreCase)
+            && !v.Equals("false", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task StartAsync(CancellationToken ct)
     {
+        // Bound the WHOLE startup: initdb + readiness wait share one wall-clock budget, linked to the caller's
+        // token, so no external tool can wedge the job the way the first CI run did.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(DeadlineSeconds));
+        var dct = deadline.Token;
+
+        // A data directory initted by one major cannot be started by a pg_ctl of another; verify the chosen bin
+        // dir is internally consistent before we write anything (bounded, kills on overrun like every tool).
+        await EnsureMatchingMajorAsync(dct);
+
         // A fresh cluster with a single trusted superuser; UTF8 so the app's text columns behave as in prod.
         await RunToolAsync("initdb",
-            new[] { "-D", _dataDir, "-U", "postgres", "-A", "trust", "-E", "UTF8", "--no-sync" }, ct);
+            new[] { "-D", _dataDir, "-U", "postgres", "-A", "trust", "-E", "UTF8", "--no-sync" }, dct);
 
         // Private server: loopback TCP on our free port, unix socket under the temp root (the default socket
         // dir may be root-owned), and durability off — this cluster is discarded at the end of the test.
+        // -l sends the SERVER's stdout/stderr to a log file: without it the daemon inherits our redirected pipes
+        // and ReadToEndAsync never sees EOF (the real cause of the 14-minute hang; see the class-level note).
+        var logFile = Path.Combine(_root, "server.log");
         var serverOptions = $"-p {_port} -k \"{_root}\" -c listen_addresses=127.0.0.1 -c fsync=off";
         await RunToolAsync("pg_ctl",
-            new[] { "-D", _dataDir, "-o", serverOptions, "-w", "-t", "60", "start" }, ct);
+            new[] { "-D", _dataDir, "-l", logFile, "-o", serverOptions, "-w", "-t", "30", "start" }, dct);
         _started = true;
     }
 
@@ -86,8 +146,10 @@ public sealed class EphemeralPostgres : IAsyncDisposable
         {
             try
             {
+                // Bound teardown too — a wedged stop must not hang the run any more than a wedged start.
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(DeadlineSeconds));
                 await RunToolAsync("pg_ctl",
-                    new[] { "-D", _dataDir, "-m", "immediate", "-w", "stop" }, CancellationToken.None);
+                    new[] { "-D", _dataDir, "-m", "immediate", "-w", "stop" }, deadline.Token);
             }
             catch
             {
@@ -107,7 +169,12 @@ public sealed class EphemeralPostgres : IAsyncDisposable
         }
     }
 
-    private async Task RunToolAsync(string tool, IReadOnlyList<string> args, CancellationToken ct)
+    /// <summary>
+    /// Runs a bundled tool to completion under <paramref name="ct"/>, returning its stdout. On cancellation
+    /// (the overall deadline firing, or the caller cancelling) the process is <b>killed</b> — including any
+    /// children — and a <see cref="TimeoutException"/> is thrown, so a hung tool can never block the run.
+    /// </summary>
+    private async Task<string> RunToolAsync(string tool, IReadOnlyList<string> args, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -123,14 +190,76 @@ public sealed class EphemeralPostgres : IAsyncDisposable
 
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException($"could not start {tool}");
-        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-        var stderr = await proc.StandardError.ReadToEndAsync(ct);
-        await proc.WaitForExitAsync(ct);
-        if (proc.ExitCode != 0)
+        try
+        {
+            // Read both pipes concurrently and wait for exit — all bound to ct so a stuck tool cannot wedge us.
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+            var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+            await proc.WaitForExitAsync(ct);
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            if (proc.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"{tool} exited {proc.ExitCode}: {stderr.Trim()} {stdout.Trim()}".Trim());
+            }
+
+            return stdout;
+        }
+        catch (OperationCanceledException)
+        {
+            TryKill(proc);
+            throw new TimeoutException(
+                $"{tool} did not complete within {DeadlineSeconds}s and was killed " +
+                $"(args: {string.Join(' ', args)})");
+        }
+    }
+
+    private static void TryKill(Process proc)
+    {
+        try
+        {
+            if (!proc.HasExited)
+            {
+                proc.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // The process may have exited between the check and the kill; nothing to do.
+        }
+    }
+
+    /// <summary>
+    /// Verifies the chosen bin dir's <c>initdb</c> and <c>pg_ctl</c> report the same PostgreSQL major version.
+    /// A cross-version pair (possible when discovery surfaces multiple candidate roots) cannot init-then-start a
+    /// cluster and is one of the ways a start can wedge; fail fast and loud instead.
+    /// </summary>
+    private async Task EnsureMatchingMajorAsync(CancellationToken ct)
+    {
+        var initdbMajor = ParseMajor(await RunToolAsync("initdb", new[] { "--version" }, ct));
+        var pgCtlMajor = ParseMajor(await RunToolAsync("pg_ctl", new[] { "--version" }, ct));
+        if (initdbMajor is null || pgCtlMajor is null || initdbMajor != pgCtlMajor)
         {
             throw new InvalidOperationException(
-                $"{tool} exited {proc.ExitCode}: {stderr.Trim()} {stdout.Trim()}".Trim());
+                $"initdb (v{initdbMajor?.ToString() ?? "?"}) and pg_ctl (v{pgCtlMajor?.ToString() ?? "?"}) in " +
+                $"'{_binDir}' are not the same PostgreSQL major version; set {OptInEnvVar} against a consistent " +
+                "install, or point WISPER_TEST_PG_BIN at one.");
         }
+    }
+
+    /// <summary>Extracts the leading major number from a <c>--version</c> line, e.g. "pg_ctl (PostgreSQL) 15.4".</summary>
+    private static int? ParseMajor(string versionLine)
+    {
+        // Take the last whitespace-separated token ("15.4", "16beta1", "15") and read its leading digits.
+        var token = versionLine.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+        if (token is null)
+        {
+            return null;
+        }
+
+        var digits = new string(token.TakeWhile(char.IsDigit).ToArray());
+        return int.TryParse(digits, out var major) ? major : null;
     }
 
     /// <summary>Locates a PostgreSQL <c>bin</c> directory containing both server tools, or <c>null</c>.</summary>

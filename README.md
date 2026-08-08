@@ -47,6 +47,19 @@ dotnet test        # xUnit integration tests
 dotnet run --project src/Wisper.Api   # serves on http://localhost:8080
 ```
 
+**Postgres regression (opt-in).** A couple of tests exercise the paid-lease create against a *real* throwaway
+Postgres cluster (`EphemeralPostgres`) to catch the ledger `lease_id` FK ordering bug (task #540) that the
+in-memory doubles can't — an FK the in-memory ledger doesn't enforce. They stand up a server, so they are gated
+behind an explicit opt-in and are reported **skipped** otherwise (a visible `[SkippableFact]` skip, not a hidden
+no-op). `dotnet test` on its own never touches Postgres — deterministic regardless of whatever server binaries
+the machine/CI runner happens to ship. To run the full regression locally (needs the PostgreSQL **server** tools
+`initdb`/`pg_ctl` on the box — this repo's container ships PostgreSQL 15):
+
+```sh
+WISPER_RUN_PG_TESTS=1 dotnet test     # runs the ephemeral-Postgres regression for real
+# WISPER_TEST_PG_BIN=/path/to/pgsql/bin  # optional: pin a specific server bin dir
+```
+
 Check liveness:
 
 ```sh
