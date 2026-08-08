@@ -25,4 +25,14 @@ public class AuthServicesRegistrationTests : IClassFixture<WebApplicationFactory
         Assert.IsType<CognitoJwtValidator>(sp.GetRequiredService<IJwtValidator>());
         Assert.IsType<JwksSigningKeyProvider>(sp.GetRequiredService<ISigningKeyProvider>());
     }
+
+    [Fact]
+    public void The_role_granter_is_a_no_op_when_no_user_pool_is_configured()
+    {
+        // DB-less / api-key dev mode (no Auth:UserPoolId): the become-a-host group write degrades to a no-op,
+        // so registration needs no Cognito call (docs/API.md §184).
+        using var scope = _factory.Services.CreateScope();
+
+        Assert.IsType<NoOpUserRoleGranter>(scope.ServiceProvider.GetRequiredService<IUserRoleGranter>());
+    }
 }

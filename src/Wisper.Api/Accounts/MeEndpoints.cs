@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json.Serialization;
 using Wisper.Api.Auth;
 using Wisper.Api.Domain;
+using Wisper.Api.Persistence.Hosts;
 
 namespace Wisper.Api.Accounts;
 
@@ -22,19 +23,31 @@ public static class MeEndpoints
     }
 
     private static async Task<IResult> GetMeAsync(
-        HttpContext http, IUserAccountService accounts, CancellationToken ct)
+        HttpContext http, IUserAccountService accounts, IHostRepository hosts, CancellationToken ct)
     {
         var user = await accounts.BootstrapAsync(http.User, ct);
-        return Results.Json(MeResponse.From(user, http.User));
+        var ownsHost = await OwnsHostAsync(hosts, user.Id, ct);
+        return Results.Json(MeResponse.From(user, http.User, ownsHost));
     }
 
     private static async Task<IResult> PatchMeAsync(
-        MeUpdateRequest request, HttpContext http, IUserAccountService accounts, CancellationToken ct)
+        MeUpdateRequest request, HttpContext http, IUserAccountService accounts, IHostRepository hosts,
+        CancellationToken ct)
     {
         var changes = new ProfileUpdate { Email = request.Email };
         var user = await accounts.UpdateProfileAsync(http.User, changes, ct);
-        return Results.Json(MeResponse.From(user, http.User));
+        var ownsHost = await OwnsHostAsync(hosts, user.Id, ct);
+        return Results.Json(MeResponse.From(user, http.User, ownsHost));
     }
+
+    /// <summary>
+    /// Whether the caller owns at least one host. Becoming a host is additive (docs/API.md §184): the moment a
+    /// consumer registers a host they <b>are</b> a host, so the role projection derives <c>host</c> from owned
+    /// hosts even before the Cognito group lands on the next token — reflecting the new role in the current
+    /// session and staying robust to a failed group write.
+    /// </summary>
+    private static async Task<bool> OwnsHostAsync(IHostRepository hosts, Guid userId, CancellationToken ct) =>
+        (await hosts.ListByOwnerAsync(userId, ct)).Count > 0;
 }
 
 /// <summary>Body of <c>PATCH /v1/me</c> — the mutable profile fields (all optional).</summary>
@@ -55,24 +68,33 @@ public sealed record MeResponse(
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt)
 {
-    /// <summary>Projects a stored <see cref="User"/> plus the caller's roles into the wire shape.</summary>
-    public static MeResponse From(User user, ClaimsPrincipal principal) => new(
+    /// <summary>
+    /// Projects a stored <see cref="User"/> plus the caller's roles into the wire shape. When
+    /// <paramref name="ownsHost"/> is true the <c>host</c> role is added even if the principal's token does not
+    /// yet carry the group (docs/API.md §184) — becoming a host is additive and takes effect the moment a host
+    /// is owned, without waiting for a token refresh.
+    /// </summary>
+    public static MeResponse From(User user, ClaimsPrincipal principal, bool ownsHost = false) => new(
         Id: user.Id,
         CognitoSub: user.CognitoSub,
         Email: user.Email,
         Status: PgEnum.ToLabel(user.Status),
-        Roles: RolesOf(principal),
+        Roles: RolesOf(principal, ownsHost),
         ConnectStatus: PgEnum.ToLabel(user.ConnectStatus),
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt);
 
-    /// <summary>The caller's additive roles in a stable order (consumer → host → admin).</summary>
-    private static IReadOnlyList<string> RolesOf(ClaimsPrincipal principal)
+    /// <summary>
+    /// The caller's additive roles in a stable order (consumer → host → admin), augmenting with <c>host</c>
+    /// when the caller owns a host (docs/API.md §184) so the projection is consistent with the additive
+    /// become-a-host semantics regardless of whether the token has refreshed.
+    /// </summary>
+    private static IReadOnlyList<string> RolesOf(ClaimsPrincipal principal, bool ownsHost)
     {
         var roles = new List<string>();
         foreach (var role in Enum.GetValues<WisperRole>())
         {
-            if (principal.HasRole(role))
+            if (principal.HasRole(role) || (role == WisperRole.Host && ownsHost))
             {
                 roles.Add(WisperRoles.Name(role));
             }

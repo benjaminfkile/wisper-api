@@ -31,6 +31,24 @@ public sealed class CognitoAuthOptions
     /// </summary>
     public IList<string> Audience { get; set; } = new List<string>();
 
+    /// <summary>
+    /// The Cognito user-pool id (e.g. <c>us-east-1_ABC123</c>) the runtime writes group membership to when
+    /// granting a role — specifically the <c>host</c> group on first host action (docs/API.md §184,
+    /// docs/DESIGN.md §199). <b>Unset by default</b>: when absent (in-memory / api-key dev mode, and tests)
+    /// the group write degrades to a no-op (<see cref="NoOpUserRoleGranter"/>), so host registration still
+    /// succeeds without Cognito. The runtime needs <c>cognito-idp:AdminAddUserToGroup</c> on this pool, and
+    /// the pool must have the <c>consumer</c>/<c>host</c>/<c>admin</c> groups provisioned.
+    /// </summary>
+    public string? UserPoolId { get; set; }
+
+    /// <summary>
+    /// The AWS region of <see cref="UserPoolId"/> (e.g. <c>us-east-1</c>), used to construct the Cognito admin
+    /// client. <b>Unset by default</b>; when absent (together with <see cref="UserPoolId"/>) the group write is
+    /// a no-op. When only one of the two is set the granter still degrades gracefully — both are required to
+    /// enable the real Cognito write.
+    /// </summary>
+    public string? Region { get; set; }
+
     /// <summary>Permitted clock skew, in seconds, when checking token lifetime. Default 60.</summary>
     public int ClockSkewSeconds { get; set; } = 60;
 

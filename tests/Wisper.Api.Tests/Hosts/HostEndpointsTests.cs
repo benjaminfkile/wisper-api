@@ -35,6 +35,7 @@ public class HostEndpointsTests
         public InMemoryHostImageRepository Images { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public FakeAgentTunnelCloser TunnelCloser { get; } = new();
+        public FakeUserRoleGranter RoleGranter { get; } = new();
         public FakeJwtValidator Validator { get; } = new()
         {
             Principal = WisperPrincipal.Create("host-sub", "host@example.com", new[] { "host" }),
@@ -58,6 +59,8 @@ public class HostEndpointsTests
                     services.AddSingleton<IHostCapabilitySource>(Capabilities);
                     services.RemoveAll<IAgentTunnelCloser>();
                     services.AddSingleton<IAgentTunnelCloser>(TunnelCloser);
+                    services.RemoveAll<IUserRoleGranter>();
+                    services.AddSingleton<IUserRoleGranter>(RoleGranter);
                     // The earnings summary on /v1/hosts/mine reads the ledger; back it in-memory (no Postgres).
                     services.RemoveAll<ILedgerStore>();
                     services.AddSingleton<ILedgerStore, InMemoryLedgerStore>();
@@ -98,15 +101,40 @@ public class HostEndpointsTests
     }
 
     [Fact]
-    public async Task Register_requires_the_host_role()
+    public async Task Register_succeeds_for_a_plain_consumer_and_grants_the_host_role()
     {
+        // Becoming a host is additive (docs/API.md §184, docs/DESIGN.md §199): the register call requires only
+        // the implicit consumer floor — a plain consumer (no host group) must succeed, and on success gains
+        // the host group. This is the live bug fix: this call used to return 403.
         var fx = new Fixture();
         fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
         using var factory = fx.Build();
 
-        var response = await Authed(factory).PostAsync("/v1/hosts", content: null);
+        var response = await Authed(factory).PostAsJsonAsync("/v1/hosts", new { name = "home-server-1" });
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        // The owning subject was granted the host group so their next token carries it.
+        Assert.True(fx.RoleGranter.HostGrants.TryDequeue(out var grantedSub));
+        Assert.Equal("consumer-sub", grantedSub);
+    }
+
+    [Fact]
+    public async Task Register_by_a_consumer_makes_me_report_the_host_role_immediately()
+    {
+        // The current session reflects the new role without a re-login: owning ≥1 host implies the host role
+        // on GET /v1/me even before the token refreshes (docs/API.md §184).
+        var fx = new Fixture();
+        fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var before = await client.GetFromJsonAsync<MeRolesDto>("/v1/me");
+        Assert.Equal(new[] { "consumer" }, before!.Roles);
+
+        await client.PostAsJsonAsync("/v1/hosts", new { name = "home-server-1" });
+
+        var after = await client.GetFromJsonAsync<MeRolesDto>("/v1/me");
+        Assert.Equal(new[] { "consumer", "host" }, after!.Roles);
     }
 
     [Fact]
@@ -315,6 +343,9 @@ public class HostEndpointsTests
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    private sealed record MeRolesDto(
+        [property: JsonPropertyName("roles")] IReadOnlyList<string> Roles);
 
     private sealed record HostRegisteredDto(
         [property: JsonPropertyName("id")] Guid Id,

@@ -22,8 +22,12 @@ public static class HostEndpoints
 
     public static void MapHostEndpoints(this IEndpointRouteBuilder endpoints)
     {
+        // Registering the first host is a CONSUMER action (docs/API.md §184, docs/DESIGN.md §199): becoming a
+        // host is additive, so the register call itself only requires the implicit consumer floor and, on
+        // success, grants the caller the host group. Every other host endpoint below manages an existing host
+        // and correctly stays host-gated — you must already be a host to touch one.
+        endpoints.MapPost("/v1/hosts", RegisterAsync).RequireConsumer();
         // "mine" is a literal segment, so it takes routing precedence over the consumer GET /v1/hosts/{id}.
-        endpoints.MapPost("/v1/hosts", RegisterAsync).RequireHost();
         endpoints.MapGet("/v1/hosts/mine", ListMineAsync).RequireHost();
         endpoints.MapPost("/v1/hosts/{id}/agent-token", RotateTokenAsync).RequireHost();
         endpoints.MapGet("/v1/hosts/{id}/images", ListImagesAsync).RequireHost();
@@ -37,7 +41,12 @@ public static class HostEndpoints
         var request = await ReadBodyAsync<RegisterHostRequest>(http.Request, ct)
             ?? new RegisterHostRequest(null, null);
         var user = await accounts.BootstrapAsync(http.User, ct);
-        var result = await hosts.RegisterAsync(user.Id, request, ct);
+
+        // On success the caller gains the host group (docs/API.md §184). Only a JWT-authenticated caller has a
+        // Cognito group to grant; an api-key principal derives its roles from explicit scopes (docs/API.md §2),
+        // so we pass no subject to grant for it — its host access is already scope-driven.
+        var grantSub = http.User.IsApiKeyPrincipal() ? null : user.CognitoSub;
+        var result = await hosts.RegisterAsync(user.Id, request, grantSub, ct);
         return Results.Json(result, statusCode: StatusCodes.Status201Created);
     }
 

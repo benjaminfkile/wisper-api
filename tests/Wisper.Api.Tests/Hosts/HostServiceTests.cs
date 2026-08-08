@@ -34,6 +34,7 @@ public class HostServiceTests
         public FakeHostRegistry Registry { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public FakeAgentTunnelCloser TunnelCloser { get; } = new();
+        public FakeUserRoleGranter RoleGranter { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
         public TunnelOptions Tunnel { get; } = new() { ManagerWebSocketUrl = "wss://wisper.test/agent" };
         public PayoutService Payouts { get; }
@@ -46,7 +47,7 @@ public class HostServiceTests
                 ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
             Service = new HostService(
-                Hosts, Images, Users, Registry, Capabilities, TunnelCloser, Payouts,
+                Hosts, Images, Users, Registry, Capabilities, TunnelCloser, Payouts, RoleGranter,
                 Options.Create(Tunnel), Clock, NullLogger<HostService>.Instance);
         }
 
@@ -130,6 +131,50 @@ public class HostServiceTests
         Assert.Equal(HostAgentToken.Hash(result.AgentToken), stored.AgentTokenHash);
         Assert.Equal(result.AgentTokenPrefix, stored.AgentTokenPrefix);
         Assert.DoesNotContain(result.AgentToken, stored.AgentTokenHash);
+    }
+
+    [Fact]
+    public async Task Register_grants_the_host_role_to_the_owner()
+    {
+        // Becoming a host is additive (docs/API.md §184): a successful register grants the owning subject the
+        // host group so their next token carries it.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+
+        await fx.Service.RegisterAsync(owner, new RegisterHostRequest("h1", null), "cognito-owner");
+
+        Assert.True(fx.RoleGranter.HostGrants.TryDequeue(out var grantedSub));
+        Assert.Equal("cognito-owner", grantedSub);
+    }
+
+    [Fact]
+    public async Task Register_skips_the_grant_when_no_subject_is_supplied()
+    {
+        // An api-key principal (no Cognito subject to grant) or a DB-less path passes no subject — the grant
+        // is skipped and registration still succeeds.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+
+        var result = await fx.Service.RegisterAsync(owner, new RegisterHostRequest("h1", null));
+
+        Assert.StartsWith(HostAgentToken.Prefix, result.AgentToken);
+        Assert.Empty(fx.RoleGranter.HostGrants);
+    }
+
+    [Fact]
+    public async Task Register_still_succeeds_when_the_grant_fails()
+    {
+        // The host row is already committed, so a transient group-write failure is logged and swallowed — it
+        // must never fail registration (the role reconciles on the next login / from owned hosts).
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        fx.RoleGranter.Throws = new InvalidOperationException("cognito unavailable");
+
+        var result = await fx.Service.RegisterAsync(owner, new RegisterHostRequest("h1", null), "cognito-owner");
+
+        Assert.StartsWith(HostAgentToken.Prefix, result.AgentToken);
+        Assert.NotNull(await fx.Hosts.GetByIdAsync(result.Id));
+        Assert.True(fx.RoleGranter.HostGrants.TryDequeue(out _)); // the grant was attempted
     }
 
     [Fact]
