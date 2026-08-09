@@ -49,6 +49,9 @@ public sealed class RegistryHostCapabilitySource : IHostCapabilitySource
             // did not send it — surfacing only, back-compatible (docs/TUNNEL.md §5).
             capability.Os,
             MaxGpus: gpu?.MaxGpus ?? 0,
-            GpuClasses: HostGpu.NormalizeClasses(gpu?.DeviceClasses));
+            GpuClasses: HostGpu.NormalizeClasses(gpu?.DeviceClasses),
+            // The host's live concurrent-contract ceiling the manager fast-fails admission against (task #571).
+            // An absent capacity block (older agent) ⇒ 0 = unlimited; a negative value is clamped to 0.
+            MaxContracts: Math.Max(0, capability.Capacity?.MaxContracts ?? 0));
     }
 }

@@ -26,6 +26,10 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
                        l.Status is LeaseStatus.Active or LeaseStatus.Suspended)
                 .OrderByDescending(l => l.CreatedAt).ToList());
 
+    public Task<int> CountActiveByHostAsync(Guid hostId, CancellationToken ct = default) =>
+        Task.FromResult(Where(l => l.HostId == hostId &&
+            l.Status is LeaseStatus.Active or LeaseStatus.Suspended).Count());
+
     public Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<Lease>>(
             Where(l => l.Status == LeaseStatus.Active).OrderBy(l => l.CreatedAt).ToList());

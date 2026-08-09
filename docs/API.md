@@ -51,7 +51,7 @@ Uniform envelope on every non-2xx:
 | `conflict` | 409 | idempotency mismatch, illegal state transition |
 | `host_offline` | 409 | target host has no live tunnel |
 | `lease_not_ready` | 409 | exec/shell before the lease is `active` |
-| `at_capacity` | 409 | per-user concurrency limit reached (also accepted as an agent-reported error) |
+| `at_capacity` | 409 | per-user **or** per-host concurrency limit reached (also accepted as an agent-reported error); the message distinguishes the two |
 | `image_not_allowed` | 400 | requested image not in the host's priced allow-list |
 | `limit_exceeded` | 429 | a fraud-guard cap hit: first-top-up cap, new-account top-up velocity, or daily lease-spend cap (`PAYMENTS.md` §7) |
 | `lease_failed` | 502 | the host/agent failed the lease operation (unrecognized agent error, wisp non-2xx) |
@@ -119,13 +119,16 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
     "cpus": 2, "memory_mb": 4096, "gpus": 2 } ],
   "isolation_levels": ["shared","vm"], "default_isolation": "shared",
   "gpu_classes": ["nvidia-a100"], "gpu_count": 4,
-  "os": "linux", "online": true }
+  "os": "linux", "online": true,
+  "at_capacity": false, "active_leases": 3, "max_leases": 8 }
 ```
 `isolation_levels` are the sandbox levels this host offers and `default_isolation` the one it uses when a lease requests none, mirrored from the host's tunnel capability (`TUNNEL.md` §5, task #417). A host that advertises nothing (an older agent) surfaces `["shared"]` with default `"shared"`; the same two fields appear on `GET /v1/hosts/:id`. Levels are opaque strings, so a consumer can filter on the level it needs without the manager enumerating them.
 
 An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resources it provisions per lease (`null` = the host's own per-lease policy default applies downstream), and `gpus` is the EXACT whole exclusive GPU devices it provisions (`0` = no GPU access on this offer). These are the sized-offer profile — the legacy `max_cpus`/`max_memory_mb`/`max_pids` ceilings remain until the free-form lease knobs are removed (task #570). The former `max_gpus` ceiling is **gone**, renamed to the exact `gpus` count (breaking; wisper-web is updated separately).
 
 `gpu_classes`/`gpu_count` mirror the host's advertised GPU (the distinct opaque device classes and total device count, `TUNNEL.md` §5, task #521). Both appear on `GET /v1/hosts/:id` too. The catalog filters `?min_gpus=` (keep only offers whose `gpus` ≥ the floor — inclusive) and `?gpu_class=` (keep only hosts advertising that exact opaque class) compose with the price/network/image filters; a host advertising no GPU is dropped by `gpu_class` and an offer with `gpus: 0` is dropped by any `min_gpus ≥ 1` (task #523).
+
+`at_capacity` (task #571) tells the frontend when to badge a host **full**: it is `true` when the host advertises a concurrent-contract ceiling (`capacity.max_contracts`, `TUNNEL.md` §5) and its live non-terminal lease count has reached it. When a ceiling is advertised the entry also carries `active_leases` (the host's current non-terminal lease count) and `max_leases` (that ceiling). A host with **no** advertised ceiling — or an offline host with no live capability — is never at capacity: `at_capacity` is always `false` and `active_leases`/`max_leases` are **omitted (null)**. Both fields are optional; treat their absence as "unlimited". The same three fields appear on `GET /v1/hosts/:id`. A `POST /v1/leases` against a full host fast-fails with `409 at_capacity` before any hold or provisioning (see Leases and §11).
 
 ### Leases
 | Method | Path | Auth extras | Notes |
@@ -155,6 +158,8 @@ An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resource
   "os": "linux" }
 ```
 **Resources are fixed by the selected offer (task #570, breaking change).** An offer sells a size (task #569), so the consumer no longer chooses resources at lease time: a request that still carries a `resources` object **or** a top-level `gpus` count is rejected with `validation_error` ("resources are fixed by the selected offer"). The lease provisions **exactly** the offer's sized profile — its `cpus`/`memory_mb` (`null` = the host's own per-lease policy default applies downstream) and its exact `gpus` count. The former `disk_gb` knob is **gone entirely** (it was never enforced downstream). `network`/`ttl_seconds`/`userdata`/`isolation`/`env` are unchanged request inputs. *(wisper-web is updated separately.)*
+
+**Per-host capacity (task #571).** Before the wallet gate posts a hold and before any tunnel frame, create checks the target host's advertised concurrent-contract ceiling (`capacity.max_contracts`, `TUNNEL.md` §5): if the host's live (non-terminal) lease count has reached it, the create fast-fails with `409 at_capacity` ("The host has reached its maximum number of concurrent leases.") — no hold is posted, no `lease.create` is sent. A host that advertises no ceiling is unlimited (the pre-#571 behavior). This is only the cheap manager-side guard; wisp stays authoritative, so if it rejects a create in the admit→provision race the agent reports `at_capacity` and the same `409 at_capacity` is returned to the caller (the failed-create teardown still runs). The host's live counts are surfaced as `at_capacity`/`active_leases`/`max_leases` in the catalog (§5).
 
 `isolation` is the **optional** requested sandbox level, ordered `shared` < `sandboxed` < `vm` (`TUNNEL.md` §5, task #418). Omitted → `shared`; `confidential` or any unknown value → `validation_error`. It is resolved and validated server-side — against the admin-tunable `platform_policy.min_isolation` floor and, when the target host advertises isolation levels (task #417), against the levels that host can provide (a host with none recorded passes through, since wisp re-validates as the real security boundary) — then snapshotted immutably on the lease, returned on `GET /v1/leases/:id`, and forwarded on the `lease.create` frame.
 
@@ -262,6 +267,7 @@ Every admin write records an `audit_log` row with actor + before/after (`DATA_MO
 
 - *Planned, not implemented:* per-user token bucket (anonymous/`/healthz` excluded), stricter buckets on money endpoints and lease creation, `429 rate_limited` + `Retry-After`, `X-RateLimit-*` on every response. No generic rate limiter runs today.
 - **Business quotas** (distinct from rate limits, and fully implemented): `max_concurrent_leases_per_user` returns `409 at_capacity`; the fraud-guard caps (first-top-up, new-account top-up velocity, daily lease spend — `PAYMENTS.md` §7) return `429 limit_exceeded`; an unaffordable hold returns `402 insufficient_funds`. All come from `platform_policy` and are enforced server-side regardless of client behavior.
+- **Per-host admission** (task #571): a host advertises its concurrent-contract ceiling on the tunnel (`capacity.max_contracts`, `TUNNEL.md` §5). `POST /v1/leases` counts the host's live (non-terminal) leases and, when the ceiling is reached, fast-fails with `409 at_capacity` **before** posting any wallet hold or sending a tunnel frame — the message names the *host* so it is distinguishable from the per-user `at_capacity` above. A host that advertises no ceiling is unlimited. wisp remains the authoritative enforcer: if it rejects a create in the admit→provision race, the agent reports `at_capacity` and the same `409 at_capacity` surfaces to the caller.
 
 ## 12. Observability & correlation
 

@@ -57,6 +57,39 @@ public class LeaseServiceTests
             Array.Empty<string>(), Array.Empty<NetworkMode>(),
             MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, Os: os));
 
+        /// <summary>
+        /// Declares the seeded host's live capability with a concurrent-contract ceiling (task #571). A ceiling
+        /// of 0 leaves the host unlimited — the absent-block/pre-#571 behavior.
+        /// </summary>
+        public void SetHostMaxContracts(int maxContracts) => Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
+            Array.Empty<string>(), Array.Empty<NetworkMode>(),
+            MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, MaxContracts: maxContracts));
+
+        /// <summary>Seeds <paramref name="count"/> live (active) leases on the seeded host to fill its capacity.</summary>
+        public async Task SeedActiveLeasesOnHostAsync(int count)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                await Leases.CreateAsync(new Lease
+                {
+                    Id = Guid.NewGuid(),
+                    ConsumerUserId = Guid.NewGuid(),
+                    HostId = Host!.Id,
+                    HostImageId = Image!.Id,
+                    ImageRef = Image.ImageRef,
+                    Network = NetworkMode.Open,
+                    TtlSeconds = 3600,
+                    PriceCentsPerMin = 5,
+                    Currency = "usd",
+                    Status = LeaseStatus.Active,
+                    WispContractId = $"wisp-contract-seed-{i}",
+                    CreatedAt = T0,
+                    StartedAt = T0,
+                    LastMeteredAt = T0,
+                });
+            }
+        }
+
         public async Task<HostImage> SeedImageAsync(
             HostStatus hostStatus = HostStatus.Online,
             long price = 5,
@@ -394,6 +427,134 @@ public class LeaseServiceTests
         var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
         Assert.Equal(0, stored!.Gpus);
         Assert.Equal(0, created.Lease.Gpus);
+    }
+
+    [Fact]
+    public async Task Create_fast_fails_at_capacity_when_the_host_contract_ceiling_is_reached()
+    {
+        // task #571: the host advertises max_contracts=2 and already runs 2 live leases. The create is refused
+        // with at_capacity (409) BEFORE the wallet gate — the fixture's AllowWalletGate would otherwise provision.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        fx.SetHostMaxContracts(2);
+        await fx.SeedActiveLeasesOnHostAsync(2);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+
+        Assert.Equal(ApiErrorCode.AtCapacity, ex.Code);
+        // The message distinguishes host-at-capacity from the per-user concurrency cap that shares the code.
+        Assert.Contains("host", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(fx.Relay.CreateCalls); // no tunnel frame — the fast-fail is before provisioning
+    }
+
+    [Fact]
+    public async Task Create_at_capacity_posts_no_hold_and_leaves_no_lease_row()
+    {
+        // The fast-fail must post no wallet hold and persist nothing — a recording gate proves PlaceHold is
+        // never called, and only the seeded live leases remain (no new row for the refused create).
+        var gate = new RecordingWalletGate();
+        var fx = new Fixture { WalletGate = gate };
+        await fx.SeedImageAsync(price: 5);
+        fx.SetHostMaxContracts(1);
+        await fx.SeedActiveLeasesOnHostAsync(1);
+
+        await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+
+        Assert.Equal(0, gate.AuthorizeCalls); // refused before the wallet gate even authorizes
+        Assert.Equal(0, gate.PlaceCalls);     // and so no hold is posted
+        Assert.Equal(1, await fx.Leases.CountActiveByHostAsync(fx.Host!.Id)); // only the seeded lease remains
+    }
+
+    [Fact]
+    public async Task Create_admits_when_the_host_contract_count_is_below_the_ceiling()
+    {
+        // Boundary: count < max admits. max_contracts=2 with a single live lease leaves room for one more.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        fx.SetHostMaxContracts(2);
+        await fx.SeedActiveLeasesOnHostAsync(1);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+        Assert.Single(fx.Relay.CreateCalls); // provisioned — the ceiling was not yet reached
+    }
+
+    [Theory]
+    [InlineData(1, 1, false)] // count == max → the boundary rejects
+    [InlineData(0, 1, true)]  // count < max  → admits
+    [InlineData(2, 3, true)]  // headroom     → admits
+    [InlineData(3, 3, false)] // at the ceiling → rejects
+    public async Task Create_capacity_boundary_admits_below_max_and_rejects_at_max(
+        int existing, int max, bool admits)
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        fx.SetHostMaxContracts(max);
+        await fx.SeedActiveLeasesOnHostAsync(existing);
+
+        if (admits)
+        {
+            var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+            Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+        }
+        else
+        {
+            var ex = await Assert.ThrowsAsync<ApiException>(() =>
+                fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+            Assert.Equal(ApiErrorCode.AtCapacity, ex.Code);
+            Assert.Empty(fx.Relay.CreateCalls);
+        }
+    }
+
+    [Fact]
+    public async Task Create_treats_a_host_with_no_advertised_ceiling_as_unlimited()
+    {
+        // No capacity block (an older agent, or a host that advertises none) ⇒ unlimited: many live leases
+        // never trip the fast-fail. This is the pre-#571 behavior wisp still enforces authoritatively.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        fx.SetHostMaxContracts(0); // advertised, but 0 = unlimited
+        await fx.SeedActiveLeasesOnHostAsync(10);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Create_treats_an_offline_host_with_no_live_capability_as_unlimited()
+    {
+        // A host with no live capability snapshot (offline) has no advertised ceiling, so the manager-side
+        // fast-fail never fires — wisp is the enforcer. (The relay itself would surface host_offline here.)
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        await fx.SeedActiveLeasesOnHostAsync(5);
+        // No capability declared for the host.
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Create_maps_an_agent_reported_at_capacity_to_409_and_persists_nothing()
+    {
+        // Race window (task #571): the manager admitted, but wisp reports 409 → the relay raises at_capacity.
+        // It must surface as the 409 at_capacity API error (not lease_failed/upstream), and — since the frame
+        // failed before any lease row or hold — nothing is persisted.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        fx.Relay.CreateError = new ApiException(ApiErrorCode.AtCapacity, "wisp reported 409 at capacity");
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+
+        Assert.Equal(ApiErrorCode.AtCapacity, ex.Code);
+        Assert.Empty(await fx.Leases.ListByConsumerAsync(fx.ConsumerId));
+        Assert.Empty(fx.Relay.ReleaseCalls); // the frame failed pre-provision — nothing to tear down
     }
 
     [Fact]
@@ -904,6 +1065,32 @@ public class LeaseServiceTests
         var ex = await Assert.ThrowsAsync<ApiException>(() =>
             fx.Service().ResolveExecTargetAsync(fx.ConsumerId, lease.Id));
         Assert.Equal(ApiErrorCode.LeaseNotReady, ex.Code);
+    }
+
+    /// <summary>
+    /// A permissive gate that records whether it was asked to authorize/place a hold — used to prove the
+    /// per-host fast-fail (task #571) refuses BEFORE the wallet gate is consulted (no authorize, no hold).
+    /// </summary>
+    private sealed class RecordingWalletGate : ILeaseWalletGate
+    {
+        public int AuthorizeCalls { get; private set; }
+        public int PlaceCalls { get; private set; }
+
+        public Task<WalletGateDecision> AuthorizeHoldAsync(
+            Guid consumerUserId, long holdCents, string currency, CancellationToken ct = default)
+        {
+            AuthorizeCalls++;
+            return Task.FromResult(WalletGateDecision.Allow());
+        }
+
+        public Task<Guid?> PlaceHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default)
+        {
+            PlaceCalls++;
+            return Task.FromResult<Guid?>(null);
+        }
+
+        public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class DenyingWalletGate : ILeaseWalletGate

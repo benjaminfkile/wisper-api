@@ -3,6 +3,7 @@ using Wisper.Api.Catalog;
 using Wisper.Api.Domain;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
@@ -29,12 +30,13 @@ public class HostPresenceServiceTests
         public InMemoryUserRepository Users { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
+        public InMemoryLeaseRepository Leases { get; } = new();
         public FakeTimeProvider Clock { get; } = new(TReady);
         public HostPresenceService Service { get; }
 
         // The catalog joins the DB-online subset with the live registry, so it proves the presence flip is
         // what makes a host visible (docs/API.md §5).
-        public CatalogService Catalog => new(Hosts, Images, Registry, Capabilities);
+        public CatalogService Catalog => new(Hosts, Images, Registry, Capabilities, Leases);
 
         public Fixture()
         {

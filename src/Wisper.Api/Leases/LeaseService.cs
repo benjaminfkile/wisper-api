@@ -99,6 +99,12 @@ public sealed class LeaseService : ILeaseService
         ValidateEnv(request.Env);
         var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
 
+        // Per-host admission control BEFORE the wallet gate posts a hold and before any tunnel frame (task #571):
+        // if the host advertises a positive concurrent-contract ceiling and it is already reached, fail fast with
+        // at_capacity — no hold, no lease.create. wisp stays the authoritative enforcer (its own 409 surfaces as
+        // at_capacity too, mapped by the relay); this is the cheap manager-side guard so full hosts do not churn.
+        await EnforceHostCapacityAsync(host, ct);
+
         // Wallet gate BEFORE any tunnel frame: no compute is provisioned that can't be paid for
         // (docs/DATA_MODEL.md §8, §14, docs/PAYMENTS.md §4). It also enforces the per-user concurrency cap
         // (throwing at_capacity). Insufficient wallet balance → 402, and no lease.create is ever sent.
@@ -240,6 +246,32 @@ public sealed class LeaseService : ILeaseService
         {
             // Marking the row failed is best-effort cleanup too; the original hold exception is the one that
             // matters, so a failure to flip the status here must not shadow it.
+        }
+    }
+
+    /// <summary>
+    /// The per-host concurrent-contract admission gate (task #571). The host's live capability may advertise a
+    /// contract ceiling (<c>capacity.max_contracts</c>); when it is positive and the host's non-terminal lease
+    /// count has reached it, the create is refused with <c>at_capacity</c> (409) BEFORE the wallet gate posts a
+    /// hold and before any tunnel frame — no compute is provisioned and no money is earmarked. A host with no
+    /// live capability (offline) or no advertised ceiling is unlimited and passes through: wisp remains the
+    /// authoritative enforcer (its own 409 also surfaces as <c>at_capacity</c>, mapped by the relay). The message
+    /// names the <b>host</b> so it is distinguishable from the per-user concurrency cap that also uses this code.
+    /// </summary>
+    private async Task EnforceHostCapacityAsync(Domain.Host host, CancellationToken ct)
+    {
+        if (_capabilities.GetCapability(host.Id) is not { HasContractLimit: true } capability)
+        {
+            return; // offline or no advertised ceiling ⇒ unlimited (pre-#571 behavior)
+        }
+
+        var active = await _leases.CountActiveByHostAsync(host.Id, ct);
+        if (active >= capability.MaxContracts)
+        {
+            throw new ApiException(
+                ApiErrorCode.AtCapacity,
+                "The host has reached its maximum number of concurrent leases.",
+                new { host_id = host.Id, active_leases = active, max_leases = capability.MaxContracts });
         }
     }
 

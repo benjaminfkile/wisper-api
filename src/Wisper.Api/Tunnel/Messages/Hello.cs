@@ -72,8 +72,52 @@ public record HelloCapability
     [JsonPropertyName("gpu")]
     public HelloGpu? Gpu { get; init; }
 
+    /// <summary>
+    /// The host's live contract capacity as wisp reports it (snake_case wire block <c>capacity</c>, task #571):
+    /// the concurrent-contract ceiling the manager fast-fails against, plus the informational resource totals.
+    /// Null/absent for an older agent that does not forward it, which the manager treats as <b>unlimited</b>
+    /// (the pre-#571 behavior) — a per-host admission decision is made only when a positive ceiling is present.
+    /// wisp remains the authoritative enforcer (its 409 surfaces as an <c>at_capacity</c> lease failure).
+    /// </summary>
+    [JsonPropertyName("capacity")]
+    public HelloContractCapacity? Capacity { get; init; }
+
     [JsonPropertyName("limits")]
     public HelloLimits Limits { get; init; } = new();
+}
+
+/// <summary>
+/// The <c>capacity</c> block wisp forwards inside a hello/heartbeat capability (task #571): the host's real
+/// concurrent-contract ceiling and the live resource totals it is running against. Every field is snake_case,
+/// mirroring wisp's own API. Only <see cref="MaxContracts"/> drives a manager-side decision — the per-host
+/// fast-fail admission control — and only when it is positive; the resource totals are informational surfacing.
+/// An absent block (older agent) ⇒ unlimited, so nothing here is enforced (docs/TUNNEL.md §5).
+/// </summary>
+public record HelloContractCapacity
+{
+    /// <summary>The most concurrent contracts (leases) this host will serve; <c>0</c> (or absent) ⇒ unlimited.</summary>
+    [JsonPropertyName("max_contracts")]
+    public int MaxContracts { get; init; }
+
+    /// <summary>How many contracts wisp currently reports active — informational (the manager counts its own).</summary>
+    [JsonPropertyName("active_contracts")]
+    public int ActiveContracts { get; init; }
+
+    /// <summary>The host's total advertised CPU capacity (cores) — informational surfacing.</summary>
+    [JsonPropertyName("total_cpus")]
+    public double TotalCpus { get; init; }
+
+    /// <summary>How much CPU (cores) wisp reports in use — informational surfacing.</summary>
+    [JsonPropertyName("used_cpus")]
+    public double UsedCpus { get; init; }
+
+    /// <summary>The host's total advertised memory (MiB) — informational surfacing.</summary>
+    [JsonPropertyName("total_memory_mb")]
+    public long TotalMemoryMb { get; init; }
+
+    /// <summary>How much memory (MiB) wisp reports in use — informational surfacing.</summary>
+    [JsonPropertyName("used_memory_mb")]
+    public long UsedMemoryMb { get; init; }
 }
 
 /// <summary>

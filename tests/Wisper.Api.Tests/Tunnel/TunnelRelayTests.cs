@@ -266,6 +266,34 @@ public class TunnelRelayTests
     }
 
     [Fact]
+    public async Task Host_error_at_capacity_on_create_maps_to_the_typed_at_capacity_code()
+    {
+        // Race window (task #571): the agent forwards wisp's 409 as an at_capacity error for a lease.create.
+        // The relay must map it to the typed at_capacity (409) API error, not the generic lease_failed (502).
+        using var factory = CreateFactory(relayTimeoutMs: 60000);
+        var ct = Token();
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.LeaseCreate, req.GetProperty("t").GetString());
+            var rid = req.GetProperty("rid").GetUInt32();
+            await SendRawAsync(socket,
+                $"{{\"t\":\"error\",\"rid\":{rid},\"code\":\"at_capacity\",\"message\":\"host at capacity\"}}", ct);
+        }, ct);
+
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"image\":\"alpine\",\"network\":\"none\"," +
+                   "\"resources\":{\"cpus\":1,\"memory_mb\":512,\"pids\":128},\"ttl_seconds\":3600}";
+        var response = await factory.CreateClient().PostAsync("/dev/leases", JsonContent(body), ct);
+        await responder;
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var json = await ReadJsonAsync(response, ct);
+        Assert.Equal("at_capacity", json.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Create_right_after_connect_waits_for_readiness_instead_of_racing_to_host_offline()
     {
         using var factory = CreateFactory();
