@@ -14,6 +14,16 @@ public record LeaseFailed : ControlEnvelope
     [JsonPropertyName("leaseId")]
     public string LeaseId { get; init; } = string.Empty;
 
+    /// <summary>
+    /// Optional machine-readable failure code (omitted from the wire when the
+    /// agent has none). <c>at_capacity</c> = the local wisp rejected the
+    /// contract with HTTP 409 (host budgets exhausted) — mapped to the API's
+    /// own <c>at_capacity</c> so the race window past the manager-side
+    /// fast-fail still surfaces as 409, not a generic 502.
+    /// </summary>
+    [JsonPropertyName("code")]
+    public string? Code { get; init; }
+
     [JsonPropertyName("error")]
     public string Error { get; init; } = string.Empty;
 }

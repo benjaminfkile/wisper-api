@@ -408,7 +408,7 @@ public sealed class TunnelRelay : ITunnelRelay
         }
 
         var error = string.IsNullOrEmpty(failed.Error) ? "lease provisioning failed" : failed.Error;
-        var ex = new ApiException(ApiErrorCode.LeaseFailed, error);
+        var ex = new ApiException(MapAgentErrorCode(failed.Code), error);
 
         // lease.failed carries both rid and leaseId; fail whichever awaiter is still outstanding
         // (the rid one before accepted, the leaseId one if it failed after accepted).
