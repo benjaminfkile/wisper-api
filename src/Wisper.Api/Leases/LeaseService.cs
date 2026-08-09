@@ -99,11 +99,21 @@ public sealed class LeaseService : ILeaseService
         ValidateEnv(request.Env);
         var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
 
+        // One live capability read for the whole create: its contract ceiling drives admission (task #571), its
+        // per-lease caps resolve the profile stamped below (task #578), and its container OS rides the 201.
+        var capability = _capabilities.GetCapability(host.Id);
+
+        // Resolve the effective profile once: the offer's sized cpus/memory when set, else the host's advertised
+        // per-lease cap, else null (task #578). Stamped on the lease row below so the size is never unknown; the
+        // lease.create frame still carries only the offer's own values (host defaults apply for what it omits).
+        var resolvedResources = ResolvedResources.Resolve(
+            image.Cpus, image.MemoryMb, capability?.MaxCpus ?? 0, capability?.MaxMemoryMb ?? 0);
+
         // Per-host admission control BEFORE the wallet gate posts a hold and before any tunnel frame (task #571):
         // if the host advertises a positive concurrent-contract ceiling and it is already reached, fail fast with
         // at_capacity — no hold, no lease.create. wisp stays the authoritative enforcer (its own 409 surfaces as
         // at_capacity too, mapped by the relay); this is the cheap manager-side guard so full hosts do not churn.
-        await EnforceHostCapacityAsync(host, ct);
+        await EnforceHostCapacityAsync(capability, host, ct);
 
         // Wallet gate BEFORE any tunnel frame: no compute is provisioned that can't be paid for
         // (docs/DATA_MODEL.md §8, §14, docs/PAYMENTS.md §4). It also enforces the per-user concurrency cap
@@ -172,10 +182,13 @@ public sealed class LeaseService : ILeaseService
             ImageRef = image.ImageRef,
             Network = network,
             Isolation = isolation,
-            // Stamp the provisioned profile on the row so read/list surfaces show exactly what was booked
-            // (task #570): the offer's sized profile, verbatim (NULL cpus/memory_mb = host default downstream).
-            Cpus = image.Cpus,
-            MemoryMb = image.MemoryMb,
+            // Stamp the RESOLVED provisioned profile on the row so read/list surfaces (and the consumer, even
+            // after the fact) see exactly what was booked, never an unknown size (task #578): the offer's sized
+            // profile when it pinned one, else the host's advertised per-lease cap, else null (only when the host
+            // advertises no cap either — e.g. offline). The lease.create frame above is UNCHANGED (it still omits
+            // what the offer left null so wisp's own defaults keep applying) — this is bookkeeping, not provisioning.
+            Cpus = resolvedResources.CpusForStamp,
+            MemoryMb = resolvedResources.MemoryMb,
             Gpus = image.Gpus,
             TtlSeconds = ttlSeconds,
             PriceCentsPerMin = image.PriceCentsPerMin,
@@ -258,9 +271,10 @@ public sealed class LeaseService : ILeaseService
     /// authoritative enforcer (its own 409 also surfaces as <c>at_capacity</c>, mapped by the relay). The message
     /// names the <b>host</b> so it is distinguishable from the per-user concurrency cap that also uses this code.
     /// </summary>
-    private async Task EnforceHostCapacityAsync(Domain.Host host, CancellationToken ct)
+    private async Task EnforceHostCapacityAsync(
+        HostCapabilitySnapshot? capability, Domain.Host host, CancellationToken ct)
     {
-        if (_capabilities.GetCapability(host.Id) is not { HasContractLimit: true } capability)
+        if (capability is not { HasContractLimit: true })
         {
             return; // offline or no advertised ceiling ⇒ unlimited (pre-#571 behavior)
         }
@@ -296,7 +310,7 @@ public sealed class LeaseService : ILeaseService
                 break;
             }
 
-            page.Add(LeaseView.From(lease, OsOf(lease.HostId)));
+            page.Add(ViewOf(lease));
             lastIncluded = lease;
         }
 
@@ -310,7 +324,7 @@ public sealed class LeaseService : ILeaseService
         Guid consumerUserId, Guid leaseId, CancellationToken ct = default)
     {
         var lease = await OwnedLeaseOrNullAsync(consumerUserId, leaseId, ct);
-        return lease is null ? null : LeaseView.From(lease, OsOf(lease.HostId));
+        return lease is null ? null : ViewOf(lease);
     }
 
     public async Task<LeaseExecTarget?> ResolveExecTargetAsync(
@@ -348,7 +362,7 @@ public sealed class LeaseService : ILeaseService
         // Idempotent: an already-ended lease is a safe no-op replay (docs/API.md §5, DELETE is retryable).
         if (lease.Status == LeaseStatus.Ended)
         {
-            return LeaseView.From(lease, OsOf(lease.HostId));
+            return ViewOf(lease);
         }
 
         try
@@ -368,7 +382,7 @@ public sealed class LeaseService : ILeaseService
         // Return the unused remainder of the hold to the wallet (docs/PAYMENTS.md §4). Keyed by lease id, so
         // it is a safe no-op if the lease was already finalized (and released) by the reconciler.
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
-        return LeaseView.From(ended ?? lease, OsOf(lease.HostId));
+        return ViewOf(ended ?? lease);
     }
 
     /// <summary>
@@ -376,6 +390,18 @@ public sealed class LeaseService : ILeaseService
     /// when it has no live tunnel or its agent advertised none — surfacing only, always null-safe (task #316).
     /// </summary>
     private string? OsOf(Guid hostId) => _capabilities.GetCapability(hostId)?.Os;
+
+    /// <summary>
+    /// Projects a lease into its read view, resolving both the host's live container OS (task #316) and its
+    /// advertised per-lease caps (task #578) from one capability read — so a NULL-stamped legacy row still
+    /// surfaces an effective size instead of blank, and a new (resolved-and-stamped) row shows what it booked.
+    /// </summary>
+    private LeaseView ViewOf(Lease lease)
+    {
+        var capability = _capabilities.GetCapability(lease.HostId);
+        return LeaseView.From(
+            lease, capability?.Os, capability?.MaxCpus ?? 0, capability?.MaxMemoryMb ?? 0);
+    }
 
     private async Task<Lease?> OwnedLeaseOrNullAsync(Guid consumerUserId, Guid leaseId, CancellationToken ct)
     {

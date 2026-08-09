@@ -57,7 +57,11 @@ public sealed class CatalogService : ICatalogService
         var more = false;
         foreach (var host in ordered)
         {
-            var images = await MatchingImagesAsync(host.Id, query, ct);
+            // One live capability read per host: its per-lease caps resolve each offer's effective profile
+            // (task #578), its container OS surfaces on the entry (task #316), and its contract ceiling drives
+            // the capacity badge (task #571).
+            var capability = _capabilities.GetCapability(host.Id);
+            var images = await MatchingImagesAsync(host.Id, query, capability, ct);
             if (images.Count == 0)
             {
                 continue;
@@ -69,8 +73,8 @@ public sealed class CatalogService : ICatalogService
                 break;
             }
 
-            var (active, max) = await CapacityOf(host.Id, ct);
-            page.Add(CatalogItem.From(host, images, online: true, os: OsOf(host.Id), active, max));
+            var (active, max) = await CapacityOf(capability, host.Id, ct);
+            page.Add(CatalogItem.From(host, images, online: true, os: capability?.Os, active, max));
             lastIncluded = host;
         }
 
@@ -89,10 +93,12 @@ public sealed class CatalogService : ICatalogService
             return null;
         }
 
+        var capability = _capabilities.GetCapability(hostId);
         var images = await _images.ListByHostAsync(hostId, enabledOnly: true, ct);
-        var wire = images.Select(CatalogImage.From).ToList();
-        var (active, max) = await CapacityOf(hostId, ct);
-        return HostDetail.From(host, wire, online: IsLive(host), os: OsOf(host.Id), active, max);
+        var wire = images.Select(i => CatalogImage.From(i, capability?.MaxCpus ?? 0, capability?.MaxMemoryMb ?? 0))
+            .ToList();
+        var (active, max) = await CapacityOf(capability, hostId, ct);
+        return HostDetail.From(host, wire, online: IsLive(host), os: capability?.Os, active, max);
     }
 
     /// <summary>
@@ -102,9 +108,10 @@ public sealed class CatalogService : ICatalogService
     /// per-host lease count is only queried when there is a ceiling to compare against — an unlimited host costs
     /// no extra read.
     /// </summary>
-    private async Task<(int? Active, int? Max)> CapacityOf(Guid hostId, CancellationToken ct)
+    private async Task<(int? Active, int? Max)> CapacityOf(
+        HostCapabilitySnapshot? capability, Guid hostId, CancellationToken ct)
     {
-        if (_capabilities.GetCapability(hostId) is not { HasContractLimit: true } capability)
+        if (capability is not { HasContractLimit: true })
         {
             return (null, null);
         }
@@ -114,18 +121,13 @@ public sealed class CatalogService : ICatalogService
     }
 
     /// <summary>
-    /// The host's advertised container OS from its live capability snapshot (docs/TUNNEL.md §5), or null
-    /// when it has no live tunnel or its agent advertised none — surfacing only, always null-safe (task #316).
-    /// </summary>
-    private string? OsOf(Guid hostId) => _capabilities.GetCapability(hostId)?.Os;
-
-    /// <summary>
-    /// The host's enabled priced images that pass the request's image/network/price/min_gpus filters.
+    /// The host's enabled priced images that pass the request's image/network/price/min_gpus filters, each
+    /// projected with the host's live per-lease caps so its effective resource profile resolves (task #578).
     /// The <c>min_gpus</c> floor is per-offer (an offer's exact <see cref="HostImage.Gpus"/> count, task #569),
     /// so an offer that provisions <c>0</c> GPUs is excluded whenever any GPU is required (task #523).
     /// </summary>
     private async Task<IReadOnlyList<CatalogImage>> MatchingImagesAsync(
-        Guid hostId, CatalogQuery query, CancellationToken ct)
+        Guid hostId, CatalogQuery query, HostCapabilitySnapshot? capability, CancellationToken ct)
     {
         var images = await _images.ListByHostAsync(hostId, enabledOnly: true, ct);
         return images
@@ -133,7 +135,7 @@ public sealed class CatalogService : ICatalogService
             .Where(i => query.Network is not { } n || i.Networks.Contains(n))
             .Where(i => query.MaxPriceCentsPerMin is not { } max || i.PriceCentsPerMin <= max)
             .Where(i => query.MinGpus is not { } min || i.Gpus >= min)
-            .Select(CatalogImage.From)
+            .Select(i => CatalogImage.From(i, capability?.MaxCpus ?? 0, capability?.MaxMemoryMb ?? 0))
             .ToList();
     }
 

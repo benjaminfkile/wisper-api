@@ -65,6 +65,15 @@ public class LeaseServiceTests
             Array.Empty<string>(), Array.Empty<NetworkMode>(),
             MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, MaxContracts: maxContracts));
 
+        /// <summary>
+        /// Declares the seeded host's live capability with the given advertised per-lease caps (task #578).
+        /// The defaults (4 cores / 8192 MB) are a sized cap; pass 0/0 for a host that advertises no cap.
+        /// </summary>
+        public void SetHostLimits(double maxCpus = 4, long maxMemoryMb = 8192) =>
+            Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
+                Array.Empty<string>(), Array.Empty<NetworkMode>(),
+                MaxTtlSeconds: 3600, MaxCpus: maxCpus, MaxMemoryMb: maxMemoryMb, MaxPids: 1024));
+
         /// <summary>Seeds <paramref name="count"/> live (active) leases on the seeded host to fill its capacity.</summary>
         public async Task SeedActiveLeasesOnHostAsync(int count)
         {
@@ -219,6 +228,116 @@ public class LeaseServiceTests
         var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
         Assert.Null(stored!.Cpus);
         Assert.Null(stored.MemoryMb);
+    }
+
+    [Fact]
+    public async Task Create_stamps_the_host_per_lease_cap_for_a_null_profile_offer()
+    {
+        // task #578: a NULL-profile offer no longer records an unknown size. It stamps the host's advertised
+        // per-lease cap (limits.max_cpus/max_memory_mb) onto the row so the consumer can see what they leased
+        // even after the fact — while the lease.create frame STILL omits cpus/memory (host defaults apply).
+        var fx = new Fixture();
+        await fx.SeedImageAsync(cpus: null, memoryMb: null, gpus: 0);
+        fx.SetHostLimits(maxCpus: 4, maxMemoryMb: 8192);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        // The frame is unchanged — the offer pinned nothing, so cpus/memory_mb are omitted (host defaults).
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        var resources = System.Text.Json.JsonDocument
+            .Parse(ControlJson.Serialize(spec)).RootElement.GetProperty("resources");
+        Assert.False(resources.TryGetProperty("cpus", out _));
+        Assert.False(resources.TryGetProperty("memory_mb", out _));
+
+        // But the row records the resolved size from the host cap — never NULL when a cap exists.
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal(4, stored!.Cpus);
+        Assert.Equal(8192, stored.MemoryMb);
+
+        // The read view carries the resolved effective profile too.
+        var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
+        Assert.Equal(4m, view!.Resources.EffectiveCpus);
+        Assert.Equal(8192, view.Resources.EffectiveMemoryMb);
+    }
+
+    [Fact]
+    public async Task Create_prefers_the_offer_profile_over_the_host_cap()
+    {
+        // task #578 precedence: offer beats host cap. A sized offer stamps its own cpus/memory even when the
+        // host advertises a (larger) per-lease cap.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(cpus: 2, memoryMb: 4096, gpus: 0);
+        fx.SetHostLimits(maxCpus: 4, maxMemoryMb: 8192);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal(2, stored!.Cpus);      // the offer's value, not the host cap
+        Assert.Equal(4096, stored.MemoryMb);
+
+        var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
+        Assert.Equal(2m, view!.Resources.EffectiveCpus);
+        Assert.Equal(4096, view.Resources.EffectiveMemoryMb);
+        Assert.Equal("offer", view.Resources.ResourcesSource);
+    }
+
+    [Fact]
+    public async Task Create_leaves_the_profile_null_when_offline_and_the_offer_is_null()
+    {
+        // task #578: an offline host advertises no cap, so a NULL-profile offer degrades to a genuinely unknown
+        // size — the row stays NULL (no cap to record) and the view marks resources_source "unknown".
+        var fx = new Fixture();
+        await fx.SeedImageAsync(cpus: null, memoryMb: null, gpus: 0);
+        // No capability declared for the host ⇒ offline (no per-lease cap available).
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Null(stored!.Cpus);
+        Assert.Null(stored.MemoryMb);
+
+        var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
+        Assert.Null(view!.Resources.EffectiveCpus);
+        Assert.Null(view.Resources.EffectiveMemoryMb);
+        Assert.Equal("unknown", view.Resources.ResourcesSource);
+    }
+
+    [Fact]
+    public async Task Get_resolves_a_legacy_null_stamped_row_from_the_live_host_cap()
+    {
+        // task #578: an existing NULL-stamped row (created before this task, or under an offline host) still
+        // serializes. On read, its effective size is resolved compute-on-read from the host's live per-lease
+        // cap so the consumer is no longer shown a blank — no migration, no re-stamp of the raw column.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(cpus: null, memoryMb: null);
+        var legacy = await fx.Leases.CreateAsync(new Lease
+        {
+            Id = Guid.NewGuid(),
+            ConsumerUserId = fx.ConsumerId,
+            HostId = fx.Host!.Id,
+            HostImageId = fx.Image!.Id,
+            ImageRef = fx.Image.ImageRef,
+            Network = NetworkMode.Open,
+            Cpus = null,          // legacy NULL stamp
+            MemoryMb = null,
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 5,
+            Currency = "usd",
+            Status = LeaseStatus.Active,
+            CreatedAt = T0,
+            StartedAt = T0,
+            LastMeteredAt = T0,
+        });
+        fx.SetHostLimits(maxCpus: 4, maxMemoryMb: 8192);
+
+        var view = await fx.Service().GetAsync(fx.ConsumerId, legacy.Id);
+
+        Assert.NotNull(view);
+        Assert.Null(view!.Resources.Cpus);                  // the raw column is untouched
+        Assert.Null(view.Resources.MemoryMb);
+        Assert.Equal(4m, view.Resources.EffectiveCpus);     // resolved on read from the host cap
+        Assert.Equal(8192, view.Resources.EffectiveMemoryMb);
+        Assert.Equal("host_cap", view.Resources.ResourcesSource);
     }
 
     [Fact]

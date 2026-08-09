@@ -80,14 +80,21 @@ public sealed record CreateLeaseResponse(
 /// <summary>
 /// The lease's provisioned resource profile as it appears on the read surface (docs/API.md §5): the exact
 /// size stamped from the selected offer at create (task #570), so the consumer sees precisely what the flat
-/// per-offer price bought. <see cref="Cpus"/>/<see cref="MemoryMb"/> are <c>null</c> when the offer left
-/// that dimension to the host's own per-lease policy default; <see cref="Gpus"/> is the booked whole-device
-/// GPU count (0 when none). All immutable snapshots.
+/// per-offer price bought. <see cref="Cpus"/>/<see cref="MemoryMb"/> are the raw stamped snapshot — <c>null</c>
+/// when the offer left that dimension to the host default AND no host cap was recorded (e.g. legacy rows
+/// created before task #578); <see cref="Gpus"/> is the booked whole-device GPU count (0 when none).
+/// <see cref="EffectiveCpus"/>/<see cref="EffectiveMemoryMb"/> plus <see cref="ResourcesSource"/> (task #578)
+/// resolve the size the consumer can actually see even for such a NULL-stamped row: the stamped value when
+/// present, else the host's live advertised per-lease cap, else <c>null</c> (offline / no cap advertised).
+/// All immutable snapshots except the compute-on-read effective fallback for legacy rows.
 /// </summary>
 public sealed record LeaseResourcesView(
     [property: JsonPropertyName("cpus")] int? Cpus,
     [property: JsonPropertyName("memory_mb")] int? MemoryMb,
-    [property: JsonPropertyName("gpus")] int Gpus);
+    [property: JsonPropertyName("gpus")] int Gpus,
+    [property: JsonPropertyName("effective_cpus")] decimal? EffectiveCpus,
+    [property: JsonPropertyName("effective_memory_mb")] int? EffectiveMemoryMb,
+    [property: JsonPropertyName("resources_source")] string ResourcesSource);
 
 /// <summary>
 /// The read shape of a lease (docs/API.md §5, <c>GET /v1/leases</c> and <c>GET /v1/leases/:id</c>): the
@@ -119,25 +126,37 @@ public sealed record LeaseView(
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a stored <see cref="Lease"/> into its read wire shape, optionally carrying the
-    /// host's live container <paramref name="os"/> (null when offline/pre-os — surfacing only).</summary>
-    public static LeaseView From(Lease lease, string? os = null) => new(
-        Id: TunnelLeaseId.Format(lease.Id),
-        Status: PgEnum.ToLabel(lease.Status),
-        HostId: lease.HostId,
-        ImageRef: lease.ImageRef,
-        Network: PgEnum.ToLabel(lease.Network),
-        Resources: new LeaseResourcesView(lease.Cpus, lease.MemoryMb, lease.Gpus),
-        TtlSeconds: lease.TtlSeconds,
-        PriceCentsPerMin: lease.PriceCentsPerMin,
-        Currency: lease.Currency,
-        CreatedAt: lease.CreatedAt,
-        StartedAt: lease.StartedAt,
-        BillableSeconds: lease.BillableSeconds,
-        CostCentsSoFar: RunningCostCents(lease),
-        ExpiresAt: ExpiresAtOf(lease),
-        EndReason: lease.EndReason is { } reason ? PgEnum.ToSnakeLabel(reason) : null,
-        Isolation: lease.Isolation,
-        Os: os);
+    /// host's live container <paramref name="os"/> (null when offline/pre-os — surfacing only) and its live
+    /// advertised per-lease caps (<paramref name="hostCapCpus"/> cores, <paramref name="hostCapMemoryMb"/> MB;
+    /// 0 = offline / no cap) used to resolve the effective profile for a NULL-stamped legacy row (task #578).</summary>
+    public static LeaseView From(
+        Lease lease, string? os = null, double hostCapCpus = 0, long hostCapMemoryMb = 0)
+    {
+        // Resolve the size the consumer actually sees: the stamped snapshot when present, else the host's live
+        // per-lease cap, else null (task #578). A NULL-stamped legacy row still serializes; it just resolves
+        // its effective size from the host cap on read instead of showing blank.
+        var resolved = ResolvedResources.Resolve(lease.Cpus, lease.MemoryMb, hostCapCpus, hostCapMemoryMb);
+        return new(
+            Id: TunnelLeaseId.Format(lease.Id),
+            Status: PgEnum.ToLabel(lease.Status),
+            HostId: lease.HostId,
+            ImageRef: lease.ImageRef,
+            Network: PgEnum.ToLabel(lease.Network),
+            Resources: new LeaseResourcesView(
+                lease.Cpus, lease.MemoryMb, lease.Gpus,
+                resolved.Cpus, resolved.MemoryMb, resolved.Source),
+            TtlSeconds: lease.TtlSeconds,
+            PriceCentsPerMin: lease.PriceCentsPerMin,
+            Currency: lease.Currency,
+            CreatedAt: lease.CreatedAt,
+            StartedAt: lease.StartedAt,
+            BillableSeconds: lease.BillableSeconds,
+            CostCentsSoFar: RunningCostCents(lease),
+            ExpiresAt: ExpiresAtOf(lease),
+            EndReason: lease.EndReason is { } reason ? PgEnum.ToSnakeLabel(reason) : null,
+            Isolation: lease.Isolation,
+            Os: os);
+    }
 
     /// <summary>
     /// The running cost placeholder: billed minutes so far × price (docs/API.md §5). Metering (P5) is the
