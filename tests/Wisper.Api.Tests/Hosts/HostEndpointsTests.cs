@@ -138,6 +138,46 @@ public class HostEndpointsTests
     }
 
     [Fact]
+    public async Task Consumer_who_registered_a_host_passes_the_host_gate_on_the_same_token()
+    {
+        // The live bug after #560: the caller's current token was minted before the host-group add, so it lacks
+        // cognito:groups=host and host-gated endpoints 403 until re-login. The host gate now honors DB
+        // ownership, so GET /v1/hosts/mine succeeds on the pre-existing token — no re-login. (fx.Validator keeps
+        // returning the same groupless consumer principal for every request, i.e. the token never refreshes.)
+        var fx = new Fixture();
+        fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        // Before owning a host, the host gate forbids the groupless consumer.
+        var before = await client.GetAsync("/v1/hosts/mine");
+        Assert.Equal(HttpStatusCode.Forbidden, before.StatusCode);
+
+        await client.PostAsJsonAsync("/v1/hosts", new { name = "home-server-1" });
+
+        // After registering (still the same token, no host group), the host gate now passes.
+        var mine = await client.GetAsync("/v1/hosts/mine");
+        Assert.Equal(HttpStatusCode.OK, mine.StatusCode);
+
+        // /v1/me and the gate agree for the same user: both report the host role from the same ownership signal.
+        var me = await client.GetFromJsonAsync<MeRolesDto>("/v1/me");
+        Assert.Equal(new[] { "consumer", "host" }, me!.Roles);
+    }
+
+    [Fact]
+    public async Task Consumer_owning_no_host_is_forbidden_on_the_host_gate()
+    {
+        // A consumer who owns no host still fails the host gate (403) — ownership is the only additive signal.
+        var fx = new Fixture();
+        fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
+        using var factory = fx.Build();
+
+        var response = await Authed(factory).GetAsync("/v1/hosts/mine");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Register_issues_the_token_once_with_manager_ws()
     {
         var fx = new Fixture();

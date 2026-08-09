@@ -1,6 +1,8 @@
 using System.Security.Claims;
+using Wisper.Api.Accounts;
 using Wisper.Api.ApiKeys;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Persistence.Hosts;
 
 namespace Wisper.Api.Auth;
 
@@ -13,6 +15,13 @@ namespace Wisper.Api.Auth;
 /// the <see cref="IJwtValidator"/>. Either way the resulting principal flows through the <b>same</b> role
 /// gates below. Unauthenticated/invalid → <c>401 unauthenticated</c>; missing role → <c>403 forbidden</c>,
 /// both as the uniform envelope via <see cref="ApiException"/>.
+/// <para>
+/// The <c>host</c> gate additionally honors DB host-ownership (docs/API.md §184): a JWT caller who owns ≥1
+/// host is treated as holding <c>host</c> even if their current token predates the Cognito group add, so
+/// becoming a host is effective on the same token with no re-login. This is additive (it never removes a
+/// role) and JWT-only — api-key principals authorize purely by their explicit scopes (docs/API.md §2) — and
+/// the ownership check runs only for the host gate, at most once per request (see <see cref="HostRoleDerivation"/>).
+/// </para>
 /// </summary>
 public sealed class WisperAuthFilter : IEndpointFilter
 {
@@ -42,7 +51,7 @@ public sealed class WisperAuthFilter : IEndpointFilter
             http.User = principal;
         }
 
-        if (!principal.HasRole(_requiredRole))
+        if (!principal.HasRole(_requiredRole) && !await AllowsByHostOwnershipAsync(http, principal))
         {
             throw new ApiException(
                 ApiErrorCode.Forbidden,
@@ -50,6 +59,26 @@ public sealed class WisperAuthFilter : IEndpointFilter
         }
 
         return await next(context);
+    }
+
+    /// <summary>
+    /// Whether the caller passes the gate despite lacking the required role via DB host-ownership
+    /// (docs/API.md §184): the <c>host</c> gate treats a JWT caller who owns ≥1 host as holding <c>host</c>, so
+    /// becoming a host is effective on the current token with no re-login. Only the host gate consults ownership
+    /// — consumer/admin gates return early, adding no DB round-trip — and api-key principals never override
+    /// their explicit scopes (docs/API.md §2). The ownership answer is resolved at most once per request
+    /// (cached on <see cref="HttpContext.Items"/>, see <see cref="HostRoleDerivation"/>).
+    /// </summary>
+    private async ValueTask<bool> AllowsByHostOwnershipAsync(HttpContext http, ClaimsPrincipal principal)
+    {
+        if (_requiredRole != WisperRole.Host || principal.IsApiKeyPrincipal())
+        {
+            return false;
+        }
+
+        var accounts = http.RequestServices.GetRequiredService<IUserAccountService>();
+        var hosts = http.RequestServices.GetRequiredService<IHostRepository>();
+        return await HostRoleDerivation.OwnsHostAsync(http, accounts, hosts, http.RequestAborted);
     }
 
     /// <summary>
