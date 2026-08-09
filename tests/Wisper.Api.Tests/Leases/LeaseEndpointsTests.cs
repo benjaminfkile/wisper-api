@@ -106,7 +106,6 @@ public class LeaseEndpointsTests
             host_id = Host!.Id.ToString(),
             host_image_id = Image!.Id.ToString(),
             network = "open",
-            resources = new { cpus = 2, memory_mb = 4096, pids = 1024 },
             ttl_seconds = 3600,
             userdata = "apt-get install -y git",
         };
@@ -116,7 +115,6 @@ public class LeaseEndpointsTests
             host_id = Host!.Id.ToString(),
             host_image_id = Image!.Id.ToString(),
             network = "open",
-            resources = new { cpus = 2, memory_mb = 4096, pids = 1024 },
             ttl_seconds = 3600,
             userdata = "apt-get install -y git",
             env,
@@ -225,6 +223,54 @@ public class LeaseEndpointsTests
         var responseBody = await response.Content.ReadAsStringAsync();
         Assert.Contains("validation_error", responseBody);
         Assert.DoesNotContain(big, responseBody); // the secret value is never echoed
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Post_with_a_resources_object_is_400_validation_error()
+    {
+        // Resources are fixed by the offer now (task #570): a body still carrying `resources` is rejected with
+        // the uniform validation_error envelope, and never reaches the tunnel.
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        using var factory = fx.Build();
+        var body = new
+        {
+            host_id = fx.Host!.Id.ToString(),
+            host_image_id = fx.Image!.Id.ToString(),
+            network = "open",
+            resources = new { cpus = 2, memory_mb = 4096 },
+            ttl_seconds = 3600,
+        };
+
+        var response = await Authed(factory).SendAsync(Post(body, "key-1"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var envelope = await response.Content.ReadFromJsonAsync<ErrorEnvelopeDto>();
+        Assert.Equal("validation_error", envelope!.Error.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Post_with_a_gpu_count_is_400_validation_error()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        using var factory = fx.Build();
+        var body = new
+        {
+            host_id = fx.Host!.Id.ToString(),
+            host_image_id = fx.Image!.Id.ToString(),
+            network = "open",
+            ttl_seconds = 3600,
+            gpus = 2,
+        };
+
+        var response = await Authed(factory).SendAsync(Post(body, "key-1"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var envelope = await response.Content.ReadFromJsonAsync<ErrorEnvelopeDto>();
+        Assert.Equal("validation_error", envelope!.Error.Code);
         Assert.Empty(fx.Relay.CreateCalls);
     }
 

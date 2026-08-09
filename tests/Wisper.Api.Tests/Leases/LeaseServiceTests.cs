@@ -66,7 +66,9 @@ public class LeaseServiceTests
             decimal? maxCpus = 4,
             int? maxMemoryMb = 8192,
             int? maxPids = 1024,
-            int maxGpus = 0)
+            int? cpus = null,
+            int? memoryMb = null,
+            int gpus = 0)
         {
             var host = await Hosts.CreateAsync(new Host
             {
@@ -90,7 +92,9 @@ public class LeaseServiceTests
                 MaxCpus = maxCpus,
                 MaxMemoryMb = maxMemoryMb,
                 MaxPids = maxPids,
-                Gpus = maxGpus,
+                Cpus = cpus,
+                MemoryMb = memoryMb,
+                Gpus = gpus,
                 Enabled = enabled,
                 CreatedAt = T0,
                 UpdatedAt = T0,
@@ -104,7 +108,8 @@ public class LeaseServiceTests
             int? ttlSeconds = 3600,
             LeaseResourcesRequest? resources = null,
             Dictionary<string, string>? env = null,
-            string? isolation = null) => new(
+            string? isolation = null,
+            int? gpus = null) => new(
             HostId: Host!.Id.ToString(),
             HostImageId: Image!.Id.ToString(),
             Network: network,
@@ -112,27 +117,29 @@ public class LeaseServiceTests
             TtlSeconds: ttlSeconds,
             Userdata: "apt-get install -y git",
             Env: env,
-            Isolation: isolation);
+            Isolation: isolation,
+            Gpus: gpus);
     }
 
     [Fact]
-    public async Task Create_validates_provisions_and_persists_a_snapshot()
+    public async Task Create_provisions_the_offer_profile_and_persists_a_snapshot()
     {
+        // The lease provisions EXACTLY the selected offer's sized profile (task #570): the consumer sends no
+        // resources, and the offer's cpus/memory_mb/gpus travel down the tunnel and snapshot on the row.
         var fx = new Fixture();
-        await fx.SeedImageAsync(price: 5);
+        await fx.SeedImageAsync(price: 5, cpus: 2, memoryMb: 4096, gpus: 0);
 
         var result = await fx.Service().CreateAsync(
-            fx.ConsumerId,
-            fx.Request(network: "open", ttlSeconds: 3600,
-                resources: new LeaseResourcesRequest(2, 4096, 1024)));
+            fx.ConsumerId, fx.Request(network: "open", ttlSeconds: 3600));
 
-        // Provisioned over the tunnel with the image snapshot, addressed by the host id.
+        // Provisioned over the tunnel with the image + profile snapshot, addressed by the host id.
         var (hostId, spec) = Assert.Single(fx.Relay.CreateCalls);
         Assert.Equal(fx.Host!.Id.ToString(), hostId);
         Assert.Equal("reg/wisp-base:latest", spec.Image);
         Assert.Equal("open", spec.Network);
         Assert.Equal(3600, spec.TtlSeconds);
-        Assert.Equal(2, spec.Resources.Cpus);
+        Assert.Equal(2d, spec.Resources.Cpus);        // the offer's exact profile, not a consumer ask
+        Assert.Equal(4096, spec.Resources.MemoryMb);
 
         // 201 body: price + hold snapshot. hold = ceil(3600/60) * 5 = 300.
         Assert.Equal(300, result.HoldCents);
@@ -146,13 +153,56 @@ public class LeaseServiceTests
         Assert.Equal(fx.Image!.Id, stored.HostImageId);
         Assert.Equal("reg/wisp-base:latest", stored.ImageRef);
         Assert.Equal(NetworkMode.Open, stored.Network);
-        Assert.Equal(2m, stored.Cpus);
+        Assert.Equal(2, stored.Cpus);                 // stamped from the offer profile
         Assert.Equal(4096, stored.MemoryMb);
-        Assert.Equal(1024, stored.Pids);
         Assert.Equal(5, stored.PriceCentsPerMin);
         Assert.Equal(LeaseStatus.Active, stored.Status);
         Assert.Equal(T0, stored.StartedAt);
         Assert.Equal("wisp-contract-1", stored.WispContractId);
+
+        // The read view exposes exactly the stamped profile so the consumer sees what the flat price bought.
+        var view = await fx.Service().GetAsync(fx.ConsumerId, result.Lease.Id);
+        Assert.Equal(2, view!.Resources.Cpus);
+        Assert.Equal(4096, view.Resources.MemoryMb);
+        Assert.Equal(0, view.Resources.Gpus);
+    }
+
+    [Fact]
+    public async Task Create_omits_cpus_and_memory_from_the_frame_for_a_null_profile_offer()
+    {
+        // A NULL cpus/memory_mb profile means the offer defers to the host's own per-lease policy default: the
+        // frame omits those keys entirely (WhenWritingDefault), and the snapshot records null.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(cpus: null, memoryMb: null, gpus: 0);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        var resources = System.Text.Json.JsonDocument
+            .Parse(ControlJson.Serialize(spec)).RootElement.GetProperty("resources");
+        Assert.False(resources.TryGetProperty("cpus", out _));
+        Assert.False(resources.TryGetProperty("memory_mb", out _));
+
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Null(stored!.Cpus);
+        Assert.Null(stored.MemoryMb);
+    }
+
+    [Fact]
+    public async Task Create_of_a_free_offer_provisions_without_a_hold()
+    {
+        // Zero-price flow unchanged (task #570): a free offer still provisions the profile and places no hold.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 0, cpus: 2, memoryMb: 4096);
+
+        var result = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Equal(0, result.HoldCents);
+        var stored = await fx.Leases.GetByIdAsync(result.Lease.Id);
+        Assert.Equal(LeaseStatus.Active, stored!.Status);
+        Assert.Null(stored.HoldTxnId);            // a free offer earmarks nothing
+        Assert.Equal(2, stored.Cpus);
+        Assert.Equal(4096, stored.MemoryMb);
     }
 
     [Fact]
@@ -276,30 +326,48 @@ public class LeaseServiceTests
     }
 
     [Fact]
-    public async Task Create_rejects_resources_over_the_image_ceilings()
+    public async Task Create_rejects_a_request_that_carries_a_resources_object()
     {
+        // Resources are fixed by the offer now (task #570): a request still carrying a `resources` object is
+        // rejected with validation_error before any tunnel frame, never silently ignored.
         var fx = new Fixture();
-        await fx.SeedImageAsync(maxCpus: 2);
+        await fx.SeedImageAsync(cpus: 2, memoryMb: 4096);
 
         var ex = await Assert.ThrowsAsync<ApiException>(() =>
             fx.Service().CreateAsync(
-                fx.ConsumerId, fx.Request(resources: new LeaseResourcesRequest(4, null, null))));
+                fx.ConsumerId, fx.Request(resources: new LeaseResourcesRequest(4, 8192, 1024))));
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Contains("fixed by the selected offer", ex.Message);
+        Assert.Empty(fx.Relay.CreateCalls); // rejected before any tunnel frame
     }
 
     [Fact]
-    public async Task Create_books_gpus_within_the_offer_ceiling_and_carries_them_downstream()
+    public async Task Create_rejects_a_request_that_carries_a_gpu_count()
     {
-        // GPU is priced into the offer (task #522): a request within the offer's max_gpus is booked, the count
-        // travels down the lease.create frame verbatim, snapshots on the row, and surfaces in the read view.
+        // A top-level gpu-count knob is likewise refused — the offer fixes the GPU count, the consumer cannot.
         var fx = new Fixture();
-        await fx.SeedImageAsync(maxGpus: 4);
+        await fx.SeedImageAsync(gpus: 2);
 
-        var created = await fx.Service().CreateAsync(
-            fx.ConsumerId, fx.Request(resources: new LeaseResourcesRequest(2, 4096, 1024, Gpus: 2)));
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(gpus: 2)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Contains("fixed by the selected offer", ex.Message);
+        Assert.Empty(fx.Relay.CreateCalls); // rejected before any tunnel frame
+    }
+
+    [Fact]
+    public async Task Create_provisions_the_offer_gpu_count_downstream_and_on_the_snapshot()
+    {
+        // GPU is priced into the offer (task #522, #570): the offer's exact gpus count travels down the
+        // lease.create frame, snapshots on the row, and surfaces in the read view — no consumer choice involved.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(gpus: 2);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
 
         var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
-        Assert.Equal(2, spec.Resources.Gpus); // downstream frame carries resources.gpus verbatim
+        Assert.Equal(2, spec.Resources.Gpus); // downstream frame carries the offer's gpus verbatim
 
         var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
         Assert.Equal(2, stored!.Gpus); // immutable snapshot on the lease row
@@ -309,33 +377,19 @@ public class LeaseServiceTests
     }
 
     [Fact]
-    public async Task Create_rejects_gpus_over_the_offer_ceiling_and_never_clamps()
+    public async Task Create_omits_gpus_from_the_frame_for_a_gpu_less_offer()
     {
-        // Over-ask on gpus REJECTS (never clamps): silently reducing a priced-in GPU count would change what
-        // the consumer thinks they bought. No lease.create frame is ever sent.
+        // The gpus=0 path is untouched: a GPU-less offer → gpus omitted on the frame, 0 on the snapshot/view.
         var fx = new Fixture();
-        await fx.SeedImageAsync(maxGpus: 1);
+        await fx.SeedImageAsync(gpus: 0);
 
-        var ex = await Assert.ThrowsAsync<ApiException>(() =>
-            fx.Service().CreateAsync(
-                fx.ConsumerId, fx.Request(resources: new LeaseResourcesRequest(null, null, null, Gpus: 2))));
-
-        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
-        Assert.Empty(fx.Relay.CreateCalls); // rejected before any tunnel frame
-    }
-
-    [Fact]
-    public async Task Create_defaults_gpus_to_zero_when_omitted()
-    {
-        // The gpus=0 default path is untouched: no GPU requested → 0 on the frame, the snapshot, and the view.
-        var fx = new Fixture();
-        await fx.SeedImageAsync(); // maxGpus defaults to 0 — a GPU-less offer
-
-        var created = await fx.Service().CreateAsync(
-            fx.ConsumerId, fx.Request(resources: new LeaseResourcesRequest(2, 4096, 1024)));
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
 
         var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
         Assert.Equal(0, spec.Resources.Gpus);
+        var resources = System.Text.Json.JsonDocument
+            .Parse(ControlJson.Serialize(spec)).RootElement.GetProperty("resources");
+        Assert.False(resources.TryGetProperty("gpus", out _));
 
         var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
         Assert.Equal(0, stored!.Gpus);

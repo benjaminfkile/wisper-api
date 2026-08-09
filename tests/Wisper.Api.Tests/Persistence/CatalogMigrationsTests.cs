@@ -113,4 +113,19 @@ public class CatalogMigrationsTests
         Assert.Contains("ADD COLUMN memory_mb int", sql, StringComparison.Ordinal);
         Assert.Contains("RENAME COLUMN max_gpus TO gpus", sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Lease_provisioned_profile_migration_swaps_the_free_form_knobs_for_the_sized_snapshot()
+    {
+        // A lease now stamps the offer's sized profile (task #570): the free-form cpus/memory_mb/pids knobs are
+        // dropped and the sized-profile snapshot (nullable int cpus/memory_mb) is added; leases.gpus predates it.
+        var sql = ReadScript("0015_LeaseProvisionedProfile.sql");
+
+        Assert.Contains("ALTER TABLE leases", sql, StringComparison.Ordinal);
+        Assert.Contains("DROP COLUMN cpus", sql, StringComparison.Ordinal);
+        Assert.Contains("DROP COLUMN memory_mb", sql, StringComparison.Ordinal);
+        Assert.Contains("DROP COLUMN pids", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN cpus      int", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN memory_mb int", sql, StringComparison.Ordinal);
+    }
 }

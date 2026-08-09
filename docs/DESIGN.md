@@ -135,7 +135,7 @@ All under the Wisper host: `https://<wisper-host>/…` (a separate host for dev)
 ```
 GET  /hosts                      online hosts + their priced images
 GET  /hosts/:id/images           image allow-list + per-minute price + limits
-POST /leases                     buy a lease { host_id, image, network, resources, ttl_seconds, userdata }
+POST /leases                     buy a lease { host_id, image, network, ttl_seconds, userdata } — resources are fixed by the offer (task #570)
 GET  /leases/:id                 status, elapsed minutes, running cost
 DELETE /leases/:id               release early
 POST /leases/:id/exec            run a command (sync)  → relayed
