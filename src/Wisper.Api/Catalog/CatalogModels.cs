@@ -9,6 +9,11 @@ namespace Wisper.Api.Catalog;
 /// <see cref="HostImage"/> to its public, lease-relevant fields: the id a lease references, the image
 /// ref, the price snapshot the lease will take, the fixed resource profile the sized offer provisions
 /// (<c>cpus</c>/<c>memory_mb</c>/<c>gpus</c>, task #569), and the legacy ceilings/limits the host offers.
+/// <c>effective_cpus</c>/<c>effective_memory_mb</c> plus <c>resources_source</c> (task #578) resolve a
+/// NULL-profile offer against the host's advertised per-lease cap so the consumer never shops blind: they
+/// carry the offer's own value when set, else the host's per-lease cap, else <c>null</c> (an offline host,
+/// or one advertising no cap) — <c>resources_source</c> annotates which. The raw <c>cpus</c>/<c>memory_mb</c>
+/// are kept verbatim (the host editor needs them); the effective fields are display-only resolution.
 /// </summary>
 public sealed record CatalogImage(
     [property: JsonPropertyName("host_image_id")] Guid HostImageId,
@@ -22,28 +27,45 @@ public sealed record CatalogImage(
     [property: JsonPropertyName("max_pids")] int? MaxPids,
     [property: JsonPropertyName("cpus")] int? Cpus,
     [property: JsonPropertyName("memory_mb")] int? MemoryMb,
-    [property: JsonPropertyName("gpus")] int Gpus)
+    [property: JsonPropertyName("gpus")] int Gpus,
+    [property: JsonPropertyName("effective_cpus")] decimal? EffectiveCpus,
+    [property: JsonPropertyName("effective_memory_mb")] int? EffectiveMemoryMb,
+    [property: JsonPropertyName("resources_source")] string ResourcesSource)
 {
     /// <summary>Currency is USD-only in v0 (docs/API.md §1 — integer cents + <c>"usd"</c>).</summary>
     private const string Usd = "usd";
 
-    /// <summary>Projects a stored <see cref="HostImage"/> into its catalog wire shape.</summary>
-    public static CatalogImage From(HostImage image) => new(
-        HostImageId: image.Id,
-        ImageRef: image.ImageRef,
-        PriceCentsPerMin: image.PriceCentsPerMin,
-        Currency: Usd,
-        Networks: image.Networks.Select(PgEnum.ToLabel).ToList(),
-        MaxTtlSeconds: image.MaxTtlSeconds,
-        MaxCpus: image.MaxCpus,
-        MaxMemoryMb: image.MaxMemoryMb,
-        MaxPids: image.MaxPids,
-        // The sized offer's fixed profile (task #569): the exact cpu/memory this offer provisions per lease
-        // (null = the host's per-lease policy default applies downstream), and the exact GPU device count
-        // (0 = no GPU access on this offer). Surfaced so a consumer can price the size before leasing.
-        Cpus: image.Cpus,
-        MemoryMb: image.MemoryMb,
-        Gpus: image.Gpus);
+    /// <summary>
+    /// Projects a stored <see cref="HostImage"/> into its catalog wire shape. <paramref name="hostCapCpus"/>/
+    /// <paramref name="hostCapMemoryMb"/> are the host's live advertised per-lease caps (0 = offline / no cap,
+    /// task #578) used to resolve the effective profile a NULL-profile offer surfaces.
+    /// </summary>
+    public static CatalogImage From(HostImage image, double hostCapCpus = 0, long hostCapMemoryMb = 0)
+    {
+        var resolved = ResolvedResources.Resolve(
+            image.Cpus, image.MemoryMb, hostCapCpus, hostCapMemoryMb);
+        return new(
+            HostImageId: image.Id,
+            ImageRef: image.ImageRef,
+            PriceCentsPerMin: image.PriceCentsPerMin,
+            Currency: Usd,
+            Networks: image.Networks.Select(PgEnum.ToLabel).ToList(),
+            MaxTtlSeconds: image.MaxTtlSeconds,
+            MaxCpus: image.MaxCpus,
+            MaxMemoryMb: image.MaxMemoryMb,
+            MaxPids: image.MaxPids,
+            // The sized offer's fixed profile (task #569): the exact cpu/memory this offer provisions per lease
+            // (null = the host's per-lease policy default applies downstream), and the exact GPU device count
+            // (0 = no GPU access on this offer). Surfaced so a consumer can price the size before leasing.
+            Cpus: image.Cpus,
+            MemoryMb: image.MemoryMb,
+            Gpus: image.Gpus,
+            // The resolved effective profile (task #578): offer value, else the host's advertised per-lease cap,
+            // else null. resources_source tells the frontend which so a NULL-profile offer never renders blind.
+            EffectiveCpus: resolved.Cpus,
+            EffectiveMemoryMb: resolved.MemoryMb,
+            ResourcesSource: resolved.Source);
+    }
 }
 
 /// <summary>

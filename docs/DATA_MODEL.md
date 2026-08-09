@@ -134,9 +134,9 @@ CREATE TABLE leases (
   image_ref           text  NOT NULL,
   network             network_mode NOT NULL,
   isolation           text  NOT NULL DEFAULT 'shared',  -- ordered shared<sandboxed<vm (migration 0011)
-  -- the offer's sized profile, stamped at create (task #570, migration 0015); consumer no longer chooses it
-  cpus                integer,  -- exact vCPUs provisioned; NULL = host per-lease default applies downstream
-  memory_mb           integer,  -- exact memory (MB) provisioned; NULL = host per-lease default applies downstream
+  -- the RESOLVED sized profile, stamped at create (task #570/#578, migration 0015); consumer no longer chooses it
+  cpus                integer,  -- exact vCPUs provisioned: offer value, else host per-lease cap; NULL only when neither exists (task #578)
+  memory_mb           integer,  -- exact memory (MB) provisioned: offer value, else host per-lease cap; NULL only when neither exists (task #578)
   gpus                integer NOT NULL DEFAULT 0,  -- whole exclusive GPU devices provisioned from the offer; 0 = none (migration 0013)
   ttl_seconds         integer NOT NULL CHECK (ttl_seconds > 0),
   price_cents_per_min bigint  NOT NULL CHECK (price_cents_per_min >= 0),

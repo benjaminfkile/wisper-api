@@ -17,7 +17,11 @@ public interface IHostCapabilitySource
 
 /// <summary>
 /// A flattened snapshot of a host's advertised wisp capability (docs/TUNNEL.md §5): the allow-listed image
-/// refs plus the host-wide per-lease ceilings a priced image may not exceed. Network labels that do not map
+/// refs plus the host-wide per-lease ceilings a priced image may not exceed. <see cref="MaxCpus"/>/
+/// <see cref="MaxMemoryMb"/> are the host's advertised per-lease caps (wisp <c>limits.max_cpus</c>/
+/// <c>max_memory_mb</c>), which task #578 also uses to resolve the effective size a NULL-profile offer sells
+/// or a lease booked (see <see cref="Wisper.Api.Domain.ResolvedResources"/>) — refreshed on every reconnect
+/// since the snapshot is read live off the current tunnel connection. Network labels that do not map
 /// to a known <see cref="NetworkMode"/> are dropped (forward-compatible with additive modes). <see cref="Os"/>
 /// carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>), or <c>null</c> when an
 /// older agent's hello did not advertise it — surfacing only, it gates no routing. <see cref="MaxGpus"/> and

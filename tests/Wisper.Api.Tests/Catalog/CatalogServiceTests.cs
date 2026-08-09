@@ -374,6 +374,87 @@ public class CatalogServiceTests
     }
 
     [Fact]
+    public async Task List_resolves_a_sized_offer_to_its_own_values_source_offer()
+    {
+        // task #578: an offer that pins cpus/memory surfaces those as the effective profile — the offer beats
+        // the host's per-lease cap (which the harness advertises at 4/8192), and the raw fields are kept as-is.
+        var h = new Harness();
+        var host = await h.AddHostAsync("sized-host", "us", T0);
+        await h.AddImageAsync(host.Id, "img", price: 5, cpus: 2, memoryMb: 4096);
+
+        var image = Assert.Single(Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data).Images);
+
+        Assert.Equal(2, image.Cpus);            // raw, kept verbatim
+        Assert.Equal(4096, image.MemoryMb);
+        Assert.Equal(2m, image.EffectiveCpus);
+        Assert.Equal(4096, image.EffectiveMemoryMb);
+        Assert.Equal("offer", image.ResourcesSource);
+    }
+
+    [Fact]
+    public async Task List_resolves_a_null_profile_offer_to_the_host_per_lease_cap_source_host_cap()
+    {
+        // task #578: the live UX bug — a NULL cpus/memory_mb offer used to render as "host default". It now
+        // resolves the effective profile from the host's advertised per-lease cap (limits.max_cpus/memory_mb,
+        // the harness's 4/8192) so the consumer never shops blind, while the raw fields stay null for the editor.
+        var h = new Harness();
+        var host = await h.AddHostAsync("cap-host", "us", T0);
+        await h.AddImageAsync(host.Id, "img", price: 5, cpus: null, memoryMb: null);
+
+        var image = Assert.Single(Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data).Images);
+
+        Assert.Null(image.Cpus);                // raw NULL profile, unchanged
+        Assert.Null(image.MemoryMb);
+        Assert.Equal(4m, image.EffectiveCpus);  // resolved from the host per-lease cap
+        Assert.Equal(8192, image.EffectiveMemoryMb);
+        Assert.Equal("host_cap", image.ResourcesSource);
+    }
+
+    [Fact]
+    public async Task List_leaves_a_null_profile_offer_unknown_when_the_host_advertises_no_cap()
+    {
+        // task #578: when neither the offer nor the host advertises a per-lease cap, the size is genuinely
+        // unknown — effective values stay null and resources_source is "unknown" (an honest annotation).
+        var h = new Harness();
+        var host = await h.AddHostAsync("no-cap-host", "us", T0);
+        // Overwrite the live capability with one that advertises no per-lease cpu/memory cap.
+        h.Capabilities.Set(host.Id, new HostCapabilitySnapshot(
+            Array.Empty<string>(), Array.Empty<NetworkMode>(),
+            MaxTtlSeconds: 3600, MaxCpus: 0, MaxMemoryMb: 0, MaxPids: 0));
+        await h.AddImageAsync(host.Id, "img", price: 5, cpus: null, memoryMb: null);
+
+        var image = Assert.Single(Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data).Images);
+
+        Assert.Null(image.EffectiveCpus);
+        Assert.Null(image.EffectiveMemoryMb);
+        Assert.Equal("unknown", image.ResourcesSource);
+    }
+
+    [Fact]
+    public async Task Get_host_degrades_a_null_profile_offer_to_raw_values_when_offline()
+    {
+        // task #578: an offline host has no live capability, so there is no per-lease cap to fall back to. A
+        // sized offer still surfaces its own values ("offer"); a NULL-profile offer degrades to unknown.
+        var h = new Harness();
+        var host = await h.AddHostAsync("offline-host", "us", T0, online: false);
+        await h.AddImageAsync(host.Id, "sized", price: 5, cpus: 2, memoryMb: 4096);
+        await h.AddImageAsync(host.Id, "unsized", price: 5, cpus: null, memoryMb: null);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.False(detail!.Online);
+        var sized = Assert.Single(detail.Images, i => i.ImageRef == "sized");
+        Assert.Equal(2m, sized.EffectiveCpus);
+        Assert.Equal(4096, sized.EffectiveMemoryMb);
+        Assert.Equal("offer", sized.ResourcesSource);
+        var unsized = Assert.Single(detail.Images, i => i.ImageRef == "unsized");
+        Assert.Null(unsized.EffectiveCpus);
+        Assert.Null(unsized.EffectiveMemoryMb);
+        Assert.Equal("unknown", unsized.ResourcesSource);
+    }
+
+    [Fact]
     public async Task Get_host_surfaces_gpus_on_each_image()
     {
         var h = new Harness();

@@ -116,7 +116,8 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
     "price_cents_per_min": 5, "currency": "usd",
     "networks": ["none","open"], "max_ttl_seconds": 14400,
     "max_cpus": 4, "max_memory_mb": 8192, "max_pids": 1024,
-    "cpus": 2, "memory_mb": 4096, "gpus": 2 } ],
+    "cpus": 2, "memory_mb": 4096, "gpus": 2,
+    "effective_cpus": 2, "effective_memory_mb": 4096, "resources_source": "offer" } ],
   "isolation_levels": ["shared","vm"], "default_isolation": "shared",
   "gpu_classes": ["nvidia-a100"], "gpu_count": 4,
   "os": "linux", "online": true,
@@ -125,6 +126,8 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
 `isolation_levels` are the sandbox levels this host offers and `default_isolation` the one it uses when a lease requests none, mirrored from the host's tunnel capability (`TUNNEL.md` §5, task #417). A host that advertises nothing (an older agent) surfaces `["shared"]` with default `"shared"`; the same two fields appear on `GET /v1/hosts/:id`. Levels are opaque strings, so a consumer can filter on the level it needs without the manager enumerating them.
 
 An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resources it provisions per lease (`null` = the host's own per-lease policy default applies downstream), and `gpus` is the EXACT whole exclusive GPU devices it provisions (`0` = no GPU access on this offer). These are the sized-offer profile — the legacy `max_cpus`/`max_memory_mb`/`max_pids` ceilings remain until the free-form lease knobs are removed (task #570). The former `max_gpus` ceiling is **gone**, renamed to the exact `gpus` count (breaking; wisper-web is updated separately).
+
+`effective_cpus`/`effective_memory_mb` and `resources_source` (task #578) resolve the size the consumer would actually get so a NULL-profile offer never renders as a blank "host default": each effective value is the offer's own `cpus`/`memory_mb` when set (`resources_source: "offer"`), else the host's advertised **per-lease cap** (`limits.max_cpus`/`max_memory_mb` from its live capability, `TUNNEL.md` §5 — `resources_source: "host_cap"`), else `null` when the host advertises no cap either, e.g. it is offline (`resources_source: "unknown"`). The raw `cpus`/`memory_mb` are **kept as-is** (the host editor needs them); the effective fields are display-only resolution and appear on `GET /v1/hosts/:id` too. `effective_cpus` may be fractional (it mirrors the host's advertised cap); a lease provisioned from such an offer stamps it rounded to a whole vCPU (see Leases).
 
 `gpu_classes`/`gpu_count` mirror the host's advertised GPU (the distinct opaque device classes and total device count, `TUNNEL.md` §5, task #521). Both appear on `GET /v1/hosts/:id` too. The catalog filters `?min_gpus=` (keep only offers whose `gpus` ≥ the floor — inclusive) and `?gpu_class=` (keep only hosts advertising that exact opaque class) compose with the price/network/image filters; a host advertising no GPU is dropped by `gpu_class` and an offer with `gpus: 0` is dropped by any `min_gpus ≥ 1` (task #523).
 
@@ -172,12 +175,17 @@ Server flow: validate image/network/isolation/env against the host's priced allo
 **`GET /v1/leases/:id`**:
 ```json
 { "id":"lease_…","status":"active","host_id":"…","image_ref":"…",
-  "network":"open","resources":{"cpus":2,"memory_mb":4096,"gpus":1},"ttl_seconds":3600,
+  "network":"open",
+  "resources":{"cpus":2,"memory_mb":4096,"gpus":1,
+    "effective_cpus":2,"effective_memory_mb":4096,"resources_source":"offer"},
+  "ttl_seconds":3600,
   "price_cents_per_min":5,"currency":"usd","created_at":"…Z",
   "started_at":"…Z","billable_seconds":742,"cost_cents_so_far":62,
   "expires_at":"…Z","end_reason":null,"isolation":"sandboxed","os":"linux" }
 ```
-`resources` is the **provisioned profile stamped from the offer** (task #570): `cpus`/`memory_mb` are `null` when the offer deferred to the host default, and `gpus` is the booked whole-device count (`0` = none). It is not a consumer input — it reflects exactly what the flat per-offer price bought.
+`resources` is the **provisioned profile stamped from the offer** (task #570): `cpus`/`memory_mb` are the raw stamped snapshot, and `gpus` is the booked whole-device count (`0` = none). It is not a consumer input — it reflects exactly what the flat per-offer price bought.
+
+Create now **resolves and stamps** the profile so a lease never records an unknown size (task #578): when the offer left `cpus`/`memory_mb` NULL, the row is stamped from the host's advertised **per-lease cap** (`limits.max_cpus`/`max_memory_mb`, `TUNNEL.md` §5) rounded to whole vCPUs, leaving NULL only when the host advertises no cap either (e.g. offline). The `lease.create` frame is **unchanged** — it still omits what the offer left unset so wisp's own defaults keep applying; the stamp is bookkeeping/display, not a provisioning change. The read `resources` mirrors the catalog: `effective_cpus`/`effective_memory_mb` are the stamped value when present, else the host's live per-lease cap (so an existing NULL-stamped row still resolves on read — no migration), else `null`, and `resources_source` is `"offer"` | `"host_cap"` | `"unknown"` accordingly.
 
 ### Billing
 | Method | Path | Auth extras | Notes |
