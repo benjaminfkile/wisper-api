@@ -16,7 +16,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
 {
     private const string Columns =
         "id, consumer_user_id, host_id, host_image_id, image_ref, network::text AS network, isolation, cpus, " +
-        "memory_mb, pids, gpus, ttl_seconds, price_cents_per_min, currency, status::text AS status, " +
+        "memory_mb, gpus, ttl_seconds, price_cents_per_min, currency, status::text AS status, " +
         "end_reason::text AS end_reason, wisp_contract_id, hold_txn_id, created_at, started_at, " +
         "last_metered_at, billable_seconds, ended_at";
 
@@ -63,11 +63,11 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
     {
         const string sql = $"""
             INSERT INTO leases (id, consumer_user_id, host_id, host_image_id, image_ref, network, isolation,
-                                cpus, memory_mb, pids, gpus, ttl_seconds, price_cents_per_min, currency, status,
+                                cpus, memory_mb, gpus, ttl_seconds, price_cents_per_min, currency, status,
                                 end_reason, wisp_contract_id, hold_txn_id, created_at, started_at,
                                 last_metered_at, billable_seconds, ended_at)
             VALUES (COALESCE(@Id, gen_random_uuid()), @ConsumerUserId, @HostId, @HostImageId, @ImageRef,
-                    @Network::network_mode, @Isolation, @Cpus, @MemoryMb, @Pids, @Gpus, @TtlSeconds,
+                    @Network::network_mode, @Isolation, @Cpus, @MemoryMb, @Gpus, @TtlSeconds,
                     @PriceCentsPerMin, @Currency, @Status::lease_status, @EndReason::lease_end_reason,
                     @WispContractId, @HoldTxnId, COALESCE(@CreatedAt, now()), @StartedAt, @LastMeteredAt,
                     @BillableSeconds, @EndedAt)
@@ -151,7 +151,6 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         lease.Isolation,
         lease.Cpus,
         lease.MemoryMb,
-        lease.Pids,
         lease.Gpus,
         lease.TtlSeconds,
         lease.PriceCentsPerMin,
@@ -181,9 +180,8 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         public string ImageRef { get; init; } = string.Empty;
         public string Network { get; init; } = string.Empty;
         public string Isolation { get; init; } = HostIsolation.Shared;
-        public decimal? Cpus { get; init; }
+        public int? Cpus { get; init; }
         public int? MemoryMb { get; init; }
-        public int? Pids { get; init; }
         public int Gpus { get; init; }
         public int TtlSeconds { get; init; }
         public long PriceCentsPerMin { get; init; }
@@ -209,7 +207,6 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
             Isolation = Isolation,
             Cpus = Cpus,
             MemoryMb = MemoryMb,
-            Pids = Pids,
             Gpus = Gpus,
             TtlSeconds = TtlSeconds,
             PriceCentsPerMin = PriceCentsPerMin,

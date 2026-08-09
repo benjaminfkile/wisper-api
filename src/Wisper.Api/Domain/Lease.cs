@@ -2,8 +2,8 @@ namespace Wisper.Api.Domain;
 
 /// <summary>
 /// A consumer's rented container instance (docs/DATA_MODEL.md §5, <c>leases</c>). At creation the lease
-/// takes <b>immutable snapshots</b> of the priced image (image ref, network, resource ceilings, TTL,
-/// price, currency) so a later host reprice never affects a running lease (§6). It then carries the
+/// takes <b>immutable snapshots</b> of the priced image (image ref, network, the offer's sized resource
+/// profile, TTL, price, currency) so a later host reprice never affects a running lease (§6). It then carries the
 /// metering timeline on Wisper's clock — <see cref="StartedAt"/> to the <see cref="LastMeteredAt"/>
 /// watermark, accruing <see cref="BillableSeconds"/> only over healthy intervals (suspended gaps never
 /// bill, docs/TUNNEL.md §8). The state machine is
@@ -37,19 +37,25 @@ public sealed record Lease
     /// </summary>
     public string Isolation { get; init; } = HostIsolation.Shared;
 
-    /// <summary>Snapshot: CPU ceiling (<c>numeric(6,3)</c>), if set.</summary>
-    public decimal? Cpus { get; init; }
-
-    /// <summary>Snapshot: memory ceiling in MB, if set.</summary>
-    public int? MemoryMb { get; init; }
-
-    /// <summary>Snapshot: PID ceiling, if set.</summary>
-    public int? Pids { get; init; }
+    /// <summary>
+    /// Snapshot: the exact vCPU count provisioned for this lease, stamped from the selected offer's sized
+    /// profile at create (task #570). <c>NULL</c> = the offer left it to the host's own per-lease policy
+    /// default (nothing pinned downstream); immutable thereafter. The consumer no longer chooses it — the
+    /// offer fixes it (docs/DATA_MODEL.md §4, §5).
+    /// </summary>
+    public int? Cpus { get; init; }
 
     /// <summary>
-    /// Snapshot: whole exclusive GPU devices booked for this lease (task #522). <c>0</c> when the offer has no
-    /// GPU access or the consumer requested none; immutable once booked. Validated at create time against the
-    /// offer's <see cref="HostImage.Gpus"/> count (over-ask rejects, never clamps — it is priced-in).
+    /// Snapshot: the exact memory (MB) provisioned for this lease, stamped from the offer's sized profile at
+    /// create (task #570). <c>NULL</c> = the host's own per-lease policy default applies downstream; immutable
+    /// thereafter. Offer-fixed, not consumer-chosen.
+    /// </summary>
+    public int? MemoryMb { get; init; }
+
+    /// <summary>
+    /// Snapshot: whole exclusive GPU devices booked for this lease (task #522), stamped from the offer's sized
+    /// profile at create (task #570). <c>0</c> when the offer provisions no GPU; immutable once booked.
+    /// Offer-fixed, not consumer-chosen.
     /// </summary>
     public int Gpus { get; init; }
 

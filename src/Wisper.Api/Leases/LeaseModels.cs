@@ -6,15 +6,18 @@ namespace Wisper.Api.Leases;
 /// <summary>
 /// Body of <c>POST /v1/leases</c> (docs/API.md §5). All fields are nullable at the wire so the service
 /// can distinguish "omitted" from a supplied value and return a precise <c>validation_error</c>. The
-/// snapshots the lease keeps are resolved server-side from the referenced priced image, not trusted from
-/// the client — only <c>network</c>/<c>resources</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c>/
-/// <c>isolation</c> are request inputs. <see cref="Isolation"/> is the optional requested sandbox level
-/// (<c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>, task #418): omitted → <c>shared</c>;
-/// <c>confidential</c>/unknown → <c>validation_error</c>; the service enforces the <c>min_isolation</c>
-/// policy ceiling and the target host's advertised levels before it reaches the tunnel. <see cref="Env"/>
-/// mirrors the dev harness's create-time env exactly (docs/TUNNEL.md
-/// §5): an optional, opaque <c>{string:string}</c> map forwarded down the tunnel for secret injection —
-/// its values are secrets-in-transit, so they are never logged, echoed in errors, or persisted (§13).
+/// snapshots the lease keeps are resolved server-side from the referenced priced offer, not trusted from
+/// the client — only <c>network</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c>/<c>isolation</c> are
+/// request inputs. The resource profile (cpus/memory_mb/gpus) is <b>fixed by the selected offer</b>
+/// (task #570): the consumer no longer chooses it, so a request carrying a <see cref="Resources"/> object
+/// or a top-level <see cref="Gpus"/> count is rejected with <c>validation_error</c> — both are kept on the
+/// wire shape only to detect and reject the removed knobs, never to consume them. <see cref="Isolation"/>
+/// is the optional requested sandbox level (<c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>, task #418):
+/// omitted → <c>shared</c>; <c>confidential</c>/unknown → <c>validation_error</c>; the service enforces the
+/// <c>min_isolation</c> policy ceiling and the target host's advertised levels before it reaches the tunnel.
+/// <see cref="Env"/> mirrors the dev harness's create-time env exactly (docs/TUNNEL.md §5): an optional,
+/// opaque <c>{string:string}</c> map forwarded down the tunnel for secret injection — its values are
+/// secrets-in-transit, so they are never logged, echoed in errors, or persisted (§13).
 /// </summary>
 public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("host_id")] string? HostId,
@@ -24,13 +27,14 @@ public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("ttl_seconds")] int? TtlSeconds,
     [property: JsonPropertyName("userdata")] string? Userdata,
     [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null,
-    [property: JsonPropertyName("isolation")] string? Isolation = null);
+    [property: JsonPropertyName("isolation")] string? Isolation = null,
+    [property: JsonPropertyName("gpus")] int? Gpus = null);
 
 /// <summary>
-/// Requested resource ceilings (docs/API.md §5); each is optional and validated against the image.
-/// <see cref="Gpus"/> is the count of whole exclusive GPU devices to book (default 0 = none); it is
-/// validated against the offer's <c>max_gpus</c> ceiling and — unlike the clampable dimensions — an over-ask
-/// is <b>rejected</b>, never clamped, because GPU access is priced into the offer (task #522).
+/// The removed free-form resource-request block (docs/API.md §5). An offer now sells a fixed size
+/// (task #569), so the consumer no longer picks resources at lease time: this type is retained solely so a
+/// request that still carries a <c>resources</c> object binds and is rejected with <c>validation_error</c>
+/// ("resources are fixed by the selected offer"), rather than being silently ignored. It is never consumed.
 /// </summary>
 public sealed record LeaseResourcesRequest(
     [property: JsonPropertyName("cpus")] double? Cpus,
@@ -74,13 +78,15 @@ public sealed record CreateLeaseResponse(
 }
 
 /// <summary>
-/// The lease resource snapshot as it appears on the read surface (docs/API.md §5). <see cref="Gpus"/> is the
-/// booked whole-device GPU count (0 when none), an immutable snapshot like the other dimensions (task #522).
+/// The lease's provisioned resource profile as it appears on the read surface (docs/API.md §5): the exact
+/// size stamped from the selected offer at create (task #570), so the consumer sees precisely what the flat
+/// per-offer price bought. <see cref="Cpus"/>/<see cref="MemoryMb"/> are <c>null</c> when the offer left
+/// that dimension to the host's own per-lease policy default; <see cref="Gpus"/> is the booked whole-device
+/// GPU count (0 when none). All immutable snapshots.
 /// </summary>
 public sealed record LeaseResourcesView(
-    [property: JsonPropertyName("cpus")] decimal? Cpus,
+    [property: JsonPropertyName("cpus")] int? Cpus,
     [property: JsonPropertyName("memory_mb")] int? MemoryMb,
-    [property: JsonPropertyName("pids")] int? Pids,
     [property: JsonPropertyName("gpus")] int Gpus);
 
 /// <summary>
@@ -120,7 +126,7 @@ public sealed record LeaseView(
         HostId: lease.HostId,
         ImageRef: lease.ImageRef,
         Network: PgEnum.ToLabel(lease.Network),
-        Resources: new LeaseResourcesView(lease.Cpus, lease.MemoryMb, lease.Pids, lease.Gpus),
+        Resources: new LeaseResourcesView(lease.Cpus, lease.MemoryMb, lease.Gpus),
         TtlSeconds: lease.TtlSeconds,
         PriceCentsPerMin: lease.PriceCentsPerMin,
         Currency: lease.Currency,

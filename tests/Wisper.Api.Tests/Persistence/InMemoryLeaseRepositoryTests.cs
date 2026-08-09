@@ -22,9 +22,8 @@ public class InMemoryLeaseRepositoryTests
         HostImageId = Guid.NewGuid(),
         ImageRef = "ubuntu:24.04",
         Network = NetworkMode.Egress,
-        Cpus = 2.5m,
+        Cpus = 2,
         MemoryMb = 4096,
-        Pids = 512,
         TtlSeconds = 3600,
         PriceCentsPerMin = 5,
         CreatedAt = T0,
@@ -40,7 +39,7 @@ public class InMemoryLeaseRepositoryTests
         Assert.Equal(LeaseStatus.Pending, created.Status);
         Assert.Equal("usd", created.Currency);
         Assert.Equal(NetworkMode.Egress, created.Network);
-        Assert.Equal(2.5m, created.Cpus);
+        Assert.Equal(2, created.Cpus);
         Assert.Equal(0, created.BillableSeconds);
         Assert.Null(created.EndReason);
         Assert.Null(created.StartedAt);

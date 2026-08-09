@@ -140,7 +140,6 @@ public class InMemoryPersistenceFullPathTests
                 host_id = hostId.ToString(),
                 host_image_id = listed.HostImageId.ToString(),
                 network = "open",
-                resources = new { cpus = 2, memory_mb = 4096, pids = 1024 },
                 ttl_seconds = 3600,
                 env = new Dictionary<string, string> { ["API_TOKEN"] = "top-secret-value" },
             }),

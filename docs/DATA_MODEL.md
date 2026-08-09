@@ -110,7 +110,7 @@ The overlay of *price* on wisp's capability (`DESIGN.md` §12); wisp itself stay
 | `price_cents_per_min` | `bigint` NOT NULL CHECK (`>= 0`) | host-set |
 | `networks` | `network_mode[]` NOT NULL | subset the host permits for this image |
 | `max_ttl_seconds` | `int` NOT NULL | |
-| `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | legacy resource ceilings (the free-form knobs consumers pick under; removed lease-side in task #570) |
+| `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | legacy resource ceilings — vestigial since task #570 removed the free-form lease knobs they governed; kept on the offer row, no longer consulted at lease create |
 | `cpus` | `int` NULL | **sized offer** (task #569): the EXACT vCPU count this offer provisions per lease. `NULL` = the host's own per-lease policy default applies downstream. Positive when present. Migration `0014_ImageResourceProfile` |
 | `memory_mb` | `int` NULL | **sized offer** (task #569): the EXACT memory (MB) this offer provisions per lease. `NULL` = the host's own per-lease policy default applies downstream. Positive when present. Migration `0014_ImageResourceProfile` |
 | `gpus` | `int` NOT NULL DEFAULT `0` | **sized offer** (task #569): the EXACT whole exclusive GPU devices this offer provisions per lease (0 = no GPU access on this offer); validated live against `hosts.gpu_count` — over-ask rejects, never clamps. GPU access is priced into this offer, not a separate rate table. Renamed from `max_gpus` (a consumer-chosen ceiling) in migration `0014_ImageResourceProfile`; the column originated in `0013_ImageAndLeaseGpu` (task #522) |
@@ -119,7 +119,7 @@ The overlay of *price* on wisp's capability (`DESIGN.md` §12); wisp itself stay
 
 Unique `(host_id, image_ref)`. Pricing edits apply to **new** leases only (running leases keep their snapshot — §6).
 
-An offer now **sells a size**: image + a fixed resource profile (`cpus`, `memory_mb`, `gpus`) at a price, like an instance type — so the price reflects the provisioned resources rather than a flat per-image rate over consumer-chosen knobs. A `NULL` `cpus`/`memory_mb` defers to the host's own per-lease policy default; `gpus` is always an exact count (`0` = none). Lease-side consumption of the profile (and removal of the free-form `resources` knobs) is task #570.
+An offer now **sells a size**: image + a fixed resource profile (`cpus`, `memory_mb`, `gpus`) at a price, like an instance type — so the price reflects the provisioned resources rather than a flat per-image rate over consumer-chosen knobs. A `NULL` `cpus`/`memory_mb` defers to the host's own per-lease policy default; `gpus` is always an exact count (`0` = none). A lease provisions **exactly** this profile and stamps it on the lease row (task #570): `POST /v1/leases` no longer accepts a `resources` object or `gpus` count (both `validation_error`), and the removed `disk_gb` knob is gone entirely.
 
 ## 5. Leases — full DDL
 
@@ -134,10 +134,10 @@ CREATE TABLE leases (
   image_ref           text  NOT NULL,
   network             network_mode NOT NULL,
   isolation           text  NOT NULL DEFAULT 'shared',  -- ordered shared<sandboxed<vm (migration 0011)
-  cpus                numeric(6,3),
-  memory_mb           integer,
-  pids                integer,
-  gpus                integer NOT NULL DEFAULT 0,  -- whole exclusive GPU devices booked; over-ask rejects, never clamps (migration 0013)
+  -- the offer's sized profile, stamped at create (task #570, migration 0015); consumer no longer chooses it
+  cpus                integer,  -- exact vCPUs provisioned; NULL = host per-lease default applies downstream
+  memory_mb           integer,  -- exact memory (MB) provisioned; NULL = host per-lease default applies downstream
+  gpus                integer NOT NULL DEFAULT 0,  -- whole exclusive GPU devices provisioned from the offer; 0 = none (migration 0013)
   ttl_seconds         integer NOT NULL CHECK (ttl_seconds > 0),
   price_cents_per_min bigint  NOT NULL CHECK (price_cents_per_min >= 0),
   currency            text    NOT NULL DEFAULT 'usd',

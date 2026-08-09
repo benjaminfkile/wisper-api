@@ -53,9 +53,9 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         await env.FundWalletAsync(consumerId, cents: 100_000);
 
         // The exact repro: POST /v1/leases against a priced offer (2¢/min, ttl 3600 → hold = 60 * 2 = 120¢).
+        // Resources are fixed by the offer now (task #570), so the request carries no resource knobs.
         var request = new CreateLeaseRequest(
-            host.Id.ToString(), image.Id.ToString(), "open",
-            new LeaseResourcesRequest(2, 4096, 1024), 3600, "echo hi");
+            host.Id.ToString(), image.Id.ToString(), "open", null, 3600, "echo hi");
 
         var created = await env.Service.CreateAsync(consumerId, request);
 

@@ -144,7 +144,6 @@ An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resource
 // request  (Idempotency-Key: <uuid>)
 { "host_id": "…", "host_image_id": "…",
   "network": "open",
-  "resources": { "cpus": 2, "memory_mb": 4096, "pids": 1024, "gpus": 1 },
   "ttl_seconds": 3600,
   "userdata": "apt-get install -y git && …",
   "isolation": "sandboxed",
@@ -155,22 +154,25 @@ An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resource
   "hold_cents": 300, "ttl_seconds": 3600, "created_at": "…Z",
   "os": "linux" }
 ```
+**Resources are fixed by the selected offer (task #570, breaking change).** An offer sells a size (task #569), so the consumer no longer chooses resources at lease time: a request that still carries a `resources` object **or** a top-level `gpus` count is rejected with `validation_error` ("resources are fixed by the selected offer"). The lease provisions **exactly** the offer's sized profile — its `cpus`/`memory_mb` (`null` = the host's own per-lease policy default applies downstream) and its exact `gpus` count. The former `disk_gb` knob is **gone entirely** (it was never enforced downstream). `network`/`ttl_seconds`/`userdata`/`isolation`/`env` are unchanged request inputs. *(wisper-web is updated separately.)*
+
 `isolation` is the **optional** requested sandbox level, ordered `shared` < `sandboxed` < `vm` (`TUNNEL.md` §5, task #418). Omitted → `shared`; `confidential` or any unknown value → `validation_error`. It is resolved and validated server-side — against the admin-tunable `platform_policy.min_isolation` floor and, when the target host advertises isolation levels (task #417), against the levels that host can provide (a host with none recorded passes through, since wisp re-validates as the real security boundary) — then snapshotted immutably on the lease, returned on `GET /v1/leases/:id`, and forwarded on the `lease.create` frame.
 
-`resources.gpus` is the **optional** count of whole exclusive GPU devices to book (default `0` = none, task #522). It is validated against the offer's `gpus` count and — unlike the other resource dimensions — an **over-ask is rejected** with `validation_error`, never silently clamped, because GPU access is priced into the offer. The booked count is snapshotted immutably on the lease, surfaced under `resources.gpus` on `GET /v1/leases/:id`, and forwarded verbatim on the `lease.create` frame; wisp enforces the real isolation/allocation.
+The provisioned profile is snapshotted immutably on the lease and surfaced under `resources` on `GET /v1/leases/:id`; the `lease.create` frame carries the offer's `cpus`/`memory_mb`/`gpus` (each omitted from the frame when the offer left it unset / `0`, so wisp's own defaults apply). wisp enforces the real isolation/allocation.
 
 `env` is an **optional, opaque `{string:string}` map** of create-time environment variables forwarded down the host tunnel for secret injection (mirrors `POST /dev/leases`; `lease.create` frame, `TUNNEL.md` §5). Capped like wisp's own limits — at most **128** entries and **256 KiB** serialized, else `validation_error`. Its **values are secrets-in-transit**: never logged, never echoed in errors, and **never persisted** on the lease row (the lease snapshot keeps everything *except* `env`) — and it is **plaintext v1**, so treat it as trusted-network only (`TUNNEL.md` §13). `os` echoes the host's advertised container OS (`"linux"` | `"windows"`, or `null` when the host is offline / its agent advertised none) like `GET /v1/leases/:id` (task #316).
 
-Server flow: validate image/network/resources/isolation/env against the host's priced allow-list → **place the wallet hold** (`PAYMENTS.md` §4; `402` if insufficient, and **no** `lease.create` frame is sent) → `lease.create` down the host tunnel → `201`. The client polls `GET /v1/leases/:id` (or subscribes via the events stream, below) until `status:"active"`.
+Server flow: validate image/network/isolation/env against the host's priced allow-list (resources come from the offer, not the request) → **place the wallet hold** (`PAYMENTS.md` §4; `402` if insufficient, and **no** `lease.create` frame is sent) → `lease.create` (carrying the offer's sized profile) down the host tunnel → `201`. The client polls `GET /v1/leases/:id` (or subscribes via the events stream, below) until `status:"active"`.
 
 **`GET /v1/leases/:id`**:
 ```json
 { "id":"lease_…","status":"active","host_id":"…","image_ref":"…",
-  "network":"open","resources":{…},"ttl_seconds":3600,
+  "network":"open","resources":{"cpus":2,"memory_mb":4096,"gpus":1},"ttl_seconds":3600,
   "price_cents_per_min":5,"currency":"usd","created_at":"…Z",
   "started_at":"…Z","billable_seconds":742,"cost_cents_so_far":62,
   "expires_at":"…Z","end_reason":null,"isolation":"sandboxed","os":"linux" }
 ```
+`resources` is the **provisioned profile stamped from the offer** (task #570): `cpus`/`memory_mb` are `null` when the offer deferred to the host default, and `gpus` is the booked whole-device count (`0` = none). It is not a consumer input — it reflects exactly what the flat per-offer price bought.
 
 ### Billing
 | Method | Path | Auth extras | Notes |

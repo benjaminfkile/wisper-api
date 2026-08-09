@@ -12,9 +12,10 @@ namespace Wisper.Api.Leases;
 
 /// <summary>
 /// Default <see cref="ILeaseService"/> (docs/API.md §5, docs/DATA_MODEL.md §5). Create validates the
-/// requested image/network/resources/TTL against the host's priced allow-list (docs/DATA_MODEL.md §4),
-/// runs the wallet gate (docs/DATA_MODEL.md §8), then — and only then — sends <c>lease.create</c> down
-/// the host tunnel via the relay and persists an immutable snapshot of what was booked. Wisper owns the
+/// requested image/network/TTL against the host's priced allow-list (docs/DATA_MODEL.md §4) — resources are
+/// no longer a request input, they are fixed by the offer's sized profile (task #570) — runs the wallet gate
+/// (docs/DATA_MODEL.md §8), then — and only then — sends <c>lease.create</c> down the host tunnel via the
+/// relay and persists an immutable snapshot of what was booked (image, network, the provisioned profile). Wisper owns the
 /// id space (docs/TUNNEL.md §1): the relay-minted <c>lease_&lt;guid&gt;</c> id is the lease's primary key,
 /// so read/release address the same lease by that id on both the DB and the tunnel.
 /// </summary>
@@ -88,9 +89,13 @@ public sealed class LeaseService : ILeaseService
                 new { host_id = request.HostId, host_image_id = request.HostImageId });
         }
 
+        // Resources are FIXED by the selected offer's sized profile (task #570): the consumer no longer picks
+        // them. A request still carrying a free-form `resources` object (or a top-level gpu count) is rejected
+        // rather than silently ignored, so the flat per-offer price stays honest in both directions.
+        RejectClientResourceKnobs(request);
+
         ValidateNetwork(network, image);
         ValidateTtl(ttlSeconds, image);
-        var resources = ValidateResources(request.Resources, image);
         ValidateEnv(request.Env);
         var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
 
@@ -113,12 +118,15 @@ public sealed class LeaseService : ILeaseService
         {
             Image = image.ImageRef,
             Network = PgEnum.ToLabel(network),
+            // The lease provisions exactly the offer's sized profile (task #570). cpus/memory_mb travel only
+            // when the offer pinned them — a NULL profile dimension serializes as 0, which the frame omits
+            // (WhenWritingDefault), so wisp's own per-lease defaults/clamps apply. gpus is the offer's exact
+            // count, likewise omitted when 0 (the existing omitempty wire discipline).
             Resources = new LeaseResources
             {
-                Cpus = resources.Cpus is { } c ? (double)c : 0,
-                MemoryMb = resources.MemoryMb ?? 0,
-                Pids = resources.Pids ?? 0,
-                Gpus = resources.Gpus,
+                Cpus = image.Cpus ?? 0,
+                MemoryMb = image.MemoryMb ?? 0,
+                Gpus = image.Gpus,
             },
             TtlSeconds = ttlSeconds,
             Userdata = request.Userdata,
@@ -158,10 +166,11 @@ public sealed class LeaseService : ILeaseService
             ImageRef = image.ImageRef,
             Network = network,
             Isolation = isolation,
-            Cpus = resources.Cpus,
-            MemoryMb = resources.MemoryMb,
-            Pids = resources.Pids,
-            Gpus = resources.Gpus,
+            // Stamp the provisioned profile on the row so read/list surfaces show exactly what was booked
+            // (task #570): the offer's sized profile, verbatim (NULL cpus/memory_mb = host default downstream).
+            Cpus = image.Cpus,
+            MemoryMb = image.MemoryMb,
+            Gpus = image.Gpus,
             TtlSeconds = ttlSeconds,
             PriceCentsPerMin = image.PriceCentsPerMin,
             Currency = Usd,
@@ -461,96 +470,21 @@ public sealed class LeaseService : ILeaseService
     }
 
     /// <summary>
-    /// Validates the requested resource ceilings against the image's offered limits and returns the
-    /// snapshot to persist (missing dimensions stay null — the host applies its own default). GPU is the one
-    /// exception to the clamp-friendly ceilings: it is priced into the offer, so an over-ask is rejected
-    /// rather than silently reduced (task #522), and it snapshots as a concrete count (0 when none requested).
+    /// Rejects a create request that still carries consumer-chosen resource knobs (task #570). An offer now
+    /// sells a fixed size (task #569), so the lease provisions exactly that profile — a <c>resources</c> object
+    /// or a top-level <c>gpus</c> count no longer has any effect and is refused with <c>validation_error</c>
+    /// rather than silently ignored, keeping the flat per-offer price honest in both directions. (<c>disk_gb</c>
+    /// is dropped from the product entirely — it was never enforced downstream — so it is simply not a field.)
     /// </summary>
-    private static (decimal? Cpus, int? MemoryMb, int? Pids, int Gpus) ValidateResources(
-        LeaseResourcesRequest? resources, HostImage image)
+    private static void RejectClientResourceKnobs(CreateLeaseRequest request)
     {
-        if (resources is null)
-        {
-            return (null, null, null, 0);
-        }
-
-        decimal? cpus = null;
-        if (resources.Cpus is { } requestedCpus)
-        {
-            if (requestedCpus <= 0)
-            {
-                throw new ApiException(
-                    ApiErrorCode.ValidationError, "'resources.cpus' must be positive.",
-                    new { field = "resources.cpus" });
-            }
-
-            cpus = (decimal)requestedCpus;
-            if (image.MaxCpus is { } maxCpus && cpus > maxCpus)
-            {
-                throw new ApiException(
-                    ApiErrorCode.ValidationError, "'resources.cpus' exceeds the image's maximum.",
-                    new { field = "resources.cpus", max = maxCpus });
-            }
-        }
-
-        var memoryMb = ValidateCeiling(
-            resources.MemoryMb, image.MaxMemoryMb, "resources.memory_mb");
-        var pids = ValidateCeiling(resources.Pids, image.MaxPids, "resources.pids");
-        var gpus = ValidateGpus(resources.Gpus, image.Gpus);
-        return (cpus, memoryMb, pids, gpus);
-    }
-
-    /// <summary>
-    /// Validates the requested whole-device GPU count against the offer's <c>max_gpus</c> ceiling (task #522)
-    /// and returns the concrete snapshot count (0 when omitted). Unlike the clampable ceilings an over-ask is
-    /// <b>rejected</b> with the standard validation error, never clamped: GPU access is priced into the offer,
-    /// so silently reducing it would change what the consumer thinks they bought. A negative count is rejected.
-    /// </summary>
-    private static int ValidateGpus(int? requested, int max)
-    {
-        if (requested is not { } value)
-        {
-            return 0;
-        }
-
-        if (value < 0)
+        if (request.Resources is not null || request.Gpus is not null)
         {
             throw new ApiException(
-                ApiErrorCode.ValidationError, "'resources.gpus' must be non-negative.",
-                new { field = "resources.gpus" });
+                ApiErrorCode.ValidationError,
+                "resources are fixed by the selected offer",
+                new { fields = new[] { "resources", "gpus" } });
         }
-
-        if (value > max)
-        {
-            throw new ApiException(
-                ApiErrorCode.ValidationError, "'resources.gpus' exceeds the image's maximum.",
-                new { field = "resources.gpus", max });
-        }
-
-        return value;
-    }
-
-    private static int? ValidateCeiling(int? requested, int? max, string field)
-    {
-        if (requested is not { } value)
-        {
-            return null;
-        }
-
-        if (value <= 0)
-        {
-            throw new ApiException(
-                ApiErrorCode.ValidationError, $"'{field}' must be positive.", new { field });
-        }
-
-        if (max is { } ceiling && value > ceiling)
-        {
-            throw new ApiException(
-                ApiErrorCode.ValidationError, $"'{field}' exceeds the image's maximum.",
-                new { field, max = ceiling });
-        }
-
-        return value;
     }
 
     /// <summary>
