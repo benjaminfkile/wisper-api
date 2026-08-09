@@ -50,6 +50,14 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<int> CountActiveByHostAsync(Guid hostId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<int>(new CommandDefinition(
+            "SELECT COUNT(*) FROM leases WHERE host_id = @hostId AND status IN ('active', 'suspended')",
+            new { hostId }, cancellationToken: ct));
+    }
+
     public async Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default)
     {
         await using var conn = await OpenConnectionAsync(ct);

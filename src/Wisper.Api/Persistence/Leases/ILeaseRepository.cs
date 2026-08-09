@@ -24,6 +24,15 @@ public interface ILeaseRepository : IRepository
     Task<IReadOnlyList<Lease>> ListActiveByHostAsync(Guid hostId, CancellationToken ct = default);
 
     /// <summary>
+    /// Counts a host's live leases — <c>status IN ('active','suspended')</c> (partial index
+    /// <c>leases_host_active_idx</c>). This is the host's non-terminal contract count the per-host admission
+    /// fast-fail gates against (task #571): a create yields <c>active</c> directly and <c>suspended</c> is the
+    /// only other live state, so this set is exactly the host's in-flight contracts (terminal ended/failed
+    /// excluded). Cheaper than materializing the rows for a count.
+    /// </summary>
+    Task<int> CountActiveByHostAsync(Guid hostId, CancellationToken ct = default);
+
+    /// <summary>
     /// Every lease with <c>status = 'active'</c> — the metering engine's working set (docs/DATA_MODEL.md
     /// §14). On each tick the meter accrues over this set, and on restart it reloads the set from the DB
     /// and resumes each lease from its persisted <see cref="Lease.LastMeteredAt"/> watermark. Suspended

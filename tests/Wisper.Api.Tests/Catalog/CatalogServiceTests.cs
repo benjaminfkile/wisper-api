@@ -2,6 +2,7 @@ using Wisper.Api.Catalog;
 using Wisper.Api.Domain;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
 using Xunit;
@@ -26,13 +27,14 @@ public class CatalogServiceTests
         public InMemoryHostImageRepository Images { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
-        public CatalogService Service => new(Hosts, Images, Registry, Capabilities);
+        public InMemoryLeaseRepository Leases { get; } = new();
+        public CatalogService Service => new(Hosts, Images, Registry, Capabilities, Leases);
 
         public async Task<Host> AddHostAsync(
             string name, string region, DateTimeOffset createdAt,
             HostStatus status = HostStatus.Online, bool online = true, Guid? id = null, string? os = null,
             IReadOnlyList<string>? isolationLevels = null, string? defaultIsolation = null,
-            IReadOnlyList<string>? gpuClasses = null, int gpuCount = 0)
+            IReadOnlyList<string>? gpuClasses = null, int gpuCount = 0, int maxContracts = 0)
         {
             var host = await Hosts.CreateAsync(new Host
             {
@@ -54,16 +56,43 @@ public class CatalogServiceTests
                 Registry.SetOnline(host.Id);
             }
 
-            // A live host advertises a wisp capability; declare it (optionally carrying the container OS)
-            // so the catalog can surface `os` from the live snapshot the way the real source does.
+            // A live host advertises a wisp capability; declare it (optionally carrying the container OS and a
+            // concurrent-contract ceiling) so the catalog surfaces `os`/`at_capacity` from the live snapshot the
+            // way the real source does. maxContracts=0 = no advertised ceiling (unlimited).
             if (online)
             {
                 Capabilities.Set(host.Id, new HostCapabilitySnapshot(
                     Array.Empty<string>(), Array.Empty<NetworkMode>(),
-                    MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, Os: os));
+                    MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024, Os: os,
+                    MaxContracts: maxContracts));
             }
 
             return host;
+        }
+
+        /// <summary>Seeds <paramref name="count"/> live (active) leases on <paramref name="hostId"/>.</summary>
+        public async Task SeedActiveLeasesAsync(Guid hostId, int count)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                await Leases.CreateAsync(new Lease
+                {
+                    Id = Guid.NewGuid(),
+                    ConsumerUserId = Guid.NewGuid(),
+                    HostId = hostId,
+                    HostImageId = Guid.NewGuid(),
+                    ImageRef = "reg/wisp-base:latest",
+                    Network = NetworkMode.Open,
+                    TtlSeconds = 3600,
+                    PriceCentsPerMin = 5,
+                    Currency = "usd",
+                    Status = LeaseStatus.Active,
+                    WispContractId = $"wc-{i}",
+                    CreatedAt = T0,
+                    StartedAt = T0,
+                    LastMeteredAt = T0,
+                });
+            }
         }
 
         public Task<HostImage> AddImageAsync(
@@ -358,6 +387,91 @@ public class CatalogServiceTests
         Assert.Equal(new[] { "nvidia-a100" }, detail!.GpuClasses);
         Assert.Equal(2, detail.GpuCount);
         Assert.Equal(2, Assert.Single(detail.Images).Gpus);
+    }
+
+    [Fact]
+    public async Task List_surfaces_at_capacity_and_counts_for_a_limited_host_that_is_full()
+    {
+        // task #571: a host advertising max_contracts=2 that already runs 2 live leases badges at_capacity=true
+        // and carries active_leases/max_leases so the frontend can render "full".
+        var h = new Harness();
+        var host = await h.AddHostAsync("full-host", "us", T0, maxContracts: 2);
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+        await h.SeedActiveLeasesAsync(host.Id, 2);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.True(item.AtCapacity);
+        Assert.Equal(2, item.ActiveLeases);
+        Assert.Equal(2, item.MaxLeases);
+    }
+
+    [Fact]
+    public async Task List_surfaces_below_capacity_counts_for_a_limited_host_with_headroom()
+    {
+        // A limited host below its ceiling carries the counts but is not at capacity.
+        var h = new Harness();
+        var host = await h.AddHostAsync("roomy-host", "us", T0, maxContracts: 4);
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+        await h.SeedActiveLeasesAsync(host.Id, 1);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.False(item.AtCapacity);
+        Assert.Equal(1, item.ActiveLeases);
+        Assert.Equal(4, item.MaxLeases);
+    }
+
+    [Fact]
+    public async Task List_omits_capacity_counts_for_an_unlimited_host()
+    {
+        // A host that advertises no ceiling (max_contracts=0) is never at capacity and omits the counts (null),
+        // keeping the tolerant-optional-field discipline the frontend relies on — even with live leases running.
+        var h = new Harness();
+        var host = await h.AddHostAsync("unlimited-host", "us", T0, maxContracts: 0);
+        await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
+        await h.SeedActiveLeasesAsync(host.Id, 3);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        Assert.False(item.AtCapacity);
+        Assert.Null(item.ActiveLeases);
+        Assert.Null(item.MaxLeases);
+    }
+
+    [Fact]
+    public async Task Get_host_surfaces_at_capacity_and_counts_for_a_limited_host()
+    {
+        var h = new Harness();
+        var host = await h.AddHostAsync("full-detail", "eu", T0, maxContracts: 1);
+        await h.AddImageAsync(host.Id, "img", price: 7);
+        await h.SeedActiveLeasesAsync(host.Id, 1);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.True(detail!.AtCapacity);
+        Assert.Equal(1, detail.ActiveLeases);
+        Assert.Equal(1, detail.MaxLeases);
+    }
+
+    [Fact]
+    public async Task Get_host_omits_capacity_counts_for_an_offline_host()
+    {
+        // An offline host has no live capability snapshot, so there is no advertised ceiling: never at capacity,
+        // counts omitted (null) — the offline surfacing case.
+        var h = new Harness();
+        var host = await h.AddHostAsync("home", "eu", T0, status: HostStatus.Offline, online: false);
+        await h.AddImageAsync(host.Id, "img", price: 7);
+        await h.SeedActiveLeasesAsync(host.Id, 2);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.False(detail!.Online);
+        Assert.False(detail.AtCapacity);
+        Assert.Null(detail.ActiveLeases);
+        Assert.Null(detail.MaxLeases);
     }
 
     [Fact]

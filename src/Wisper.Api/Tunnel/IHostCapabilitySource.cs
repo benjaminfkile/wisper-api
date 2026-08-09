@@ -33,13 +33,20 @@ public sealed record HostCapabilitySnapshot(
     long MaxPids,
     string? Os = null,
     int MaxGpus = 0,
-    IReadOnlyList<string>? GpuClasses = null)
+    IReadOnlyList<string>? GpuClasses = null,
+    int MaxContracts = 0)
 {
     /// <summary>
     /// The distinct GPU hardware classes this host advertises live, in advertised order — opaque strings
     /// (task #521). Never null: an empty list means the host advertises no GPU.
     /// </summary>
     public IReadOnlyList<string> GpuClasses { get; init; } = GpuClasses ?? HostGpu.NoClasses;
+
+    /// <summary>
+    /// Whether the host advertises a positive concurrent-contract ceiling (task #571). When false the host is
+    /// treated as unlimited and no per-host admission decision is made — the pre-#571 behavior.
+    /// </summary>
+    public bool HasContractLimit => MaxContracts > 0;
 
     /// <summary>Whether <paramref name="imageRef"/> is in the host's advertised allow-list (ordinal match).</summary>
     public bool AllowsImage(string imageRef) => Images.Contains(imageRef, StringComparer.Ordinal);

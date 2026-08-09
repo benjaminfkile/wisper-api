@@ -1,6 +1,7 @@
 using Wisper.Api.Domain;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Tunnel;
 using Host = Wisper.Api.Domain.Host;
 
@@ -21,17 +22,20 @@ public sealed class CatalogService : ICatalogService
     private readonly IHostImageRepository _images;
     private readonly IHostRegistry _registry;
     private readonly IHostCapabilitySource _capabilities;
+    private readonly ILeaseRepository _leases;
 
     public CatalogService(
         IHostRepository hosts,
         IHostImageRepository images,
         IHostRegistry registry,
-        IHostCapabilitySource capabilities)
+        IHostCapabilitySource capabilities,
+        ILeaseRepository leases)
     {
         _hosts = hosts;
         _images = images;
         _registry = registry;
         _capabilities = capabilities;
+        _leases = leases;
     }
 
     public async Task<CatalogPage> ListAsync(CatalogQuery query, CancellationToken ct = default)
@@ -65,7 +69,8 @@ public sealed class CatalogService : ICatalogService
                 break;
             }
 
-            page.Add(CatalogItem.From(host, images, online: true, os: OsOf(host.Id)));
+            var (active, max) = await CapacityOf(host.Id, ct);
+            page.Add(CatalogItem.From(host, images, online: true, os: OsOf(host.Id), active, max));
             lastIncluded = host;
         }
 
@@ -86,7 +91,26 @@ public sealed class CatalogService : ICatalogService
 
         var images = await _images.ListByHostAsync(hostId, enabledOnly: true, ct);
         var wire = images.Select(CatalogImage.From).ToList();
-        return HostDetail.From(host, wire, online: IsLive(host), os: OsOf(host.Id));
+        var (active, max) = await CapacityOf(hostId, ct);
+        return HostDetail.From(host, wire, online: IsLive(host), os: OsOf(host.Id), active, max);
+    }
+
+    /// <summary>
+    /// The host's live admission state for the catalog badge (task #571): when its live capability advertises a
+    /// positive concurrent-contract ceiling, returns (its non-terminal lease count, that ceiling); otherwise
+    /// (offline or unlimited) returns (null, null) so the surfaces omit the counts and never badge it full. The
+    /// per-host lease count is only queried when there is a ceiling to compare against — an unlimited host costs
+    /// no extra read.
+    /// </summary>
+    private async Task<(int? Active, int? Max)> CapacityOf(Guid hostId, CancellationToken ct)
+    {
+        if (_capabilities.GetCapability(hostId) is not { HasContractLimit: true } capability)
+        {
+            return (null, null);
+        }
+
+        var active = await _leases.CountActiveByHostAsync(hostId, ct);
+        return (active, capability.MaxContracts);
     }
 
     /// <summary>
