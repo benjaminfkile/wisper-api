@@ -26,7 +26,7 @@ public static class MeEndpoints
         HttpContext http, IUserAccountService accounts, IHostRepository hosts, CancellationToken ct)
     {
         var user = await accounts.BootstrapAsync(http.User, ct);
-        var ownsHost = await OwnsHostAsync(hosts, user.Id, ct);
+        var ownsHost = await HostRoleDerivation.OwnsHostAsync(http, accounts, hosts, ct);
         return Results.Json(MeResponse.From(user, http.User, ownsHost));
     }
 
@@ -36,18 +36,9 @@ public static class MeEndpoints
     {
         var changes = new ProfileUpdate { Email = request.Email };
         var user = await accounts.UpdateProfileAsync(http.User, changes, ct);
-        var ownsHost = await OwnsHostAsync(hosts, user.Id, ct);
+        var ownsHost = await HostRoleDerivation.OwnsHostAsync(http, accounts, hosts, ct);
         return Results.Json(MeResponse.From(user, http.User, ownsHost));
     }
-
-    /// <summary>
-    /// Whether the caller owns at least one host. Becoming a host is additive (docs/API.md §184): the moment a
-    /// consumer registers a host they <b>are</b> a host, so the role projection derives <c>host</c> from owned
-    /// hosts even before the Cognito group lands on the next token — reflecting the new role in the current
-    /// session and staying robust to a failed group write.
-    /// </summary>
-    private static async Task<bool> OwnsHostAsync(IHostRepository hosts, Guid userId, CancellationToken ct) =>
-        (await hosts.ListByOwnerAsync(userId, ct)).Count > 0;
 }
 
 /// <summary>Body of <c>PATCH /v1/me</c> — the mutable profile fields (all optional).</summary>
