@@ -100,4 +100,17 @@ public class CatalogMigrationsTests
         Assert.Contains("ADD COLUMN gpu_classes text[] NOT NULL DEFAULT '{}'", sql, StringComparison.Ordinal);
         Assert.Contains("ADD COLUMN gpu_count   int    NOT NULL DEFAULT 0", sql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Image_resource_profile_migration_adds_the_sized_columns_and_renames_gpus()
+    {
+        // The sized-offer profile (task #569): nullable cpus/memory_mb are added, and the former max_gpus GPU
+        // ceiling is renamed to gpus (its meaning shifts to the exact provisioned device count).
+        var sql = ReadScript("0014_ImageResourceProfile.sql");
+
+        Assert.Contains("ALTER TABLE host_images", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN cpus      int", sql, StringComparison.Ordinal);
+        Assert.Contains("ADD COLUMN memory_mb int", sql, StringComparison.Ordinal);
+        Assert.Contains("RENAME COLUMN max_gpus TO gpus", sql, StringComparison.Ordinal);
+    }
 }

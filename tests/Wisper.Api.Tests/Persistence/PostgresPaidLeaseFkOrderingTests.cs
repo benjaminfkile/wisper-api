@@ -172,7 +172,7 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
                 MaxCpus = 4,
                 MaxMemoryMb = 8192,
                 MaxPids = 1024,
-                MaxGpus = 0,
+                Gpus = 0,
                 Enabled = true,
                 CreatedAt = T0,
                 UpdatedAt = T0,

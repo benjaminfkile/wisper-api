@@ -397,10 +397,10 @@ public class HostServiceTests
     }
 
     [Fact]
-    public async Task ReplaceImages_accepts_max_gpus_within_the_live_capability_and_persists_it()
+    public async Task ReplaceImages_accepts_gpus_within_the_live_capability_and_persists_it()
     {
-        // GPU access is priced into the offer (task #522): a host advertising GPU devices may offer a
-        // max_gpus ceiling up to its advertised count, validated live exactly like the cpu/mem/pid ceilings.
+        // GPU access is priced into the sized offer (task #569): a host advertising GPU devices may sell an
+        // offer that provisions an exact gpus count up to its advertised count, validated live.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
         var host = await fx.SeedHostAsync(owner);
@@ -408,15 +408,15 @@ public class HostServiceTests
 
         var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
         {
-            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 2),
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Gpus: 2),
         }));
 
-        Assert.Equal(2, Assert.Single(result.Data).MaxGpus);
-        Assert.Equal(2, (await fx.Images.ListByHostAsync(host.Id))[0].MaxGpus);
+        Assert.Equal(2, Assert.Single(result.Data).Gpus);
+        Assert.Equal(2, (await fx.Images.ListByHostAsync(host.Id))[0].Gpus);
     }
 
     [Fact]
-    public async Task ReplaceImages_rejects_max_gpus_over_the_live_capability()
+    public async Task ReplaceImages_rejects_gpus_over_the_live_capability()
     {
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -426,7 +426,7 @@ public class HostServiceTests
         var ex = await Assert.ThrowsAsync<ApiException>(
             () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
             {
-                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 2),
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Gpus: 2),
             })));
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
@@ -446,14 +446,14 @@ public class HostServiceTests
         var ex = await Assert.ThrowsAsync<ApiException>(
             () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
             {
-                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 1),
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Gpus: 1),
             })));
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
     }
 
     [Fact]
-    public async Task ReplaceImages_defaults_max_gpus_to_zero_when_omitted()
+    public async Task ReplaceImages_defaults_gpus_to_zero_when_omitted()
     {
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -465,11 +465,89 @@ public class HostServiceTests
             new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
         }));
 
-        Assert.Equal(0, Assert.Single(result.Data).MaxGpus); // no GPU offered by default
+        Assert.Equal(0, Assert.Single(result.Data).Gpus); // no GPU provisioned by default
     }
 
     [Fact]
-    public async Task PatchImage_rejects_max_gpus_over_the_live_capability()
+    public async Task ReplaceImages_round_trips_the_sized_cpu_and_memory_profile()
+    {
+        // The sized offer sells a FIXED resource profile (task #569): cpus/memory_mb are the exact per-lease
+        // provisioning and round-trip through the offer surface.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true,
+                Cpus: 2, MemoryMb: 4096),
+        }));
+
+        var view = Assert.Single(result.Data);
+        Assert.Equal(2, view.Cpus);
+        Assert.Equal(4096, view.MemoryMb);
+        var stored = (await fx.Images.ListByHostAsync(host.Id))[0];
+        Assert.Equal(2, stored.Cpus);
+        Assert.Equal(4096, stored.MemoryMb);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_leaves_the_sized_profile_null_when_omitted()
+    {
+        // NULL cpus/memory_mb means the host's own per-lease policy default applies downstream (task #570).
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+
+        var view = Assert.Single(result.Data);
+        Assert.Null(view.Cpus);
+        Assert.Null(view.MemoryMb);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_a_non_positive_sized_cpu_count()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Cpus: 0),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id));
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_a_non_positive_sized_memory()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MemoryMb: -1),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task PatchImage_rejects_gpus_over_the_live_capability()
     {
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -477,21 +555,21 @@ public class HostServiceTests
         fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 2, "alpine:latest"));
         await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
         {
-            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 1),
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Gpus: 1),
         }));
         var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
 
         var ex = await Assert.ThrowsAsync<ApiException>(
             () => fx.Service.PatchImageAsync(
                 owner, host.Id, imageId,
-                new PatchImageRequest(null, null, null, null, null, null, null, MaxGpus: 3)));
+                new PatchImageRequest(null, null, null, null, null, null, null, Gpus: 3)));
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
-        Assert.Equal(1, (await fx.Images.ListByHostAsync(host.Id))[0].MaxGpus); // unchanged on rejection
+        Assert.Equal(1, (await fx.Images.ListByHostAsync(host.Id))[0].Gpus); // unchanged on rejection
     }
 
     [Fact]
-    public async Task PatchImage_updates_max_gpus_within_the_live_capability()
+    public async Task PatchImage_updates_gpus_within_the_live_capability()
     {
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -499,15 +577,36 @@ public class HostServiceTests
         fx.Capabilities.Set(host.Id, fx.Capability(maxGpus: 4, "alpine:latest"));
         await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
         {
-            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, MaxGpus: 1),
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Gpus: 1),
         }));
         var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
 
         var patched = await fx.Service.PatchImageAsync(
             owner, host.Id, imageId,
-            new PatchImageRequest(null, null, null, null, null, null, null, MaxGpus: 3));
+            new PatchImageRequest(null, null, null, null, null, null, null, Gpus: 3));
 
-        Assert.Equal(3, patched.MaxGpus);
+        Assert.Equal(3, patched.Gpus);
+    }
+
+    [Fact]
+    public async Task PatchImage_updates_the_sized_cpu_and_memory_profile()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(null, null, null, null, null, null, null, Cpus: 4, MemoryMb: 8192));
+
+        Assert.Equal(4, patched.Cpus);
+        Assert.Equal(8192, patched.MemoryMb);
     }
 
     [Fact]

@@ -110,12 +110,16 @@ The overlay of *price* on wisp's capability (`DESIGN.md` §12); wisp itself stay
 | `price_cents_per_min` | `bigint` NOT NULL CHECK (`>= 0`) | host-set |
 | `networks` | `network_mode[]` NOT NULL | subset the host permits for this image |
 | `max_ttl_seconds` | `int` NOT NULL | |
-| `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | resource ceilings offered |
-| `max_gpus` | `int` NOT NULL DEFAULT `0` | GPU device ceiling offered (0 = no GPU access on this offer); validated live against `hosts.gpu_count` like the other ceilings — GPU access is priced into this offer, not a separate rate table. Migration `0013_ImageAndLeaseGpu` (task #522) |
+| `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | legacy resource ceilings (the free-form knobs consumers pick under; removed lease-side in task #570) |
+| `cpus` | `int` NULL | **sized offer** (task #569): the EXACT vCPU count this offer provisions per lease. `NULL` = the host's own per-lease policy default applies downstream. Positive when present. Migration `0014_ImageResourceProfile` |
+| `memory_mb` | `int` NULL | **sized offer** (task #569): the EXACT memory (MB) this offer provisions per lease. `NULL` = the host's own per-lease policy default applies downstream. Positive when present. Migration `0014_ImageResourceProfile` |
+| `gpus` | `int` NOT NULL DEFAULT `0` | **sized offer** (task #569): the EXACT whole exclusive GPU devices this offer provisions per lease (0 = no GPU access on this offer); validated live against `hosts.gpu_count` — over-ask rejects, never clamps. GPU access is priced into this offer, not a separate rate table. Renamed from `max_gpus` (a consumer-chosen ceiling) in migration `0014_ImageResourceProfile`; the column originated in `0013_ImageAndLeaseGpu` (task #522) |
 | `enabled` | `bool` NOT NULL DEFAULT `true` | |
 | `created_at` / `updated_at` | `timestamptz` | |
 
 Unique `(host_id, image_ref)`. Pricing edits apply to **new** leases only (running leases keep their snapshot — §6).
+
+An offer now **sells a size**: image + a fixed resource profile (`cpus`, `memory_mb`, `gpus`) at a price, like an instance type — so the price reflects the provisioned resources rather than a flat per-image rate over consumer-chosen knobs. A `NULL` `cpus`/`memory_mb` defers to the host's own per-lease policy default; `gpus` is always an exact count (`0` = none). Lease-side consumption of the profile (and removal of the free-form `resources` knobs) is task #570.
 
 ## 5. Leases — full DDL
 

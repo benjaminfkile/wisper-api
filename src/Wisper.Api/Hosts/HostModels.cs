@@ -96,7 +96,9 @@ public sealed record HostImageView(
     [property: JsonPropertyName("max_cpus")] decimal? MaxCpus,
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
-    [property: JsonPropertyName("max_gpus")] int MaxGpus,
+    [property: JsonPropertyName("cpus")] int? Cpus,
+    [property: JsonPropertyName("memory_mb")] int? MemoryMb,
+    [property: JsonPropertyName("gpus")] int Gpus,
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
     [property: JsonPropertyName("updated_at")] DateTimeOffset UpdatedAt)
@@ -114,7 +116,9 @@ public sealed record HostImageView(
         MaxCpus: image.MaxCpus,
         MaxMemoryMb: image.MaxMemoryMb,
         MaxPids: image.MaxPids,
-        MaxGpus: image.MaxGpus,
+        Cpus: image.Cpus,
+        MemoryMb: image.MemoryMb,
+        Gpus: image.Gpus,
         Enabled: image.Enabled,
         CreatedAt: image.CreatedAt,
         UpdatedAt: image.UpdatedAt);
@@ -129,10 +133,13 @@ public sealed record ReplaceImagesRequest(
     [property: JsonPropertyName("images")] IReadOnlyList<ImageUpsert>? Images);
 
 /// <summary>
-/// One entry in a <see cref="ReplaceImagesRequest"/> — a priced image and its offered ceilings.
-/// <see cref="MaxGpus"/> is the offered whole-device GPU ceiling (0 = no GPU access on this offer, the
-/// default); it is validated live against the host's advertised GPU capability like the other ceilings (task
-/// #522). GPU access is priced into this offer, not a separate rate table.
+/// One entry in a <see cref="ReplaceImagesRequest"/> — a priced image and the FIXED resource profile it sells
+/// (task #569). <see cref="Cpus"/>/<see cref="MemoryMb"/> are the exact per-lease provisioning (omitted/null =
+/// the host's own per-lease policy default applies downstream); each must be positive when present.
+/// <see cref="Gpus"/> is the exact whole-device GPU count this offer provisions (0 = no GPU access, the
+/// default); it is validated live against the host's advertised GPU capability (task #522). GPU access is
+/// priced into this offer, not a separate rate table. The legacy <c>max_*</c> ceilings remain until the
+/// lease-side free-form knobs are removed (task #570).
 /// </summary>
 public sealed record ImageUpsert(
     [property: JsonPropertyName("image_ref")] string? ImageRef,
@@ -143,12 +150,15 @@ public sealed record ImageUpsert(
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
     [property: JsonPropertyName("enabled")] bool? Enabled,
-    [property: JsonPropertyName("max_gpus")] int MaxGpus = 0);
+    [property: JsonPropertyName("cpus")] int? Cpus = null,
+    [property: JsonPropertyName("memory_mb")] int? MemoryMb = null,
+    [property: JsonPropertyName("gpus")] int Gpus = 0);
 
 /// <summary>
-/// Body of <c>PATCH /v1/hosts/:id/images/:imageId</c> (docs/API.md §6): price/enable/limits/networks for one
+/// Body of <c>PATCH /v1/hosts/:id/images/:imageId</c> (docs/API.md §6): price/enable/profile/networks for one
 /// image. Every field is optional; an omitted field keeps its stored value. The image ref itself is immutable
-/// (a re-ref is a replace via PUT).
+/// (a re-ref is a replace via PUT). <see cref="Cpus"/>/<see cref="MemoryMb"/>/<see cref="Gpus"/> patch the
+/// sized offer's resource profile (task #569).
 /// </summary>
 public sealed record PatchImageRequest(
     [property: JsonPropertyName("price_cents_per_min")] long? PriceCentsPerMin,
@@ -158,4 +168,6 @@ public sealed record PatchImageRequest(
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
     [property: JsonPropertyName("enabled")] bool? Enabled,
-    [property: JsonPropertyName("max_gpus")] int? MaxGpus = null);
+    [property: JsonPropertyName("cpus")] int? Cpus = null,
+    [property: JsonPropertyName("memory_mb")] int? MemoryMb = null,
+    [property: JsonPropertyName("gpus")] int? Gpus = null);

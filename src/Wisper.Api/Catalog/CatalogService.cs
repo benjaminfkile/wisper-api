@@ -97,8 +97,8 @@ public sealed class CatalogService : ICatalogService
 
     /// <summary>
     /// The host's enabled priced images that pass the request's image/network/price/min_gpus filters.
-    /// The <c>min_gpus</c> floor is per-offer (an offer's <see cref="HostImage.MaxGpus"/> ceiling), so an
-    /// offer with a <c>0</c> ceiling is excluded whenever any GPU is required (task #523).
+    /// The <c>min_gpus</c> floor is per-offer (an offer's exact <see cref="HostImage.Gpus"/> count, task #569),
+    /// so an offer that provisions <c>0</c> GPUs is excluded whenever any GPU is required (task #523).
     /// </summary>
     private async Task<IReadOnlyList<CatalogImage>> MatchingImagesAsync(
         Guid hostId, CatalogQuery query, CancellationToken ct)
@@ -108,7 +108,7 @@ public sealed class CatalogService : ICatalogService
             .Where(i => query.ImageRef is null || string.Equals(i.ImageRef, query.ImageRef, StringComparison.Ordinal))
             .Where(i => query.Network is not { } n || i.Networks.Contains(n))
             .Where(i => query.MaxPriceCentsPerMin is not { } max || i.PriceCentsPerMin <= max)
-            .Where(i => query.MinGpus is not { } min || i.MaxGpus >= min)
+            .Where(i => query.MinGpus is not { } min || i.Gpus >= min)
             .Select(CatalogImage.From)
             .ToList();
     }
