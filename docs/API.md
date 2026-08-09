@@ -115,14 +115,17 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
   "images": [ { "host_image_id": "…", "image_ref": "…/wisp-base:latest",
     "price_cents_per_min": 5, "currency": "usd",
     "networks": ["none","open"], "max_ttl_seconds": 14400,
-    "max_cpus": 4, "max_memory_mb": 8192, "max_pids": 1024, "max_gpus": 2 } ],
+    "max_cpus": 4, "max_memory_mb": 8192, "max_pids": 1024,
+    "cpus": 2, "memory_mb": 4096, "gpus": 2 } ],
   "isolation_levels": ["shared","vm"], "default_isolation": "shared",
   "gpu_classes": ["nvidia-a100"], "gpu_count": 4,
   "os": "linux", "online": true }
 ```
 `isolation_levels` are the sandbox levels this host offers and `default_isolation` the one it uses when a lease requests none, mirrored from the host's tunnel capability (`TUNNEL.md` §5, task #417). A host that advertises nothing (an older agent) surfaces `["shared"]` with default `"shared"`; the same two fields appear on `GET /v1/hosts/:id`. Levels are opaque strings, so a consumer can filter on the level it needs without the manager enumerating them.
 
-`gpu_classes`/`gpu_count` mirror the host's advertised GPU (the distinct opaque device classes and total device count, `TUNNEL.md` §5, task #521); each image's `max_gpus` is the GPU device ceiling that offer grants (`0` = no GPU access). Both appear on `GET /v1/hosts/:id` too. The catalog filters `?min_gpus=` (keep only offers whose `max_gpus` ≥ the floor — inclusive) and `?gpu_class=` (keep only hosts advertising that exact opaque class) compose with the price/network/image filters; a host advertising no GPU is dropped by `gpu_class` and an offer with `max_gpus: 0` is dropped by any `min_gpus ≥ 1` (task #523).
+An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resources it provisions per lease (`null` = the host's own per-lease policy default applies downstream), and `gpus` is the EXACT whole exclusive GPU devices it provisions (`0` = no GPU access on this offer). These are the sized-offer profile — the legacy `max_cpus`/`max_memory_mb`/`max_pids` ceilings remain until the free-form lease knobs are removed (task #570). The former `max_gpus` ceiling is **gone**, renamed to the exact `gpus` count (breaking; wisper-web is updated separately).
+
+`gpu_classes`/`gpu_count` mirror the host's advertised GPU (the distinct opaque device classes and total device count, `TUNNEL.md` §5, task #521). Both appear on `GET /v1/hosts/:id` too. The catalog filters `?min_gpus=` (keep only offers whose `gpus` ≥ the floor — inclusive) and `?gpu_class=` (keep only hosts advertising that exact opaque class) compose with the price/network/image filters; a host advertising no GPU is dropped by `gpu_class` and an offer with `gpus: 0` is dropped by any `min_gpus ≥ 1` (task #523).
 
 ### Leases
 | Method | Path | Auth extras | Notes |
@@ -154,7 +157,7 @@ Self-serve machine credentials (§2, `DATA_MODEL.md` §3, `api_keys`). **Minting
 ```
 `isolation` is the **optional** requested sandbox level, ordered `shared` < `sandboxed` < `vm` (`TUNNEL.md` §5, task #418). Omitted → `shared`; `confidential` or any unknown value → `validation_error`. It is resolved and validated server-side — against the admin-tunable `platform_policy.min_isolation` floor and, when the target host advertises isolation levels (task #417), against the levels that host can provide (a host with none recorded passes through, since wisp re-validates as the real security boundary) — then snapshotted immutably on the lease, returned on `GET /v1/leases/:id`, and forwarded on the `lease.create` frame.
 
-`resources.gpus` is the **optional** count of whole exclusive GPU devices to book (default `0` = none, task #522). It is validated against the offer's `max_gpus` ceiling and — unlike the other resource dimensions — an **over-ask is rejected** with `validation_error`, never silently clamped, because GPU access is priced into the offer. The booked count is snapshotted immutably on the lease, surfaced under `resources.gpus` on `GET /v1/leases/:id`, and forwarded verbatim on the `lease.create` frame; wisp enforces the real isolation/allocation.
+`resources.gpus` is the **optional** count of whole exclusive GPU devices to book (default `0` = none, task #522). It is validated against the offer's `gpus` count and — unlike the other resource dimensions — an **over-ask is rejected** with `validation_error`, never silently clamped, because GPU access is priced into the offer. The booked count is snapshotted immutably on the lease, surfaced under `resources.gpus` on `GET /v1/leases/:id`, and forwarded verbatim on the `lease.create` frame; wisp enforces the real isolation/allocation.
 
 `env` is an **optional, opaque `{string:string}` map** of create-time environment variables forwarded down the host tunnel for secret injection (mirrors `POST /dev/leases`; `lease.create` frame, `TUNNEL.md` §5). Capped like wisp's own limits — at most **128** entries and **256 KiB** serialized, else `validation_error`. Its **values are secrets-in-transit**: never logged, never echoed in errors, and **never persisted** on the lease row (the lease snapshot keeps everything *except* `env`) — and it is **plaintext v1**, so treat it as trusted-network only (`TUNNEL.md` §13). `os` echoes the host's advertised container OS (`"linux"` | `"windows"`, or `null` when the host is offline / its agent advertised none) like `GET /v1/leases/:id` (task #316).
 
@@ -192,7 +195,7 @@ Becoming a host is additive — a `consumer` gains the `host` group on first hos
 | POST | `/v1/hosts/:id/agent-token` | | rotate the agent token (old one revoked, tunnel closed `4402`) |
 | GET | `/v1/hosts/:id/images` | | priced allow-list |
 | PUT | `/v1/hosts/:id/images` | `validation_error` if a priced image is enabled without Connect | replace the priced allow-list (validated live against the host's advertised wisp capability) |
-| PATCH | `/v1/hosts/:id/images/:imageId` | `validation_error` if a priced image is enabled without Connect | price/enable/limits for one image |
+| PATCH | `/v1/hosts/:id/images/:imageId` | `validation_error` if a priced image is enabled without Connect | price/enable/limits + the sized profile (`cpus`/`memory_mb`/`gpus`) for one image |
 | POST | `/v1/hosts/connect` | | create/continue Stripe **Connect Express** onboarding → `{ onboarding_url }` |
 | GET | `/v1/hosts/connect/status` | | `connect_status` + what's still required |
 | GET | `/v1/earnings` | | accrued + paid, by period |

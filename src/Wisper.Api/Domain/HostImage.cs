@@ -36,11 +36,25 @@ public sealed record HostImage
     public int? MaxPids { get; init; }
 
     /// <summary>
-    /// GPU ceiling offered — the maximum whole exclusive GPU devices a lease against this offer may request
-    /// (task #522). <c>0</c> means no GPU access on this offer. Validated live against the host's advertised
-    /// GPU capability (<see cref="HostGpu"/>); GPU access is priced into this offer, not a separate rate table.
+    /// The exact vCPU count this sized offer provisions per lease (task #569). <c>NULL</c> means the host's
+    /// own per-lease policy default applies downstream (lease-side consumption is task #570); when present it
+    /// must be positive.
     /// </summary>
-    public int MaxGpus { get; init; }
+    public int? Cpus { get; init; }
+
+    /// <summary>
+    /// The exact memory (MB) this sized offer provisions per lease (task #569). <c>NULL</c> means the host's
+    /// own per-lease policy default applies downstream; when present it must be positive.
+    /// </summary>
+    public int? MemoryMb { get; init; }
+
+    /// <summary>
+    /// The exact whole exclusive GPU devices this sized offer provisions per lease (task #569). <c>0</c> means
+    /// no GPU access on this offer. Validated live against the host's advertised GPU capability
+    /// (<see cref="HostGpu"/>); GPU access is priced into this offer, not a separate rate table. Formerly a
+    /// consumer-chosen ceiling (<c>max_gpus</c>) — now an exact count the lease provisions.
+    /// </summary>
+    public int Gpus { get; init; }
 
     /// <summary>Whether the entry is offered to consumers.</summary>
     public bool Enabled { get; init; } = true;

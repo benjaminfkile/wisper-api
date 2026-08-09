@@ -76,7 +76,7 @@ public class CatalogEndpointsTests
                 MaxCpus = 4,
                 MaxMemoryMb = 8192,
                 MaxPids = 1024,
-                MaxGpus = maxGpus,
+                Gpus = maxGpus,
                 CreatedAt = T0,
                 UpdatedAt = T0,
             });
@@ -185,7 +185,7 @@ public class CatalogEndpointsTests
         Assert.Equal("gpu-host", item.Label);
         Assert.Equal(new[] { "nvidia-a100" }, item.GpuClasses);
         Assert.Equal(4, item.GpuCount);
-        Assert.Equal(2, Assert.Single(item.Images).MaxGpus);
+        Assert.Equal(2, Assert.Single(item.Images).Gpus);
     }
 
     [Fact]
@@ -204,7 +204,7 @@ public class CatalogEndpointsTests
         var cpu = Assert.Single(page.Data, d => d.Label == "cpu-host");
         Assert.Empty(cpu.GpuClasses);
         Assert.Equal(0, cpu.GpuCount);
-        Assert.Equal(0, Assert.Single(cpu.Images).MaxGpus);
+        Assert.Equal(0, Assert.Single(cpu.Images).Gpus);
     }
 
     [Fact]
@@ -292,7 +292,9 @@ public class CatalogEndpointsTests
         [property: JsonPropertyName("image_ref")] string ImageRef,
         [property: JsonPropertyName("price_cents_per_min")] long PriceCentsPerMin,
         [property: JsonPropertyName("currency")] string Currency,
-        [property: JsonPropertyName("max_gpus")] int MaxGpus);
+        [property: JsonPropertyName("cpus")] int? Cpus,
+        [property: JsonPropertyName("memory_mb")] int? MemoryMb,
+        [property: JsonPropertyName("gpus")] int Gpus);
 
     private sealed record ErrorEnvelopeDto(
         [property: JsonPropertyName("error")] ErrorBodyDto Error);

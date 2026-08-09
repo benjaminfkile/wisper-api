@@ -7,7 +7,8 @@ namespace Wisper.Api.Catalog;
 /// <summary>
 /// One priced, enabled image as it appears in the consumer catalog (docs/API.md §5). It flattens a
 /// <see cref="HostImage"/> to its public, lease-relevant fields: the id a lease references, the image
-/// ref, the price snapshot the lease will take, and the ceilings/limits the host offers.
+/// ref, the price snapshot the lease will take, the fixed resource profile the sized offer provisions
+/// (<c>cpus</c>/<c>memory_mb</c>/<c>gpus</c>, task #569), and the legacy ceilings/limits the host offers.
 /// </summary>
 public sealed record CatalogImage(
     [property: JsonPropertyName("host_image_id")] Guid HostImageId,
@@ -19,7 +20,9 @@ public sealed record CatalogImage(
     [property: JsonPropertyName("max_cpus")] decimal? MaxCpus,
     [property: JsonPropertyName("max_memory_mb")] int? MaxMemoryMb,
     [property: JsonPropertyName("max_pids")] int? MaxPids,
-    [property: JsonPropertyName("max_gpus")] int MaxGpus)
+    [property: JsonPropertyName("cpus")] int? Cpus,
+    [property: JsonPropertyName("memory_mb")] int? MemoryMb,
+    [property: JsonPropertyName("gpus")] int Gpus)
 {
     /// <summary>Currency is USD-only in v0 (docs/API.md §1 — integer cents + <c>"usd"</c>).</summary>
     private const string Usd = "usd";
@@ -35,9 +38,12 @@ public sealed record CatalogImage(
         MaxCpus: image.MaxCpus,
         MaxMemoryMb: image.MaxMemoryMb,
         MaxPids: image.MaxPids,
-        // The offer's GPU ceiling — the max exclusive devices a lease against this offer may request
-        // (task #522); 0 means no GPU access on this offer. Surfaced so a consumer can size before leasing.
-        MaxGpus: image.MaxGpus);
+        // The sized offer's fixed profile (task #569): the exact cpu/memory this offer provisions per lease
+        // (null = the host's per-lease policy default applies downstream), and the exact GPU device count
+        // (0 = no GPU access on this offer). Surfaced so a consumer can price the size before leasing.
+        Cpus: image.Cpus,
+        MemoryMb: image.MemoryMb,
+        Gpus: image.Gpus);
 }
 
 /// <summary>

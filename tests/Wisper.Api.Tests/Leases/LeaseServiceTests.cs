@@ -90,7 +90,7 @@ public class LeaseServiceTests
                 MaxCpus = maxCpus,
                 MaxMemoryMb = maxMemoryMb,
                 MaxPids = maxPids,
-                MaxGpus = maxGpus,
+                Gpus = maxGpus,
                 Enabled = enabled,
                 CreatedAt = T0,
                 UpdatedAt = T0,

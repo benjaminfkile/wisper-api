@@ -49,7 +49,7 @@ public sealed record Lease
     /// <summary>
     /// Snapshot: whole exclusive GPU devices booked for this lease (task #522). <c>0</c> when the offer has no
     /// GPU access or the consumer requested none; immutable once booked. Validated at create time against the
-    /// offer's <see cref="HostImage.MaxGpus"/> ceiling (over-ask rejects, never clamps — it is priced-in).
+    /// offer's <see cref="HostImage.Gpus"/> count (over-ask rejects, never clamps — it is priced-in).
     /// </summary>
     public int Gpus { get; init; }
 

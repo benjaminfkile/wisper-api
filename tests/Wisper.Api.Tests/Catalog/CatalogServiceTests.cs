@@ -68,7 +68,7 @@ public class CatalogServiceTests
 
         public Task<HostImage> AddImageAsync(
             Guid hostId, string imageRef, long price, bool enabled = true,
-            NetworkMode[]? networks = null, int maxGpus = 0) =>
+            NetworkMode[]? networks = null, int maxGpus = 0, int? cpus = null, int? memoryMb = null) =>
             Images.CreateAsync(new HostImage
             {
                 HostId = hostId,
@@ -79,7 +79,9 @@ public class CatalogServiceTests
                 MaxCpus = 4,
                 MaxMemoryMb = 8192,
                 MaxPids = 1024,
-                MaxGpus = maxGpus,
+                Cpus = cpus,
+                MemoryMb = memoryMb,
+                Gpus = maxGpus,
                 Enabled = enabled,
                 CreatedAt = T0,
                 UpdatedAt = T0,
@@ -221,7 +223,7 @@ public class CatalogServiceTests
         var page = await h.Service.ListAsync(new CatalogQuery { MinGpus = 2 });
 
         var item = Assert.Single(page.Data);
-        // Boundary is inclusive: max_gpus == min_gpus qualifies; the smaller ceiling drops out.
+        // Boundary is inclusive: gpus == min_gpus qualifies; the smaller ceiling drops out.
         var image = Assert.Single(item.Images);
         Assert.Equal("two-gpu", image.ImageRef);
     }
@@ -299,7 +301,7 @@ public class CatalogServiceTests
     }
 
     [Fact]
-    public async Task List_surfaces_max_gpus_and_the_hosts_advertised_gpu()
+    public async Task List_surfaces_gpus_and_the_hosts_advertised_gpu()
     {
         var h = new Harness();
         var host = await h.AddHostAsync("gpu-host", "us", T0,
@@ -310,7 +312,7 @@ public class CatalogServiceTests
 
         Assert.Equal(new[] { "nvidia-a100", "nvidia-t4" }, item.GpuClasses);
         Assert.Equal(3, item.GpuCount);
-        Assert.Equal(2, Assert.Single(item.Images).MaxGpus);
+        Assert.Equal(2, Assert.Single(item.Images).Gpus);
     }
 
     [Fact]
@@ -324,11 +326,26 @@ public class CatalogServiceTests
 
         Assert.Empty(item.GpuClasses);
         Assert.Equal(0, item.GpuCount);
-        Assert.Equal(0, Assert.Single(item.Images).MaxGpus);
+        Assert.Equal(0, Assert.Single(item.Images).Gpus);
     }
 
     [Fact]
-    public async Task Get_host_surfaces_max_gpus_on_each_image()
+    public async Task List_carries_the_sized_cpu_and_memory_profile()
+    {
+        // The sized offer's fixed profile is surfaced on the catalog so a consumer can price the size (task #569).
+        var h = new Harness();
+        var host = await h.AddHostAsync("sized-host", "us", T0);
+        await h.AddImageAsync(host.Id, "img", price: 5, cpus: 2, memoryMb: 4096);
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        var image = Assert.Single(item.Images);
+        Assert.Equal(2, image.Cpus);
+        Assert.Equal(4096, image.MemoryMb);
+    }
+
+    [Fact]
+    public async Task Get_host_surfaces_gpus_on_each_image()
     {
         var h = new Harness();
         var host = await h.AddHostAsync("gpu-detail", "eu", T0,
@@ -340,7 +357,7 @@ public class CatalogServiceTests
         Assert.NotNull(detail);
         Assert.Equal(new[] { "nvidia-a100" }, detail!.GpuClasses);
         Assert.Equal(2, detail.GpuCount);
-        Assert.Equal(2, Assert.Single(detail.Images).MaxGpus);
+        Assert.Equal(2, Assert.Single(detail.Images).Gpus);
     }
 
     [Fact]

@@ -25,6 +25,9 @@ public class InMemoryHostImageRepositoryTests
         MaxCpus = 2.5m,
         MaxMemoryMb = 4096,
         MaxPids = 512,
+        Cpus = 2,
+        MemoryMb = 4096,
+        Gpus = 1,
         CreatedAt = T0,
         UpdatedAt = T0,
     };
@@ -41,6 +44,10 @@ public class InMemoryHostImageRepositoryTests
         Assert.True(created.Enabled);
         Assert.Equal(new[] { NetworkMode.None, NetworkMode.Egress }, created.Networks.ToArray());
         Assert.Equal(2.5m, created.MaxCpus);
+        // The sized offer's fixed resource profile round-trips too (task #569).
+        Assert.Equal(2, created.Cpus);
+        Assert.Equal(4096, created.MemoryMb);
+        Assert.Equal(1, created.Gpus);
         Assert.Equal(created, await repo.GetByIdAsync(created.Id));
         Assert.Equal(created, await repo.GetByHostAndRefAsync(host, "ubuntu:24.04"));
     }

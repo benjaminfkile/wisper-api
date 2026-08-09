@@ -169,7 +169,7 @@ GET  /admin/audit                audit log
 
 ## 9. Data model (Postgres)
 
-*(Sketch — `DATA_MODEL.md` and the migrations are authoritative. Notable deltas from this sketch as shipped: `users` has no `kind` column — roles come from Cognito groups/api-key scopes — and the Connect columns are `connect_account_id` + a `connect_status` enum; `usage_records` shipped as **`lease_usage`** with `period_start/period_end/billable_seconds/charge_txn_id` and no Stripe usage-record linkage — charging is internal-ledger, §11; `hosts` also carries `isolation_levels`/`default_isolation` and `gpu_classes`/`gpu_count`; `host_images` also `max_pids`/`max_gpus`/`min_isolation`; `leases` also `isolation` and `gpus`. Money truth lives in the **double-entry ledger** — `ledger_accounts`/`ledger_transactions`/`ledger_entries` — plus `api_keys`, `stripe_events`, `idempotency_keys`, and versioned `platform_policy`, all absent from this sketch.)*
+*(Sketch — `DATA_MODEL.md` and the migrations are authoritative. Notable deltas from this sketch as shipped: `users` has no `kind` column — roles come from Cognito groups/api-key scopes — and the Connect columns are `connect_account_id` + a `connect_status` enum; `usage_records` shipped as **`lease_usage`** with `period_start/period_end/billable_seconds/charge_txn_id` and no Stripe usage-record linkage — charging is internal-ledger, §11; `hosts` also carries `isolation_levels`/`default_isolation` and `gpu_classes`/`gpu_count`; `host_images` also `max_pids`/`min_isolation` plus the sized-offer profile `cpus`/`memory_mb`/`gpus` (task #569, `gpus` renamed from the former `max_gpus` ceiling); `leases` also `isolation` and `gpus`. Money truth lives in the **double-entry ledger** — `ledger_accounts`/`ledger_transactions`/`ledger_entries` — plus `api_keys`, `stripe_events`, `idempotency_keys`, and versioned `platform_policy`, all absent from this sketch.)*
 
 ```
 users            id, cognito_sub, email, roles-via-groups,
@@ -178,7 +178,7 @@ hosts            id, owner_user_id, name, label/region, status(online|offline|su
                  agent_token_hash, wisp_version, isolation_levels[], default_isolation,
                  gpu_classes[], gpu_count, last_seen_at, created_at
 host_images      id, host_id, image_ref, price_cents_per_min, networks[], max_ttl_seconds,
-                 max_cpus, max_memory_mb, max_pids, max_gpus, min_isolation, enabled
+                 max_cpus, max_memory_mb, max_pids, cpus, memory_mb, gpus, min_isolation, enabled
 leases           id, consumer_user_id, host_id, image_ref, network, resources_json, gpus,
                  isolation, ttl_seconds, price_cents_per_min, status(pending|active|ended|failed),
                  wisp_contract_id, created_at, started_at, ended_at, end_reason
@@ -213,7 +213,7 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 - **Platform fee** is admin-configured (a % or flat per-minute cut), taken from each billed minute before host payout.
 - Consumers always see the effective price (host price shown; platform fee folded into the displayed rate) **before** confirming a lease.
 - Wisp's `GET /images` provides the *allow-list + limits*; Wisper overlays the *price* (wisp never knows about money — principle §1).
-- **GPUs are priced into the offer, not metered separately** (task #522): an offer's `host_images.max_gpus` is the whole-device ceiling a lease may book (`resources.gpus`, exclusive devices, over-ask rejected rather than clamped), and a host prices a GPU-bearing offer accordingly — there is no per-resource rate table. Device classes are opaque strings surfaced for catalog filtering (`min_gpus`/`gpu_class`); wisp allocates and enforces.
+- **GPUs are priced into the offer, not metered separately** (task #522, sized offers in #569): an offer's `host_images.gpus` is the exact whole-device count a lease against it provisions (`resources.gpus`, exclusive devices, over-ask rejected rather than clamped), renamed from the former `max_gpus` ceiling, and a host prices a GPU-bearing offer accordingly — there is no per-resource rate table. Device classes are opaque strings surfaced for catalog filtering (`min_gpus`/`gpu_class`); wisp allocates and enforces.
 
 ## 13. End-to-end flows
 

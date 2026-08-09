@@ -496,7 +496,7 @@ public sealed class LeaseService : ILeaseService
         var memoryMb = ValidateCeiling(
             resources.MemoryMb, image.MaxMemoryMb, "resources.memory_mb");
         var pids = ValidateCeiling(resources.Pids, image.MaxPids, "resources.pids");
-        var gpus = ValidateGpus(resources.Gpus, image.MaxGpus);
+        var gpus = ValidateGpus(resources.Gpus, image.Gpus);
         return (cpus, memoryMb, pids, gpus);
     }
 
