@@ -138,7 +138,13 @@ public sealed class HostService
     public async Task<HostsMineResponse> ListMineAsync(Guid ownerUserId, CancellationToken ct = default)
     {
         var hosts = await _hosts.ListByOwnerAsync(ownerUserId, ct);
-        var summaries = hosts.Select(h => HostSummary.From(h, IsOnline(h.Id))).ToList();
+        var summaries = hosts.Select(h =>
+        {
+            // Surface the host's advertised per-lease caps so the offer editor prefills real numbers (task #583).
+            // They live only on the live tunnel, so an offline host (no capability) resolves both to null.
+            var (maxCpus, maxMemoryMb) = ResolveHostCaps(_capabilities.GetCapability(h.Id));
+            return HostSummary.From(h, IsOnline(h.Id), maxCpus, maxMemoryMb);
+        }).ToList();
         var earnings = await _payouts.GetEarningsAsync(ownerUserId, ct);
         return new HostsMineResponse(summaries, earnings);
     }
@@ -182,7 +188,10 @@ public sealed class HostService
     {
         await LoadOwnedHostAsync(ownerUserId, hostId, ct);
         var images = await _images.ListByHostAsync(hostId, enabledOnly: false, ct);
-        return new HostImagesResponse(images.Select(HostImageView.From).ToList());
+        // GET does not require a live tunnel (unlike PUT/PATCH), so the caps are null for an offline host.
+        var (maxCpus, maxMemoryMb) = ResolveHostCaps(_capabilities.GetCapability(hostId));
+        return new HostImagesResponse(
+            images.Select(HostImageView.From).ToList(), maxCpus, maxMemoryMb);
     }
 
     /// <summary>
@@ -282,7 +291,9 @@ public sealed class HostService
         }
 
         var result = await _images.ListByHostAsync(hostId, enabledOnly: false, ct);
-        return new HostImagesResponse(result.Select(HostImageView.From).ToList());
+        var (maxCpus, maxMemoryMb) = ResolveHostCaps(capability);
+        return new HostImagesResponse(
+            result.Select(HostImageView.From).ToList(), maxCpus, maxMemoryMb);
     }
 
     /// <summary>
@@ -363,6 +374,25 @@ public sealed class HostService
 
     /// <summary>True when the host has a live agent tunnel in the registry (authoritative presence).</summary>
     private bool IsOnline(Guid hostId) => _registry.TryGet(hostId.ToString(), out _);
+
+    /// <summary>
+    /// Projects a host's advertised per-lease caps (wisp <c>limits.max_cpus</c>/<c>max_memory_mb</c>) into the
+    /// owner-facing shape the offer editor prefills against (task #583). A <c>null</c> capability (offline) or a
+    /// non-positive advertised cap (the host advertises no bound on that dimension) resolves to <c>null</c>.
+    /// </summary>
+    private static (decimal? MaxCpus, int? MaxMemoryMb) ResolveHostCaps(HostCapabilitySnapshot? capability)
+    {
+        if (capability is null)
+        {
+            return (null, null);
+        }
+
+        decimal? maxCpus = capability.MaxCpus > 0 ? (decimal)capability.MaxCpus : null;
+        int? maxMemoryMb = capability.MaxMemoryMb > 0
+            ? (int)Math.Min(capability.MaxMemoryMb, int.MaxValue)
+            : null;
+        return (maxCpus, maxMemoryMb);
+    }
 
     /// <summary>The host owner's Stripe Connect onboarding state, or <see cref="ConnectStatus.None"/> if unknown.</summary>
     private async Task<ConnectStatus> OwnerConnectStatusAsync(Host host, CancellationToken ct) =>
@@ -514,17 +544,43 @@ public sealed class HostService
 
         // The sized offer's fixed cpu/memory profile (task #569): a present value is the exact per-lease
         // provisioning and must be positive. NULL means "the host's own per-lease policy default applies
-        // downstream" (§4), so it is left unvalidated here.
-        if (profileCpus is { } sizedCpus && sizedCpus <= 0)
+        // downstream" (§4), so it is left unvalidated here. When present, an offer must also not exceed the
+        // host's advertised per-lease cap (wisp limits.max_cpus/max_memory_mb) — offer honesty (task #583): a
+        // host must never over-promise resources it will silently clamp at provision time. Reject, never clamp,
+        // the same discipline as the GPU count and the legacy max_* ceilings. A host that advertises no cap for
+        // a dimension (0) imposes no bound on it.
+        if (profileCpus is { } sizedCpus)
         {
-            throw new ApiException(
-                ApiErrorCode.ValidationError, "cpus must be positive.", new { field = "cpus" });
+            if (sizedCpus <= 0)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError, "cpus must be positive.", new { field = "cpus" });
+            }
+
+            if (capability.MaxCpus > 0 && sizedCpus > capability.MaxCpus)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    $"cpus ({sizedCpus}) exceeds the host's advertised per-lease cap ({capability.MaxCpus}).",
+                    new { field = "cpus", max = capability.MaxCpus });
+            }
         }
 
-        if (profileMemoryMb is { } sizedMemory && sizedMemory <= 0)
+        if (profileMemoryMb is { } sizedMemory)
         {
-            throw new ApiException(
-                ApiErrorCode.ValidationError, "memory_mb must be positive.", new { field = "memory_mb" });
+            if (sizedMemory <= 0)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError, "memory_mb must be positive.", new { field = "memory_mb" });
+            }
+
+            if (capability.MaxMemoryMb > 0 && sizedMemory > capability.MaxMemoryMb)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    $"memory_mb ({sizedMemory}) exceeds the host's advertised per-lease cap ({capability.MaxMemoryMb}).",
+                    new { field = "memory_mb", max = capability.MaxMemoryMb });
+            }
         }
 
         // GPU is priced into the offer (task #522/#569): gpus is the EXACT whole-device count this sized offer
