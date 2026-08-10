@@ -204,13 +204,13 @@ Becoming a host is additive — a `consumer` gains the `host` group on first hos
 | Method | Path | Auth extras | Notes |
 |---|---|---|---|
 | POST | `/v1/hosts` | | register a wisp host → returns the **agent token once** (never retrievable again) |
-| GET | `/v1/hosts/mine` | | caller's hosts, online state, capacity, earnings summary |
+| GET | `/v1/hosts/mine` | | caller's hosts, online state, capacity (incl. `host_max_cpus`/`host_max_memory_mb`), earnings summary |
 | GET | `/v1/hosts/:id` | | the same public detail as the catalog route (§5) — there is no separate owner-scoped variant today |
 | DELETE | `/v1/hosts/:id` | | *planned, not implemented* — deregister (drains pending earnings first) |
 | POST | `/v1/hosts/:id/agent-token` | | rotate the agent token (old one revoked, tunnel closed `4402`) |
-| GET | `/v1/hosts/:id/images` | | priced allow-list |
-| PUT | `/v1/hosts/:id/images` | `validation_error` if a priced image is enabled without Connect | replace the priced allow-list (validated live against the host's advertised wisp capability) |
-| PATCH | `/v1/hosts/:id/images/:imageId` | `validation_error` if a priced image is enabled without Connect | price/enable/limits + the sized profile (`cpus`/`memory_mb`/`gpus`) for one image |
+| GET | `/v1/hosts/:id/images` | | priced allow-list (+ `host_max_cpus`/`host_max_memory_mb`) |
+| PUT | `/v1/hosts/:id/images` | `validation_error` if a priced image is enabled without Connect, or an offer exceeds a host per-lease cap | replace the priced allow-list (validated live against the host's advertised wisp capability) |
+| PATCH | `/v1/hosts/:id/images/:imageId` | `validation_error` if a priced image is enabled without Connect, or the offer exceeds a host per-lease cap | price/enable/limits + the sized profile (`cpus`/`memory_mb`/`gpus`) for one image |
 | POST | `/v1/hosts/connect` | | create/continue Stripe **Connect Express** onboarding → `{ onboarding_url }` |
 | GET | `/v1/hosts/connect/status` | | `connect_status` + what's still required |
 | GET | `/v1/earnings` | | accrued + paid, by period |
@@ -229,6 +229,8 @@ Pricing/earning is inert until `connect_status='enabled'` and the agent has conn
 **Presence follows the tunnel.** A host's `status` is driven by its agent tunnel, not set by hand: when the handshake completes Wisper flips it `online` if it clears the earning gate — the owner is Connect-enabled **or** every enabled `host_image` is priced at `0` cents/min (the self-hosted / zero-price posture, `PAYMENTS.md` §5) — and a durable tunnel loss (grace expiry, or a close with no leases to protect) flips it back `offline` (`TUNNEL.md` §8). An admin-suspended host never comes back `online` on reconnect.
 
 **Charging requires Connect (images surface).** Because the online gate has a zero-earn arm, `PUT`/`PATCH …/images` **reject enabling a non-zero-priced image while the owner's `connect_status` is not `enabled`** (`validation_error` explaining Connect onboarding is required to charge; price at `0` to self-host for free). This is the single pricing mutation point, so a live host is never knocked `offline` mid-tunnel — it simply cannot move into the earning arm without Connect (`PAYMENTS.md` §5).
+
+**Offer honesty — an offer cannot exceed the host's per-lease cap.** `PUT`/`PATCH …/images` validate every sized offer against the host's advertised per-lease caps (wisp `limits.max_cpus`/`max_memory_mb`, `TUNNEL.md` §5): an offer whose `cpus` exceeds `max_cpus`, or whose `memory_mb` exceeds `max_memory_mb`, is **rejected** with `validation_error` naming the field and the cap (`details: { field, max }`) — never clamped, the same discipline as `gpus ≤ gpu_count`. This closes the gap where the catalog could advertise resources the host would silently clamp at provision time; a host that advertises no cap for a dimension imposes no bound on it. The live caps are surfaced to the owner as `host_max_cpus`/`host_max_memory_mb` on `GET /v1/hosts/mine` **and** on the images responses so the editor prefills real numbers in one fetch (each is `null` when the host is offline or advertises no cap). PUT is a whole-list replace, so one over-cap entry fails the entire save; an over-cap row already saved (bad data) is not migrated — it simply fails the next save until corrected, while `#578`'s effective-resolution already caps what the catalog claims.
 
 ## 7. WebSocket & streaming (the console relay)
 

@@ -109,7 +109,24 @@ public class HostServiceTests
             MaxMemoryMb: 16384,
             MaxPids: 4096,
             MaxGpus: maxGpus);
+
+        /// <summary>
+        /// A capability advertising specific per-lease cpu/memory caps (wisp <c>limits.max_cpus</c>/
+        /// <c>max_memory_mb</c>). A <c>0</c> cap means the host advertises no bound on that dimension (task #583).
+        /// </summary>
+        public HostCapabilitySnapshot CappedCapability(
+            double maxCpus, long maxMemoryMb, params string[] images) => new(
+            Images: images.Length == 0 ? new[] { "alpine:latest" } : images,
+            Networks: new[] { NetworkMode.None, NetworkMode.Open },
+            MaxTtlSeconds: 14400,
+            MaxCpus: maxCpus,
+            MaxMemoryMb: maxMemoryMb,
+            MaxPids: 4096);
     }
+
+    /// <summary>Reads a named property off an <see cref="ApiException.Details"/> anonymous payload.</summary>
+    private static object? Detail(ApiException ex, string name) =>
+        ex.Details?.GetType().GetProperty(name)?.GetValue(ex.Details);
 
     [Fact]
     public async Task Register_issues_token_once_and_stores_only_the_hash()
@@ -544,6 +561,172 @@ public class HostServiceTests
             })));
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_cpus_over_the_host_per_lease_cap()
+    {
+        // Offer honesty (task #583): a host must not over-promise. The live gap — an offer of 4 cpus on a host
+        // whose wisp per-lease cap is 2 — is rejected with the field AND the cap in details, never clamped.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Cpus: 4),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Equal("cpus", Detail(ex, "field"));
+        Assert.Equal(2d, Convert.ToDouble(Detail(ex, "max"))); // the cap is named so the editor can correct it
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // nothing persisted on rejection
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_memory_over_the_host_per_lease_cap()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true,
+                    MemoryMb: 4194304),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Equal("memory_mb", Detail(ex, "field"));
+        Assert.Equal(2048L, Convert.ToInt64(Detail(ex, "max")));
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id));
+    }
+
+    [Fact]
+    public async Task ReplaceImages_accepts_a_profile_at_the_host_cap()
+    {
+        // The cap is inclusive: an offer exactly at the advertised per-lease cap is honest and accepted.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true,
+                Cpus: 2, MemoryMb: 2048),
+        }));
+
+        var view = Assert.Single(result.Data);
+        Assert.Equal(2, view.Cpus);
+        Assert.Equal(2048, view.MemoryMb);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_leaves_a_dimension_unbounded_when_the_host_advertises_no_cap()
+    {
+        // A host that advertises 0 for a dimension imposes no bound on it (task #583): a large cpu profile is
+        // accepted when max_cpus is unadvertised, even though the memory cap still applies.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.CappedCapability(maxCpus: 0, maxMemoryMb: 2048, "alpine:latest"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true,
+                Cpus: 64, MemoryMb: 2048),
+        }));
+
+        Assert.Equal(64, Assert.Single(result.Data).Cpus);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_rejects_the_whole_list_when_one_offer_is_over_cap()
+    {
+        // PUT is a whole-list replace: one over-cap offer fails the entire save, so a good entry alongside it is
+        // not persisted either. This also pins that existing over-cap rows simply fail the NEXT save (task #583).
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(
+            host.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest", "ubuntu:24.04"));
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+            {
+                new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Cpus: 2),
+                new ImageUpsert("ubuntu:24.04", 9, new[] { "none" }, 3600, null, null, null, true, Cpus: 4),
+            })));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // whole list rejected — nothing persisted
+    }
+
+    [Fact]
+    public async Task PatchImage_rejects_a_profile_over_the_host_per_lease_cap()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true, Cpus: 2),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.PatchImageAsync(
+                owner, host.Id, imageId,
+                new PatchImageRequest(null, null, null, null, null, null, null, Cpus: 8)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Equal("cpus", Detail(ex, "field"));
+        Assert.Equal(2, (await fx.Images.ListByHostAsync(host.Id))[0].Cpus); // unchanged on rejection
+    }
+
+    [Fact]
+    public async Task ListMine_surfaces_the_host_caps_when_online_and_null_when_offline()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var online = await fx.SeedHostAsync(owner);
+        var offline = await fx.SeedHostAsync(owner);
+        fx.Registry.SetOnline(online.Id);
+        fx.Capabilities.Set(online.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest"));
+
+        var result = await fx.Service.ListMineAsync(owner);
+
+        var onlineRow = result.Data.Single(h => h.Id == online.Id);
+        Assert.Equal(2m, onlineRow.HostMaxCpus);
+        Assert.Equal(2048, onlineRow.HostMaxMemoryMb);
+        var offlineRow = result.Data.Single(h => h.Id == offline.Id);
+        Assert.Null(offlineRow.HostMaxCpus);
+        Assert.Null(offlineRow.HostMaxMemoryMb);
+    }
+
+    [Fact]
+    public async Task ListImages_surfaces_the_host_caps_when_online_and_null_when_offline()
+    {
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+
+        // Offline: the caps resolve null (GET does not require a live tunnel).
+        var offline = await fx.Service.ListImagesAsync(owner, host.Id);
+        Assert.Null(offline.HostMaxCpus);
+        Assert.Null(offline.HostMaxMemoryMb);
+
+        // Online: the advertised per-lease caps ride the same response the editor already fetches.
+        fx.Capabilities.Set(host.Id, fx.CappedCapability(maxCpus: 2, maxMemoryMb: 2048, "alpine:latest"));
+        var online = await fx.Service.ListImagesAsync(owner, host.Id);
+        Assert.Equal(2m, online.HostMaxCpus);
+        Assert.Equal(2048, online.HostMaxMemoryMb);
     }
 
     [Fact]

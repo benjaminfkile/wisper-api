@@ -52,11 +52,21 @@ public sealed record HostSummary(
     [property: JsonPropertyName("max_streams")] int? MaxStreams,
     [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
     [property: JsonPropertyName("gpu_count")] int GpuCount,
+    [property: JsonPropertyName("host_max_cpus")] decimal? HostMaxCpus,
+    [property: JsonPropertyName("host_max_memory_mb")] int? HostMaxMemoryMb,
     [property: JsonPropertyName("agent_token_prefix")] string? AgentTokenPrefix,
     [property: JsonPropertyName("last_seen_at")] DateTimeOffset? LastSeenAt,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
 {
-    public static HostSummary From(Host host, bool online) => new(
+    /// <summary>
+    /// Projects a stored host into the owner's summary. <paramref name="hostMaxCpus"/>/
+    /// <paramref name="hostMaxMemoryMb"/> are the host's advertised per-lease caps (wisp
+    /// <c>limits.max_cpus</c>/<c>max_memory_mb</c>) from its live tunnel — the real numbers the offer editor
+    /// prefills against (task #583) — or <c>null</c> when the host is offline or advertises no cap for that
+    /// dimension.
+    /// </summary>
+    public static HostSummary From(
+        Host host, bool online, decimal? hostMaxCpus = null, int? hostMaxMemoryMb = null) => new(
         Id: host.Id,
         Name: host.Name,
         Label: host.Label,
@@ -69,6 +79,8 @@ public sealed record HostSummary(
         // The advertised GPU, surfaced read-only (task #521) — opaque classes + total device count.
         GpuClasses: host.GpuClasses,
         GpuCount: host.GpuCount,
+        HostMaxCpus: hostMaxCpus,
+        HostMaxMemoryMb: hostMaxMemoryMb,
         AgentTokenPrefix: host.AgentTokenPrefix,
         LastSeenAt: host.LastSeenAt,
         CreatedAt: host.CreatedAt);
@@ -124,9 +136,16 @@ public sealed record HostImageView(
         UpdatedAt: image.UpdatedAt);
 }
 
-/// <summary>The priced allow-list (docs/API.md §6, <c>GET/PUT /v1/hosts/:id/images</c>), ordered by image ref.</summary>
+/// <summary>
+/// The priced allow-list (docs/API.md §6, <c>GET/PUT /v1/hosts/:id/images</c>), ordered by image ref, plus the
+/// host's advertised per-lease caps (<c>host_max_cpus</c>/<c>host_max_memory_mb</c>) so the editor prefills real
+/// numbers and never proposes an over-cap profile in one fetch (task #583). Each cap is <c>null</c> when the
+/// host is offline or advertises no cap for that dimension.
+/// </summary>
 public sealed record HostImagesResponse(
-    [property: JsonPropertyName("data")] IReadOnlyList<HostImageView> Data);
+    [property: JsonPropertyName("data")] IReadOnlyList<HostImageView> Data,
+    [property: JsonPropertyName("host_max_cpus")] decimal? HostMaxCpus = null,
+    [property: JsonPropertyName("host_max_memory_mb")] int? HostMaxMemoryMb = null);
 
 /// <summary>Body of <c>PUT /v1/hosts/:id/images</c> (docs/API.md §6): the full replacement allow-list.</summary>
 public sealed record ReplaceImagesRequest(
