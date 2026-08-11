@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
+using Wisper.Api.Leases;
 
 namespace Wisper.Api.Tunnel.Backplane;
 
@@ -42,6 +43,8 @@ public static class BackplaneServiceCollectionExtensions
             // Single-instance default (docs/DESIGN.md §7: "Not required until >1 instance runs").
             services.AddSingleton<IHostRegistry>(sp => sp.GetRequiredService<InMemoryHostRegistry>());
             services.AddSingleton<ITunnelRelay>(sp => sp.GetRequiredService<TunnelRelay>());
+            // Shell tickets only need to survive to the WS handshake on the same instance.
+            services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
             return services;
         }
 
@@ -68,12 +71,19 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IHostPresenceStore>(sp => new RedisHostPresenceStore(
                 sp.GetRequiredService<IConnectionMultiplexer>(),
                 sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
+            // Shell tickets stored in Redis so any instance can redeem a ticket minted by another instance.
+            // Reuses the backplane's existing IConnectionMultiplexer — no second Redis connection.
+            services.AddSingleton<IShellTicketStore>(sp => new RedisShellTicketStore(
+                sp.GetRequiredService<IConnectionMultiplexer>(),
+                sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
         }
         else
         {
             // In-process fabric + presence: a single multi-instance-shaped process (dev/test) with no Redis.
             services.AddSingleton<ITunnelBackplane, LoopbackTunnelBackplane>();
             services.AddSingleton<IHostPresenceStore, InMemoryHostPresenceStore>();
+            // Loopback mode is single-process: all "instances" share one DI container, so in-memory is fine.
+            services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
         }
 
         // Front the interfaces with the distributed wrappers, each delegating to the concrete local impl.
