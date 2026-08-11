@@ -67,7 +67,16 @@ public sealed class DistributedHostRegistry : IHostRegistry
             try
             {
                 await _presence.ClearOwnerAsync(hostId, _identity.InstanceId);
-                await _capabilityStore.ClearAsync(hostId);
+
+                // Only clear the capability when no instance owns the host anymore. On a supersede —
+                // the host already re-registered on another instance — that instance has just written
+                // a fresh snapshot, and an unconditional delete here would strand the host with
+                // presence but no capability until its next reconnect (degraded os/effective fields
+                // and host_offline on images validation from non-owner instances).
+                if (await _presence.GetOwnerAsync(hostId) is null)
+                {
+                    await _capabilityStore.ClearAsync(hostId);
+                }
             }
             catch (Exception ex)
             {

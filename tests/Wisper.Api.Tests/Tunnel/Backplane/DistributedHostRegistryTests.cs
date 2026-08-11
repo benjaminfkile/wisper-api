@@ -23,13 +23,25 @@ public class DistributedHostRegistryTests
 
     private static DistributedHostRegistry Build(
         out LocalHostRegistryStub local, out InMemoryHostPresenceStore presence, string instanceId = "inst-A")
+        => Build(out local, out presence, out _, instanceId);
+
+    private static DistributedHostRegistry Build(
+        out LocalHostRegistryStub local,
+        out InMemoryHostPresenceStore presence,
+        out InMemoryHostCapabilityStore capabilities,
+        string instanceId = "inst-A")
     {
         local = new LocalHostRegistryStub();
         presence = new InMemoryHostPresenceStore();
+        capabilities = new InMemoryHostCapabilityStore();
         return new DistributedHostRegistry(
-            local, presence, new InMemoryHostCapabilityStore(),
+            local, presence, capabilities,
             new WisperInstanceIdentity(instanceId), NullLogger<DistributedHostRegistry>.Instance);
     }
+
+    private static HostCapabilitySnapshot Snapshot() => new(
+        new[] { "wisp-base" }, Array.Empty<Wisper.Api.Domain.NetworkMode>(),
+        MaxTtlSeconds: 0, MaxCpus: 0, MaxMemoryMb: 0, MaxPids: 0, Os: "linux");
 
     [Fact]
     public async Task Register_records_presence_and_delegates_locally()
@@ -72,6 +84,39 @@ public class DistributedHostRegistryTests
 
         await Task.Delay(100);
         Assert.Equal("inst-B", await presence.GetOwnerAsync("host-1"));
+    }
+
+    [Fact]
+    public async Task Unregister_after_supersede_elsewhere_leaves_the_new_owners_capability()
+    {
+        var registry = Build(out _, out var presence, out var capabilities, "inst-A");
+        var conn = Connection("host-1");
+        await registry.RegisterAsync(conn);
+
+        // The host reconnected onto inst-B, which wrote presence AND a fresh capability snapshot.
+        // inst-A's late unregister must clear neither — an unconditional capability delete would
+        // strand the host with presence but no capability until its next reconnect.
+        await presence.SetOwnerAsync("host-1", "inst-B");
+        await capabilities.SetAsync("host-1", Snapshot());
+        registry.Unregister(conn);
+
+        await Task.Delay(100);
+        Assert.Equal("inst-B", await presence.GetOwnerAsync("host-1"));
+        Assert.NotNull(capabilities.Get("host-1"));
+    }
+
+    [Fact]
+    public async Task Unregister_with_no_new_owner_clears_the_capability()
+    {
+        var registry = Build(out _, out var presence, out var capabilities, "inst-A");
+        var conn = Connection("host-1");
+        await registry.RegisterAsync(conn);
+        await capabilities.SetAsync("host-1", Snapshot());
+
+        registry.Unregister(conn);
+
+        await WaitUntilAsync(async () =>
+            await presence.GetOwnerAsync("host-1") is null && capabilities.Get("host-1") is null);
     }
 
     private static async Task WaitUntilAsync(Func<Task<bool>> condition)
