@@ -7,6 +7,7 @@ using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -34,9 +35,9 @@ public class HostPresenceServiceTests
         public FakeTimeProvider Clock { get; } = new(TReady);
         public HostPresenceService Service { get; }
 
-        // The catalog joins the DB-online subset with the live registry, so it proves the presence flip is
-        // what makes a host visible (docs/API.md §5).
-        public CatalogService Catalog => new(Hosts, Images, Registry, Capabilities, Leases);
+        // The catalog joins the DB-online subset with the live registry/presence store, so it proves the
+        // presence flip is what makes a host visible (docs/API.md §5).
+        public CatalogService Catalog => new(Hosts, Images, Registry, Capabilities, Leases, new InMemoryHostPresenceStore());
 
         public Fixture()
         {

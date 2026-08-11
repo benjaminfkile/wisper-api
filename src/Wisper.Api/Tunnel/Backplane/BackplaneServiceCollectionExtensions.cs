@@ -45,6 +45,10 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<ITunnelRelay>(sp => sp.GetRequiredService<TunnelRelay>());
             // Shell tickets only need to survive to the WS handshake on the same instance.
             services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
+            // Presence store is always needed (CatalogService/HostService consult it for distributed liveness).
+            // In single-instance mode the local registry is authoritative, so this store stays empty and the
+            // fast-path (local registry) always wins — no Redis I/O.
+            services.AddSingleton<IHostPresenceStore, InMemoryHostPresenceStore>();
             return services;
         }
 

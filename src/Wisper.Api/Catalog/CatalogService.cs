@@ -3,6 +3,7 @@ using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Host = Wisper.Api.Domain.Host;
 
 namespace Wisper.Api.Catalog;
@@ -23,28 +24,33 @@ public sealed class CatalogService : ICatalogService
     private readonly IHostRegistry _registry;
     private readonly IHostCapabilitySource _capabilities;
     private readonly ILeaseRepository _leases;
+    private readonly IHostPresenceStore _presenceStore;
 
     public CatalogService(
         IHostRepository hosts,
         IHostImageRepository images,
         IHostRegistry registry,
         IHostCapabilitySource capabilities,
-        ILeaseRepository leases)
+        ILeaseRepository leases,
+        IHostPresenceStore presenceStore)
     {
         _hosts = hosts;
         _images = images;
         _registry = registry;
         _capabilities = capabilities;
         _leases = leases;
+        _presenceStore = presenceStore;
     }
 
     public async Task<CatalogPage> ListAsync(CatalogQuery query, CancellationToken ct = default)
     {
-        // Candidate set = DB-online hosts, re-confirmed against the live tunnel registry so a stale
-        // 'online' row with no live tunnel never appears. Ordered by the stable descending page key.
+        // Candidate set = DB-online hosts, re-confirmed against the live tunnel for a stale-DB-row guard.
+        // One presence-store snapshot covers all candidates (one Redis round-trip for N hosts); the local
+        // registry is the fast path so a same-instance tunnel costs no I/O at all.
         var candidates = await _hosts.ListOnlineAsync(ct);
+        var presenceSnapshot = await PresenceSnapshotAsync(ct);
         var ordered = candidates
-            .Where(IsLive)
+            .Where(h => IsLive(h, presenceSnapshot))
             .Where(h => MatchesGpuClass(h, query.GpuClass))
             .Where(h => After(h, query.Cursor))
             .OrderBy(h => h, HostPageOrder)
@@ -98,7 +104,8 @@ public sealed class CatalogService : ICatalogService
         var wire = images.Select(i => CatalogImage.From(i, capability?.MaxCpus ?? 0, capability?.MaxMemoryMb ?? 0))
             .ToList();
         var (active, max) = await CapacityOf(capability, hostId, ct);
-        return HostDetail.From(host, wire, online: IsLive(host), os: capability?.Os, active, max);
+        var live = await IsLiveAsync(hostId, ct);
+        return HostDetail.From(host, wire, online: live, os: capability?.Os, active, max);
     }
 
     /// <summary>
@@ -147,8 +154,29 @@ public sealed class CatalogService : ICatalogService
     private static bool MatchesGpuClass(Host host, string? gpuClass) =>
         gpuClass is null || host.GpuClasses.Contains(gpuClass, StringComparer.Ordinal);
 
-    /// <summary>True when the host has a live agent tunnel in the registry (authoritative presence).</summary>
-    private bool IsLive(Host host) => _registry.TryGet(host.Id.ToString(), out _);
+    /// <summary>
+    /// True when the host has a live tunnel: fast path is the local registry (no I/O); fallback is the
+    /// distributed presence snapshot so a tunnel owned by another instance is still considered live.
+    /// </summary>
+    private bool IsLive(Host host, HashSet<string> presenceSnapshot)
+    {
+        var id = host.Id.ToString();
+        return _registry.TryGet(id, out _) || presenceSnapshot.Contains(id);
+    }
+
+    /// <summary>Single-host async liveness for GetHostAsync: local registry fast path, then presence store.</summary>
+    private async Task<bool> IsLiveAsync(Guid hostId, CancellationToken ct)
+    {
+        var id = hostId.ToString();
+        return _registry.TryGet(id, out _) || await _presenceStore.GetOwnerAsync(id, ct) is not null;
+    }
+
+    /// <summary>One presence-store snapshot so ListAsync needs only one round-trip for all candidates.</summary>
+    private async Task<HashSet<string>> PresenceSnapshotAsync(CancellationToken ct)
+    {
+        var snapshot = await _presenceStore.SnapshotAsync(ct);
+        return snapshot.Select(p => p.HostId).ToHashSet(StringComparer.Ordinal);
+    }
 
     /// <summary>True when <paramref name="host"/> sorts strictly after <paramref name="cursor"/> in page order.</summary>
     private static bool After(Host host, CatalogCursor? cursor) =>
