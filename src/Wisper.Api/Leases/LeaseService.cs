@@ -459,15 +459,19 @@ public sealed class LeaseService : ILeaseService
 
     /// <summary>
     /// Resolves and validates the lease's isolation level (task #418, docs/TUNNEL.md §5). An omitted/blank
-    /// request defaults to <see cref="HostIsolation.Shared"/>; <c>confidential</c> or any unknown value is
-    /// rejected. The resolved level must clear the <c>platform_policy.min_isolation</c> floor (ordered
-    /// <c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>) when one is configured, and — when the target
-    /// <paramref name="host"/> advertises isolation levels — must be one the host can provide (fail fast). A
-    /// host with no advertised levels recorded passes through: wisp re-validates as the real security boundary.
+    /// request defaults to the target <paramref name="host"/>'s advertised <c>default_isolation</c> — the
+    /// level the host operator declared (wisp <c>limits.default_isolation</c>), which is always one of the
+    /// host's advertised levels and falls back to <see cref="HostIsolation.Shared"/> for a host that declares
+    /// none. A consumer who omits isolation therefore gets the tier the host chose to lead with, not a
+    /// hardcoded weakest tier. <c>confidential</c> or any unknown value is rejected. The resolved level must
+    /// clear the <c>platform_policy.min_isolation</c> floor (ordered <c>shared</c> &lt; <c>sandboxed</c> &lt;
+    /// <c>vm</c>) when one is configured, and — when the host advertises isolation levels — must be one the
+    /// host can provide (fail fast). A host with no advertised levels recorded passes through: wisp re-validates
+    /// as the real security boundary.
     /// </summary>
     private async Task<string> ResolveIsolationAsync(string? requested, Domain.Host host, CancellationToken ct)
     {
-        var level = string.IsNullOrWhiteSpace(requested) ? HostIsolation.Shared : requested.Trim();
+        var level = string.IsNullOrWhiteSpace(requested) ? host.DefaultIsolation : requested.Trim();
         if (!HostIsolation.IsRequestable(level))
         {
             throw new ApiException(
