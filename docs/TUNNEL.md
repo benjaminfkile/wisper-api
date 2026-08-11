@@ -191,7 +191,7 @@ Because the agent only speaks wisp's public API, **wisp needs no changes** for t
 
 ## 11. Consumer API ⇄ tunnel mapping
 
-The consumer never touches the tunnel; Wisper relays (routing across instances via the Redis backplane, `DESIGN.md` §7):
+The consumer never touches the tunnel; Wisper relays (routing across instances via the Redis backplane, `DESIGN.md` §7; cross-request state rule: `DESIGN.md` §7 — cross-request state rule):
 
 | Consumer call (Wisper) | Tunnel |
 |---|---|
