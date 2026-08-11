@@ -2,7 +2,10 @@ name: Build and Deploy Wisper API
 
 on:
   push:
-    branches: ["main", "dev"]
+    # dev only for now — there is no prod deployment of wisper-api yet. When
+    # prod exists, restore "main" here (the branch-conditional env/environment
+    # expressions below already handle it).
+    branches: ["dev"]
     paths-ignore:
       - "**/*.md"
 
