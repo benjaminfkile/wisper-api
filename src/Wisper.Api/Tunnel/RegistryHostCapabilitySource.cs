@@ -1,4 +1,5 @@
 using Wisper.Api.Domain;
+using Wisper.Api.Tunnel.Messages;
 
 namespace Wisper.Api.Tunnel;
 
@@ -17,11 +18,23 @@ public sealed class RegistryHostCapabilitySource : IHostCapabilitySource
 
     public HostCapabilitySnapshot? GetCapability(Guid hostId)
     {
-        if (!_registry.TryGet(hostId.ToString(), out var connection) ||
-            connection?.Capability is not { } capability)
+        if (!_registry.TryGet(hostId.ToString(), out var connection))
         {
             return null;
         }
+
+        return BuildSnapshot(connection?.Capability);
+    }
+
+    /// <summary>
+    /// Converts a raw <see cref="HelloCapability"/> wire block into a <see cref="HostCapabilitySnapshot"/>.
+    /// Returns <c>null</c> when <paramref name="capability"/> is <c>null</c> (older agent / pre-hello).
+    /// Shared with <see cref="Backplane.DistributedHostRegistry"/> so the same projection logic is used
+    /// when publishing the snapshot to the backplane store on registration.
+    /// </summary>
+    internal static HostCapabilitySnapshot? BuildSnapshot(HelloCapability? capability)
+    {
+        if (capability is null) return null;
 
         var limits = capability.Limits;
         var networks = new List<NetworkMode>(limits.Networks.Count);

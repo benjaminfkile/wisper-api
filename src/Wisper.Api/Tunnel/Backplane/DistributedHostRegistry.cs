@@ -5,10 +5,12 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// <summary>
 /// Multi-instance <see cref="IHostRegistry"/> (docs/DESIGN.md §7). Live tunnels are still physical
 /// sockets on <b>this</b> instance, so the local <see cref="InMemoryHostRegistry"/> keeps owning them
-/// (register/supersede/lookup/enumerate are all local). This wrapper's added job is <b>presence</b>:
-/// when a host connects here it records <c>host → thisInstance</c> in the shared
-/// <see cref="IHostPresenceStore"/>, and on disconnect it clears it — so the distributed relay on any
-/// instance can find who owns a given host's tunnel. <see cref="TryGet"/>/<see cref="Online"/> remain
+/// (register/supersede/lookup/enumerate are all local). This wrapper's added jobs are <b>presence</b>
+/// and <b>capability publishing</b>: when a host connects here it records <c>host → thisInstance</c>
+/// in the shared <see cref="IHostPresenceStore"/> and serialises the <see cref="HostCapabilitySnapshot"/>
+/// into the shared <see cref="IHostCapabilityStore"/>, so any instance can resolve both facts without
+/// routing to the tunnel owner. On disconnect both records are cleared atomically in the background —
+/// a dead tunnel never leaves a readable snapshot. <see cref="TryGet"/>/<see cref="Online"/> remain
 /// local-only (a remote host has no local <see cref="TunnelConnection"/> to hand back); routing to a
 /// remote host goes through <see cref="DistributedTunnelRelay"/>, not this registry.
 /// </summary>
@@ -16,17 +18,20 @@ public sealed class DistributedHostRegistry : IHostRegistry
 {
     private readonly IHostRegistry _local;
     private readonly IHostPresenceStore _presence;
+    private readonly IHostCapabilityStore _capabilityStore;
     private readonly WisperInstanceIdentity _identity;
     private readonly ILogger<DistributedHostRegistry> _logger;
 
     public DistributedHostRegistry(
         IHostRegistry local,
         IHostPresenceStore presence,
+        IHostCapabilityStore capabilityStore,
         WisperInstanceIdentity identity,
         ILogger<DistributedHostRegistry> logger)
     {
         _local = local;
         _presence = presence;
+        _capabilityStore = capabilityStore;
         _identity = identity;
         _logger = logger;
     }
@@ -35,6 +40,16 @@ public sealed class DistributedHostRegistry : IHostRegistry
     {
         await _local.RegisterAsync(connection, ct);
         await _presence.SetOwnerAsync(connection.HostId, _identity.InstanceId, ct);
+
+        // Publish the capability snapshot so any instance can read it without routing to the tunnel
+        // owner. Lifecycle is tied to presence: both are written here and cleared together on unregister
+        // — a stale capability can never outlive its tunnel (task #17).
+        var snapshot = RegistryHostCapabilitySource.BuildSnapshot(connection.Capability);
+        if (snapshot is not null)
+        {
+            await _capabilityStore.SetAsync(connection.HostId, snapshot, ct);
+        }
+
         _logger.LogInformation(
             "presence: host {HostId} now owned by instance {InstanceId}", connection.HostId, _identity.InstanceId);
     }
@@ -43,16 +58,16 @@ public sealed class DistributedHostRegistry : IHostRegistry
     {
         _local.Unregister(connection);
 
-        // Presence clear is I/O but the interface is synchronous; run it in the background and log
-        // failures. Correctness does not hinge on it landing promptly: a later SetOwner (this host
-        // reconnecting anywhere) overwrites the record, and a stale record only ever points routing at
-        // an instance that will answer host_offline.
+        // Presence and capability clear is I/O but the interface is synchronous; run both in the
+        // background and log failures. Correctness does not hinge on them landing promptly: a later
+        // register (this host reconnecting anywhere) overwrites both records.
         var hostId = connection.HostId;
         _ = Task.Run(async () =>
         {
             try
             {
                 await _presence.ClearOwnerAsync(hostId, _identity.InstanceId);
+                await _capabilityStore.ClearAsync(hostId);
             }
             catch (Exception ex)
             {

@@ -117,9 +117,8 @@ builder.Services.AddSingleton<IHostTokenValidator, DbHostTokenValidator>();
 // enabled (docs/DESIGN.md §7, P8.1) — fronts them with the Redis pub/sub backplane so a host tunnel pinned
 // to one instance can be driven from any other. Consumers see the same IHostRegistry/ITunnelRelay either way.
 builder.Services.AddTunnelBackplane(builder.Configuration);
-// Reads a host's live advertised wisp capability (hello.capability) and force-closes its tunnel — the host
-// API validates its priced allow-list against the former and revokes-on-rotate via the latter (§6, §13).
-builder.Services.AddSingleton<IHostCapabilitySource, RegistryHostCapabilitySource>();
+// IHostCapabilitySource is registered inside AddTunnelBackplane: RegistryHostCapabilitySource (single
+// instance) or DistributedHostCapabilitySource (backplane enabled). Force-closes the tunnel on token rotate.
 builder.Services.AddSingleton<IAgentTunnelCloser, RegistryAgentTunnelCloser>();
 
 // Host registration + pricing surface (docs/API.md §6, P7.1): register a wisp host and issue its agent token
