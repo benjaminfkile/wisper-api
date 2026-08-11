@@ -127,6 +127,18 @@ So Redis is the **routing backplane** that lets any instance drive any host's tu
 
 The **same** hand-rolled `StackExchange.Redis` pub/sub mechanism routes **both** agent tunnels and consumer connections — a consumer WS pinned to instance B and a host tunnel pinned to instance A are bridged through Redis identically. This is exactly the piece SignalR's backplane would have provided; since we need it for the agent side regardless (SignalR can't help there), we build it once and use it everywhere (§6).
 
+### Cross-request state rule
+
+**The rule:** any value produced by one HTTP request and consumed by a later request — tickets, handshake tokens, pagination state, presence, idempotency records, caches that affect correctness — **must live in shared storage (Postgres or the backplane Redis), never in process memory.** Process-local state is only legitimate when it is bound to a physical resource on that instance (e.g. a live tunnel socket in `InMemoryHostRegistry`), and every read surface that consults such state **must also consult its distributed counterpart** (`IHostPresenceStore`) or route via the backplane.
+
+**Why:** the deployment runs multiple instances behind a round-robin proxy with no session affinity, so consecutive requests from the same client land on different instances. Ticket-handshake flows — mint a token on one request, redeem it on the next — are cross-instance **by construction**; browser WebSocket clients (which cannot send `Authorization` headers) rely on this pattern for every shell connection.
+
+**Case studies:**
+- **Shell tickets** — ticket minted on instance A, redeemed on instance B → 401 console failure. Fixed by moving the ticket store to Redis.
+- **Catalog liveness** — host-online check read from the local `InMemoryHostRegistry` instead of the distributed presence store → a host connected to a different instance appeared offline. Fixed by consulting `IHostPresenceStore`.
+
+**Review checklist:** does any new endpoint read state a previous request wrote? If yes: Postgres or Redis, not memory.
+
 ## 8. API surface (v0 sketch)
 
 All under the Wisper host: `https://<wisper-host>/…` (a separate host for dev).
