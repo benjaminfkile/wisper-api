@@ -40,6 +40,13 @@ public interface ILeaseRepository : IRepository
     /// </summary>
     Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns <c>true</c> when any lease (any status, active or historical) references
+    /// <paramref name="hostImageId"/>. Used to decide soft- vs hard-delete when a host omits an image
+    /// from its replace-list: rows with lease history must be soft-disabled to preserve FK integrity.
+    /// </summary>
+    Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default);
+
     /// <summary>Inserts a new lease and returns the stored row (with any DB-generated id).</summary>
     Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default);
 
