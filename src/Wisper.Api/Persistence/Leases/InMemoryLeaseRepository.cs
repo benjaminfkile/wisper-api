@@ -34,6 +34,9 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
         Task.FromResult<IReadOnlyList<Lease>>(
             Where(l => l.Status == LeaseStatus.Active).OrderBy(l => l.CreatedAt).ToList());
 
+    public Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default) =>
+        Task.FromResult(FindBy(l => l.HostImageId == hostImageId) is not null);
+
     public Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         var stored = lease.Id == Guid.Empty ? lease with { Id = Guid.NewGuid() } : lease;

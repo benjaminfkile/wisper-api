@@ -7,6 +7,7 @@ using Wisper.Api.Ledger;
 using Wisper.Api.Payouts;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Payouts;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
@@ -31,6 +32,7 @@ public class HostServiceTests
     {
         public InMemoryHostRepository Hosts { get; } = new();
         public InMemoryHostImageRepository Images { get; } = new();
+        public InMemoryLeaseRepository Leases { get; } = new();
         public InMemoryUserRepository Users { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
         public InMemoryHostPresenceStore PresenceStore { get; } = new();
@@ -49,8 +51,8 @@ public class HostServiceTests
                 ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
             Service = new HostService(
-                Hosts, Images, Users, Registry, PresenceStore, Capabilities, TunnelCloser, Payouts, RoleGranter,
-                Options.Create(Tunnel), Clock, NullLogger<HostService>.Instance);
+                Hosts, Images, Leases, Users, Registry, PresenceStore, Capabilities, TunnelCloser, Payouts,
+                RoleGranter, Options.Create(Tunnel), Clock, NullLogger<HostService>.Instance);
         }
 
         /// <summary>
@@ -975,5 +977,174 @@ public class HostServiceTests
 
         var row = Assert.Single(result.Data);
         Assert.False(row.Online);
+    }
+
+    // ---- Image replace-list + lease history (soft-delete) tests ------------------------------------
+
+    [Fact]
+    public async Task ReplaceImages_dropping_image_with_ended_lease_disables_it_instead_of_deleting()
+    {
+        // AC58/AC61: omitting an image that has lease history must soft-disable it (enabled=false)
+        // not hard-delete it, so the FK from the historical lease row stays valid.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("wisp-base:1", "ubuntu:24.04"));
+
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("wisp-base:1", 5, new[] { "none" }, 3600, null, null, null, true),
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var wispImage = (await fx.Images.ListByHostAsync(host.Id, enabledOnly: false))
+            .First(i => i.ImageRef == "wisp-base:1");
+
+        // Seed an ended lease against wisp-base:1.
+        var consumer = Guid.NewGuid();
+        var lease = await fx.Leases.CreateAsync(new Lease
+        {
+            ConsumerUserId = consumer,
+            HostId = host.Id,
+            HostImageId = wispImage.Id,
+            ImageRef = "wisp-base:1",
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 5,
+            Status = LeaseStatus.Ended,
+            EndReason = LeaseEndReason.Expired,
+            EndedAt = T0,
+            CreatedAt = T0,
+        });
+
+        // Replace with ubuntu only — wisp-base:1 is omitted.
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        }));
+
+        // Response contains only the submitted image (soft-disabled leftover excluded).
+        Assert.Single(result.Data);
+        Assert.Equal("ubuntu:24.04", result.Data[0].ImageRef);
+
+        // wisp-base:1 row still exists, but is disabled.
+        var wispStored = await fx.Images.GetByIdAsync(wispImage.Id);
+        Assert.NotNull(wispStored);
+        Assert.False(wispStored!.Enabled);
+
+        // Catalog (enabledOnly:true) no longer surfaces it.
+        var catalog = await fx.Images.ListByHostAsync(host.Id, enabledOnly: true);
+        Assert.DoesNotContain(catalog, i => i.ImageRef == "wisp-base:1");
+
+        // The historical lease FK target still resolves.
+        var storedLease = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.NotNull(storedLease);
+        Assert.Equal(wispImage.Id, storedLease!.HostImageId);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_dropping_image_with_active_lease_disables_it_not_deletes()
+    {
+        // AC58/AC61: an image with an active lease must also be soft-disabled — the active lease must
+        // keep its FK target and continue unaffected.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("wisp-base:1", "ubuntu:24.04"));
+
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("wisp-base:1", 5, new[] { "none" }, 3600, null, null, null, true),
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var wispImage = (await fx.Images.ListByHostAsync(host.Id, enabledOnly: false))
+            .First(i => i.ImageRef == "wisp-base:1");
+
+        // Seed an active lease against wisp-base:1.
+        var consumer = Guid.NewGuid();
+        var lease = await fx.Leases.CreateAsync(new Lease
+        {
+            ConsumerUserId = consumer,
+            HostId = host.Id,
+            HostImageId = wispImage.Id,
+            ImageRef = "wisp-base:1",
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 5,
+            Status = LeaseStatus.Active,
+            StartedAt = T0,
+            CreatedAt = T0,
+        });
+
+        // Replace with ubuntu only — wisp-base:1 omitted.
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        }));
+
+        Assert.Single(result.Data);
+        Assert.Equal("ubuntu:24.04", result.Data[0].ImageRef);
+
+        // wisp-base:1 is disabled, not deleted.
+        var wispStored = await fx.Images.GetByIdAsync(wispImage.Id);
+        Assert.NotNull(wispStored);
+        Assert.False(wispStored!.Enabled);
+
+        // Active lease is unaffected.
+        var storedLease = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.NotNull(storedLease);
+        Assert.Equal(LeaseStatus.Active, storedLease!.Status);
+        Assert.Equal(wispImage.Id, storedLease.HostImageId);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_dropping_image_with_no_lease_hard_deletes_it()
+    {
+        // AC59: images with zero lease references must be hard-deleted to keep the table clean.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("wisp-base:1", "ubuntu:24.04"));
+
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("wisp-base:1", 5, new[] { "none" }, 3600, null, null, null, true),
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var wispImage = (await fx.Images.ListByHostAsync(host.Id, enabledOnly: false))
+            .First(i => i.ImageRef == "wisp-base:1");
+
+        // No leases seeded against wisp-base:1.
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        }));
+
+        Assert.Single(result.Data);
+        Assert.Equal("ubuntu:24.04", result.Data[0].ImageRef);
+
+        // wisp-base:1 row is gone.
+        var wispStored = await fx.Images.GetByIdAsync(wispImage.Id);
+        Assert.Null(wispStored);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_is_idempotent_when_repeated_with_the_same_list()
+    {
+        // AC62: the same PUT applied twice must succeed and return consistent results.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("ubuntu:24.04"));
+
+        var request = new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
+        });
+
+        var first = await fx.Service.ReplaceImagesAsync(owner, host.Id, request);
+        var second = await fx.Service.ReplaceImagesAsync(owner, host.Id, request);
+
+        Assert.Single(first.Data);
+        Assert.Single(second.Data);
+        Assert.Equal("ubuntu:24.04", second.Data[0].ImageRef);
     }
 }

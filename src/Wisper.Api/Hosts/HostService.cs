@@ -5,6 +5,7 @@ using Wisper.Api.Infrastructure;
 using Wisper.Api.Payouts;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tunnel;
 using Wisper.Api.Tunnel.Backplane;
@@ -25,6 +26,7 @@ public sealed class HostService
 {
     private readonly IHostRepository _hosts;
     private readonly IHostImageRepository _images;
+    private readonly ILeaseRepository _leases;
     private readonly IUserRepository _users;
     private readonly IHostRegistry _registry;
     private readonly IHostPresenceStore _presenceStore;
@@ -39,6 +41,7 @@ public sealed class HostService
     public HostService(
         IHostRepository hosts,
         IHostImageRepository images,
+        ILeaseRepository leases,
         IUserRepository users,
         IHostRegistry registry,
         IHostPresenceStore presenceStore,
@@ -52,6 +55,7 @@ public sealed class HostService
     {
         _hosts = hosts;
         _images = images;
+        _leases = leases;
         _users = users;
         _registry = registry;
         _presenceStore = presenceStore;
@@ -246,20 +250,51 @@ public sealed class HostService
             validated.Add((imageRef, entry, networks));
         }
 
-        // Remove entries the replacement no longer contains.
-        foreach (var stale in existing.Where(i => !seen.Contains(i.ImageRef)))
-        {
-            await _images.DeleteAsync(stale.Id, ct);
-        }
-
         var now = _time.GetUtcNow();
-        foreach (var (imageRef, spec, networks) in validated)
+
+        // Remove entries the replacement no longer contains. Rows with lease history (active or ended)
+        // are soft-disabled so lease FK targets remain valid; rows with no lease references are hard-deleted.
+        try
         {
-            if (existingByRef.TryGetValue(imageRef, out var current))
+            foreach (var stale in existing.Where(i => !seen.Contains(i.ImageRef)))
             {
-                await _images.UpdateAsync(
-                    current with
+                if (await _leases.HasLeaseForImageAsync(stale.Id, ct))
+                {
+                    await _images.UpdateAsync(stale with { Enabled = false, UpdatedAt = now }, ct);
+                }
+                else
+                {
+                    await _images.DeleteAsync(stale.Id, ct);
+                }
+            }
+
+            foreach (var (imageRef, spec, networks) in validated)
+            {
+                if (existingByRef.TryGetValue(imageRef, out var current))
+                {
+                    await _images.UpdateAsync(
+                        current with
+                        {
+                            PriceCentsPerMin = spec.PriceCentsPerMin,
+                            Networks = networks,
+                            MaxTtlSeconds = spec.MaxTtlSeconds,
+                            MaxCpus = spec.MaxCpus,
+                            MaxMemoryMb = spec.MaxMemoryMb,
+                            MaxPids = spec.MaxPids,
+                            Cpus = spec.Cpus,
+                            MemoryMb = spec.MemoryMb,
+                            Gpus = spec.Gpus,
+                            Enabled = spec.Enabled ?? current.Enabled,
+                            UpdatedAt = now,
+                        },
+                        ct);
+                }
+                else
+                {
+                    await _images.CreateAsync(new HostImage
                     {
+                        HostId = hostId,
+                        ImageRef = imageRef,
                         PriceCentsPerMin = spec.PriceCentsPerMin,
                         Networks = networks,
                         MaxTtlSeconds = spec.MaxTtlSeconds,
@@ -269,37 +304,25 @@ public sealed class HostService
                         Cpus = spec.Cpus,
                         MemoryMb = spec.MemoryMb,
                         Gpus = spec.Gpus,
-                        Enabled = spec.Enabled ?? current.Enabled,
+                        Enabled = spec.Enabled ?? true,
+                        CreatedAt = now,
                         UpdatedAt = now,
-                    },
-                    ct);
-            }
-            else
-            {
-                await _images.CreateAsync(new HostImage
-                {
-                    HostId = hostId,
-                    ImageRef = imageRef,
-                    PriceCentsPerMin = spec.PriceCentsPerMin,
-                    Networks = networks,
-                    MaxTtlSeconds = spec.MaxTtlSeconds,
-                    MaxCpus = spec.MaxCpus,
-                    MaxMemoryMb = spec.MaxMemoryMb,
-                    MaxPids = spec.MaxPids,
-                    Cpus = spec.Cpus,
-                    MemoryMb = spec.MemoryMb,
-                    Gpus = spec.Gpus,
-                    Enabled = spec.Enabled ?? true,
-                    CreatedAt = now,
-                    UpdatedAt = now,
-                }, ct);
+                    }, ct);
+                }
             }
         }
+        catch (Exception ex) when (ex is not ApiException)
+        {
+            _logger.LogError(ex, "failed to apply image replace-list for host {HostId}", hostId);
+            throw new ApiException(ApiErrorCode.Internal, "Failed to apply the image list.");
+        }
 
+        // Return only the images in the submitted list; soft-disabled leftovers are an internal detail.
         var result = await _images.ListByHostAsync(hostId, enabledOnly: false, ct);
+        var responseImages = result.Where(i => seen.Contains(i.ImageRef)).ToList();
         var (maxCpus, maxMemoryMb) = ResolveHostCaps(capability);
         return new HostImagesResponse(
-            result.Select(HostImageView.From).ToList(), maxCpus, maxMemoryMb);
+            responseImages.Select(HostImageView.From).ToList(), maxCpus, maxMemoryMb);
     }
 
     /// <summary>

@@ -67,6 +67,14 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS(SELECT 1 FROM leases WHERE host_image_id = @hostImageId)",
+            new { hostImageId }, cancellationToken: ct));
+    }
+
     public async Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         const string sql = $"""
