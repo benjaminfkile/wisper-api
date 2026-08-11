@@ -49,6 +49,13 @@ public static class BackplaneServiceCollectionExtensions
             // In single-instance mode the local registry is authoritative, so this store stays empty and the
             // fast-path (local registry) always wins — no Redis I/O.
             services.AddSingleton<IHostPresenceStore, InMemoryHostPresenceStore>();
+            // Capability store: unused in single-instance mode (registry-backed source is authoritative),
+            // but registered so the concrete type is available if needed by tests.
+            services.AddSingleton<IHostCapabilityStore, InMemoryHostCapabilityStore>();
+            // IHostCapabilitySource: local registry only — single-instance, no backplane I/O.
+            services.AddSingleton<RegistryHostCapabilitySource>();
+            services.AddSingleton<IHostCapabilitySource>(sp =>
+                sp.GetRequiredService<RegistryHostCapabilitySource>());
             return services;
         }
 
@@ -75,6 +82,10 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IHostPresenceStore>(sp => new RedisHostPresenceStore(
                 sp.GetRequiredService<IConnectionMultiplexer>(),
                 sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
+            // Capability snapshots stored in Redis alongside presence — same lifecycle, different hash key.
+            services.AddSingleton<IHostCapabilityStore>(sp => new RedisHostCapabilityStore(
+                sp.GetRequiredService<IConnectionMultiplexer>(),
+                sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
             // Shell tickets stored in Redis so any instance can redeem a ticket minted by another instance.
             // Reuses the backplane's existing IConnectionMultiplexer — no second Redis connection.
             services.AddSingleton<IShellTicketStore>(sp => new RedisShellTicketStore(
@@ -86,14 +97,27 @@ public static class BackplaneServiceCollectionExtensions
             // In-process fabric + presence: a single multi-instance-shaped process (dev/test) with no Redis.
             services.AddSingleton<ITunnelBackplane, LoopbackTunnelBackplane>();
             services.AddSingleton<IHostPresenceStore, InMemoryHostPresenceStore>();
+            services.AddSingleton<IHostCapabilityStore, InMemoryHostCapabilityStore>();
             // Loopback mode is single-process: all "instances" share one DI container, so in-memory is fine.
             services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
         }
+
+        // Local capability source backed by the physical (local) registry — used both as the fast path
+        // inside DistributedHostCapabilitySource and to build the snapshot published on registration.
+        // Resolves InMemoryHostRegistry directly so it is not affected by the DistributedHostRegistry wrapper.
+        services.AddSingleton(sp => new RegistryHostCapabilitySource(
+            sp.GetRequiredService<InMemoryHostRegistry>()));
+
+        // IHostCapabilitySource: distributed wrapper (local fast path + backplane store fallback).
+        services.AddSingleton<IHostCapabilitySource>(sp => new DistributedHostCapabilitySource(
+            sp.GetRequiredService<RegistryHostCapabilitySource>(),
+            sp.GetRequiredService<IHostCapabilityStore>()));
 
         // Front the interfaces with the distributed wrappers, each delegating to the concrete local impl.
         services.AddSingleton<IHostRegistry>(sp => new DistributedHostRegistry(
             sp.GetRequiredService<InMemoryHostRegistry>(),
             sp.GetRequiredService<IHostPresenceStore>(),
+            sp.GetRequiredService<IHostCapabilityStore>(),
             sp.GetRequiredService<WisperInstanceIdentity>(),
             sp.GetRequiredService<ILogger<DistributedHostRegistry>>()));
 

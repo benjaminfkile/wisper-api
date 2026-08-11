@@ -27,7 +27,8 @@ public class DistributedHostRegistryTests
         local = new LocalHostRegistryStub();
         presence = new InMemoryHostPresenceStore();
         return new DistributedHostRegistry(
-            local, presence, new WisperInstanceIdentity(instanceId), NullLogger<DistributedHostRegistry>.Instance);
+            local, presence, new InMemoryHostCapabilityStore(),
+            new WisperInstanceIdentity(instanceId), NullLogger<DistributedHostRegistry>.Instance);
     }
 
     [Fact]
