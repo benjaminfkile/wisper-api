@@ -7,6 +7,7 @@ using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Host = Wisper.Api.Domain.Host;
 
 namespace Wisper.Api.Hosts;
@@ -26,6 +27,7 @@ public sealed class HostService
     private readonly IHostImageRepository _images;
     private readonly IUserRepository _users;
     private readonly IHostRegistry _registry;
+    private readonly IHostPresenceStore _presenceStore;
     private readonly IHostCapabilitySource _capabilities;
     private readonly IAgentTunnelCloser _tunnelCloser;
     private readonly PayoutService _payouts;
@@ -39,6 +41,7 @@ public sealed class HostService
         IHostImageRepository images,
         IUserRepository users,
         IHostRegistry registry,
+        IHostPresenceStore presenceStore,
         IHostCapabilitySource capabilities,
         IAgentTunnelCloser tunnelCloser,
         PayoutService payouts,
@@ -51,6 +54,7 @@ public sealed class HostService
         _images = images;
         _users = users;
         _registry = registry;
+        _presenceStore = presenceStore;
         _capabilities = capabilities;
         _tunnelCloser = tunnelCloser;
         _payouts = payouts;
@@ -138,12 +142,14 @@ public sealed class HostService
     public async Task<HostsMineResponse> ListMineAsync(Guid ownerUserId, CancellationToken ct = default)
     {
         var hosts = await _hosts.ListByOwnerAsync(ownerUserId, ct);
+        // One presence-store snapshot covers all owned hosts (one Redis round-trip for N hosts).
+        var presenceSnapshot = await PresenceSnapshotAsync(ct);
         var summaries = hosts.Select(h =>
         {
             // Surface the host's advertised per-lease caps so the offer editor prefills real numbers (task #583).
             // They live only on the live tunnel, so an offline host (no capability) resolves both to null.
             var (maxCpus, maxMemoryMb) = ResolveHostCaps(_capabilities.GetCapability(h.Id));
-            return HostSummary.From(h, IsOnline(h.Id), maxCpus, maxMemoryMb);
+            return HostSummary.From(h, IsOnline(h.Id, presenceSnapshot), maxCpus, maxMemoryMb);
         }).ToList();
         var earnings = await _payouts.GetEarningsAsync(ownerUserId, ct);
         return new HostsMineResponse(summaries, earnings);
@@ -372,8 +378,22 @@ public sealed class HostService
             ApiErrorCode.HostOffline,
             "The host must have a live agent tunnel so its images can be validated against wisp capability.");
 
-    /// <summary>True when the host has a live agent tunnel in the registry (authoritative presence).</summary>
-    private bool IsOnline(Guid hostId) => _registry.TryGet(hostId.ToString(), out _);
+    /// <summary>
+    /// True when the host has a live tunnel: fast path is the local registry (no I/O); fallback is the
+    /// distributed presence snapshot so a tunnel owned by another instance is still considered online.
+    /// </summary>
+    private bool IsOnline(Guid hostId, HashSet<string> presenceSnapshot)
+    {
+        var id = hostId.ToString();
+        return _registry.TryGet(id, out _) || presenceSnapshot.Contains(id);
+    }
+
+    /// <summary>One presence-store snapshot so ListMineAsync needs only one round-trip for all hosts.</summary>
+    private async Task<HashSet<string>> PresenceSnapshotAsync(CancellationToken ct)
+    {
+        var snapshot = await _presenceStore.SnapshotAsync(ct);
+        return snapshot.Select(p => p.HostId).ToHashSet(StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// Projects a host's advertised per-lease caps (wisp <c>limits.max_cpus</c>/<c>max_memory_mb</c>) into the

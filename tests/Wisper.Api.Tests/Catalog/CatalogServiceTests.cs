@@ -5,6 +5,7 @@ using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -28,7 +29,8 @@ public class CatalogServiceTests
         public FakeHostRegistry Registry { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public InMemoryLeaseRepository Leases { get; } = new();
-        public CatalogService Service => new(Hosts, Images, Registry, Capabilities, Leases);
+        public InMemoryHostPresenceStore PresenceStore { get; } = new();
+        public CatalogService Service => new(Hosts, Images, Registry, Capabilities, Leases, PresenceStore);
 
         public async Task<Host> AddHostAsync(
             string name, string region, DateTimeOffset createdAt,
@@ -737,5 +739,88 @@ public class CatalogServiceTests
 
         Assert.Null(await h.Service.GetHostAsync(Guid.NewGuid()));
         Assert.Null(await h.Service.GetHostAsync(suspended.Id));
+    }
+
+    // ---- Distributed liveness (cross-instance) tests ------------------------------------------------
+
+    [Fact]
+    public async Task List_includes_a_host_whose_tunnel_is_on_another_instance()
+    {
+        // Acceptance criterion #45: catalog on "instance B" (local registry empty) lists a host whose tunnel
+        // is owned by "instance A" (presence store has an owner).
+        var h = new Harness();
+        // online: false → local registry is empty (simulates instance B which does not own the socket).
+        var host = await h.AddHostAsync("remote", "us", T0, online: false);
+        // Presence store records the owner that instance A wrote — the distributed source of truth.
+        await h.PresenceStore.SetOwnerAsync(host.Id.ToString(), "instance-a");
+        // Provide capability so the catalog entry is complete (mirrors what instance A's registry holds).
+        h.Capabilities.Set(host.Id, new HostCapabilitySnapshot(
+            Array.Empty<string>(), Array.Empty<NetworkMode>(),
+            MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024));
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        var item = Assert.Single(page.Data);
+        Assert.Equal(host.Id, item.HostId);
+        Assert.True(item.Online);
+    }
+
+    [Fact]
+    public async Task Get_host_reports_online_when_tunnel_is_on_another_instance()
+    {
+        // Acceptance criterion #46: host detail online=true when presence store has an owner but local registry empty.
+        var h = new Harness();
+        var host = await h.AddHostAsync("remote", "us", T0, online: false);
+        await h.PresenceStore.SetOwnerAsync(host.Id.ToString(), "instance-a");
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.True(detail!.Online);
+    }
+
+    [Fact]
+    public async Task List_excludes_a_host_absent_from_both_local_registry_and_presence_store()
+    {
+        // Acceptance criterion #47: stale DB-online row with no live tunnel on any instance is still filtered out.
+        var h = new Harness();
+        // online: false → not in local registry; nothing written to presence store.
+        var host = await h.AddHostAsync("stale-remote", "us", T0, online: false);
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        Assert.Empty(page.Data);
+    }
+
+    [Fact]
+    public async Task Get_host_reports_offline_when_absent_from_both_local_registry_and_presence_store()
+    {
+        // Acceptance criterion #47: stale DB-online row with no owner anywhere → online=false on the detail page.
+        var h = new Harness();
+        var host = await h.AddHostAsync("stale-remote", "us", T0, status: HostStatus.Offline, online: false);
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.False(detail!.Online);
+    }
+
+    [Fact]
+    public async Task List_local_tunnel_bypasses_presence_store_fast_path()
+    {
+        // Acceptance criterion #49: when the tunnel is local the fast path hits (presence store returns empty
+        // but the host still appears). This is the existing single-instance behaviour unchanged.
+        var h = new Harness();
+        var host = await h.AddHostAsync("local", "us", T0, online: true);
+        // Presence store is empty — no SetOwnerAsync called. Local registry is the only source.
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        Assert.Single(page.Data);
     }
 }

@@ -11,6 +11,7 @@ using Wisper.Api.Persistence.Payouts;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -32,6 +33,7 @@ public class HostServiceTests
         public InMemoryHostImageRepository Images { get; } = new();
         public InMemoryUserRepository Users { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
+        public InMemoryHostPresenceStore PresenceStore { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public FakeAgentTunnelCloser TunnelCloser { get; } = new();
         public FakeUserRoleGranter RoleGranter { get; } = new();
@@ -47,7 +49,7 @@ public class HostServiceTests
                 ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
             Service = new HostService(
-                Hosts, Images, Users, Registry, Capabilities, TunnelCloser, Payouts, RoleGranter,
+                Hosts, Images, Users, Registry, PresenceStore, Capabilities, TunnelCloser, Payouts, RoleGranter,
                 Options.Create(Tunnel), Clock, NullLogger<HostService>.Instance);
         }
 
@@ -940,5 +942,38 @@ public class HostServiceTests
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
         Assert.False((await fx.Images.ListByHostAsync(host.Id))[0].Enabled); // stayed disabled
+    }
+
+    // ---- Distributed liveness (cross-instance) tests ------------------------------------------------
+
+    [Fact]
+    public async Task ListMine_reports_online_when_tunnel_is_on_another_instance()
+    {
+        // Acceptance criterion #48: hosts/mine online=true when presence store has an owner but local registry empty.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        // Local registry is empty (simulates instance B); presence store records an owner from instance A.
+        await fx.PresenceStore.SetOwnerAsync(host.Id.ToString(), "instance-a");
+
+        var result = await fx.Service.ListMineAsync(owner);
+
+        var row = Assert.Single(result.Data);
+        Assert.True(row.Online);
+    }
+
+    [Fact]
+    public async Task ListMine_reports_offline_when_absent_from_both_registry_and_presence_store()
+    {
+        // A host with no live tunnel on any instance must report online=false.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        // Neither local registry nor presence store have an entry.
+
+        var result = await fx.Service.ListMineAsync(owner);
+
+        var row = Assert.Single(result.Data);
+        Assert.False(row.Online);
     }
 }
