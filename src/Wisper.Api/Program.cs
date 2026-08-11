@@ -62,10 +62,9 @@ builder.Services.AddSingleton<ILeaseWalletGate, WalletLeaseGate>();
 builder.Services.AddSingleton<ILeaseService, LeaseService>();
 
 // Consumer interactive shell (docs/API.md §7, P4.4): the store that mints the single-use, ~30s,
-// (user,lease)-bound WS tickets behind POST /v1/leases/:id/shell-ticket. In-memory for now (a shell
-// ticket only needs to survive the seconds until the handshake on the same instance); a Redis-backed
-// store lands with the multi-instance backplane (P8.1).
-builder.Services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
+// (user,lease)-bound WS tickets behind POST /v1/leases/:id/shell-ticket. Registered by
+// AddTunnelBackplane: InMemoryShellTicketStore when single-instance (backplane disabled), or
+// RedisShellTicketStore when the Redis backplane is active — reusing the same IConnectionMultiplexer.
 
 // Metering engine (docs/DATA_MODEL.md §14, docs/PAYMENTS.md §4, P5.1): the manager-authoritative meter
 // that accrues billable lease-minutes over healthy intervals and, on a fixed tick (default 60s) and on
