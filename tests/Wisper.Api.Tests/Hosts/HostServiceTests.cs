@@ -946,6 +946,153 @@ public class HostServiceTests
         Assert.False((await fx.Images.ListByHostAsync(host.Id))[0].Enabled); // stayed disabled
     }
 
+    // ---- Disable-without-capability tests (task #19) ------------------------------------------------
+
+    [Fact]
+    public async Task PatchImage_disable_succeeds_when_image_absent_from_capability()
+    {
+        // AC63: PATCH {enabled:false} must succeed even when the image is no longer in the live
+        // wisp capability — that is exactly the case where the owner needs to retract the stale offer.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        // Host now advertises ubuntu:24.04 only — alpine:latest is absent from the capability.
+        fx.Capabilities.Set(host.Id, fx.Capability("ubuntu:24.04"));
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(null, null, null, null, null, null, Enabled: false));
+
+        Assert.False(patched.Enabled);
+        Assert.False((await fx.Images.GetByIdAsync(imageId))!.Enabled);
+    }
+
+    [Fact]
+    public async Task PatchImage_disable_succeeds_when_host_offline()
+    {
+        // AC64: PATCH {enabled:false} must not require a live tunnel — disabling is safe even when
+        // the host has gone offline entirely.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, true),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
+
+        fx.Capabilities.Clear(host.Id); // host is now offline
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(null, null, null, null, null, null, Enabled: false));
+
+        Assert.False(patched.Enabled);
+    }
+
+    [Fact]
+    public async Task PatchImage_enable_still_requires_live_capability()
+    {
+        // AC65: enabling must still validate against the live capability — the safe-disable
+        // exemption must not weaken the enable gate.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        // Seed the image row directly so we can test the gate without going through ReplaceImages.
+        await fx.Images.CreateAsync(new HostImage
+        {
+            HostId = host.Id,
+            ImageRef = "alpine:latest",
+            PriceCentsPerMin = 5,
+            Networks = new[] { NetworkMode.None },
+            MaxTtlSeconds = 3600,
+            Enabled = false,
+            CreatedAt = T0,
+            UpdatedAt = T0,
+        });
+        var imageId = (await fx.Images.ListByHostAsync(host.Id, enabledOnly: false))[0].Id;
+        // No capability set → host is offline.
+
+        var ex = await Assert.ThrowsAsync<ApiException>(
+            () => fx.Service.PatchImageAsync(
+                owner, host.Id, imageId,
+                new PatchImageRequest(null, null, null, null, null, null, Enabled: true)));
+
+        Assert.Equal(ApiErrorCode.HostOffline, ex.Code);
+        Assert.False((await fx.Images.GetByIdAsync(imageId))!.Enabled); // unchanged
+    }
+
+    [Fact]
+    public async Task PatchImage_disabled_row_price_change_skips_capability_check()
+    {
+        // AC67: a price change on an already-disabled row must not require capability membership —
+        // the row cannot reach the catalog until re-enabled (which re-validates), so the check is
+        // unnecessary friction.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        fx.Capabilities.Set(host.Id, fx.Capability("alpine:latest"));
+        await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, false),
+        }));
+        var imageId = (await fx.Images.ListByHostAsync(host.Id, enabledOnly: false))[0].Id;
+
+        fx.Capabilities.Clear(host.Id); // host goes offline — price change must still succeed
+
+        var patched = await fx.Service.PatchImageAsync(
+            owner, host.Id, imageId,
+            new PatchImageRequest(PriceCentsPerMin: 10, null, null, null, null, null, null));
+
+        Assert.False(patched.Enabled);
+        Assert.Equal(10, patched.PriceCentsPerMin);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_disabled_entry_exempt_from_capability_check()
+    {
+        // AC66: a PUT entry with enabled:false must not fail capability-membership validation —
+        // the same safe-disable principle as PATCH.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        // Capability only allows ubuntu:24.04 — alpine:latest is absent.
+        fx.Capabilities.Set(host.Id, fx.Capability("ubuntu:24.04"));
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, false),
+        }));
+
+        Assert.False(Assert.Single(result.Data).Enabled);
+    }
+
+    [Fact]
+    public async Task ReplaceImages_disabled_entry_succeeds_when_host_offline()
+    {
+        // Corollary of AC64/AC66: a PUT list composed entirely of disabled entries must not
+        // require a live tunnel — no enabled entry triggers the capability gate.
+        var fx = new Fixture();
+        var owner = Guid.NewGuid();
+        var host = await fx.SeedHostAsync(owner);
+        // No capability set → host is offline.
+
+        var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
+        {
+            new ImageUpsert("alpine:latest", 5, new[] { "none" }, 3600, null, null, null, false),
+        }));
+
+        Assert.False(Assert.Single(result.Data).Enabled);
+    }
+
     // ---- Distributed liveness (cross-instance) tests ------------------------------------------------
 
     [Fact]

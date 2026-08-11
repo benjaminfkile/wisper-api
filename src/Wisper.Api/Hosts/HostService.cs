@@ -216,7 +216,6 @@ public sealed class HostService
         Guid ownerUserId, Guid hostId, ReplaceImagesRequest request, CancellationToken ct = default)
     {
         var host = await LoadOwnedHostAsync(ownerUserId, hostId, ct);
-        var capability = RequireCapability(hostId);
         var connectStatus = await OwnerConnectStatusAsync(host, ct);
 
         var existing = await _images.ListByHostAsync(hostId, enabledOnly: false, ct);
@@ -225,6 +224,7 @@ public sealed class HostService
         var desired = request.Images ?? Array.Empty<ImageUpsert>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var validated = new List<(string ImageRef, ImageUpsert Spec, IReadOnlyList<NetworkMode> Networks)>(desired.Count);
+        HostCapabilitySnapshot? capability = null;
         foreach (var entry in desired)
         {
             var imageRef = RequireImageRef(entry.ImageRef);
@@ -237,14 +237,21 @@ public sealed class HostService
             }
 
             var networks = ParseNetworks(entry.Networks);
-            ValidateAgainstCapability(
-                capability, imageRef, entry.PriceCentsPerMin, entry.MaxTtlSeconds, networks,
-                entry.MaxCpus, entry.MaxMemoryMb, entry.MaxPids, entry.Cpus, entry.MemoryMb, entry.Gpus);
 
             // A new entry defaults enabled; an update keeps the stored flag unless overridden. Charging a
             // non-Connect-enabled owner's image is rejected here so the online gate stays consistent (§6).
+            // Capability validation (live tunnel + allow-list) is skipped for disabled entries — disabling is
+            // always safe; the owner may need to retract a stale offer the host no longer supports (docs/API.md §6).
             var enabled = entry.Enabled
                 ?? (existingByRef.TryGetValue(imageRef, out var current) ? current.Enabled : true);
+            if (enabled)
+            {
+                var cap = capability ??= RequireCapability(hostId);
+                ValidateAgainstCapability(
+                    cap, imageRef, entry.PriceCentsPerMin, entry.MaxTtlSeconds, networks,
+                    entry.MaxCpus, entry.MaxMemoryMb, entry.MaxPids, entry.Cpus, entry.MemoryMb, entry.Gpus);
+            }
+
             RejectIfChargesRequireConnect(connectStatus, enabled, entry.PriceCentsPerMin, imageRef);
 
             validated.Add((imageRef, entry, networks));
@@ -327,14 +334,15 @@ public sealed class HostService
 
     /// <summary>
     /// Patches one priced image's price/enable/limits/networks (docs/API.md §6, <c>PATCH …/images/:imageId</c>).
-    /// The resulting entry is re-validated live against the host's advertised capability; a host with no live
-    /// tunnel is <c>host_offline</c>. Omitted fields keep their stored value; the image ref is immutable.
+    /// When the effective result is enabled the entry is re-validated live against the host's advertised capability
+    /// and a host with no live tunnel is <c>host_offline</c>. A patch whose effective result is disabled skips
+    /// both the live-tunnel gate and capability membership — disabling is always safe (the owner may need to
+    /// retract a stale offer the host no longer supports). Omitted fields keep their stored value; the image ref is immutable.
     /// </summary>
     public async Task<HostImageView> PatchImageAsync(
         Guid ownerUserId, Guid hostId, Guid imageId, PatchImageRequest request, CancellationToken ct = default)
     {
         var host = await LoadOwnedHostAsync(ownerUserId, hostId, ct);
-        var capability = RequireCapability(hostId);
         var connectStatus = await OwnerConnectStatusAsync(host, ct);
 
         var image = await _images.GetByIdAsync(imageId, ct);
@@ -354,9 +362,16 @@ public sealed class HostService
         var gpus = request.Gpus ?? image.Gpus;
         var enabled = request.Enabled ?? image.Enabled;
 
-        ValidateAgainstCapability(
-            capability, image.ImageRef, price, maxTtl, networks, maxCpus, maxMemoryMb, maxPids,
-            cpus, memoryMb, gpus);
+        // Capability validation (live tunnel required + allow-list membership) only when the effective
+        // result is enabled. Disabling is always safe — the owner may need to retract a stale offer even
+        // when the host is offline or the image is no longer in the wisp allow-list (docs/API.md §6).
+        if (enabled)
+        {
+            var capability = RequireCapability(hostId);
+            ValidateAgainstCapability(
+                capability, image.ImageRef, price, maxTtl, networks, maxCpus, maxMemoryMb, maxPids,
+                cpus, memoryMb, gpus);
+        }
 
         // Enabling a non-zero-priced image requires Connect onboarding (§6): reject before persisting so a
         // non-Connect owner can never move into the earning arm of the online gate mid-tunnel.
