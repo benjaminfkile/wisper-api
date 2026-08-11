@@ -52,6 +52,12 @@ public class LeaseServiceTests
             Host = await Hosts.UpdateAsync(Host! with { IsolationLevels = levels });
         }
 
+        /// <summary>Sets the seeded host's advertised levels and its declared default_isolation together.</summary>
+        public async Task SetHostIsolationAsync(string defaultIsolation, params string[] levels)
+        {
+            Host = await Hosts.UpdateAsync(Host! with { IsolationLevels = levels, DefaultIsolation = defaultIsolation });
+        }
+
         /// <summary>Declares the live capability (optionally carrying the container OS) for the seeded host.</summary>
         public void SetHostOs(string? os) => Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
             Array.Empty<string>(), Array.Empty<NetworkMode>(),
@@ -839,16 +845,32 @@ public class LeaseServiceTests
     }
 
     [Fact]
-    public async Task Create_defaults_isolation_to_shared_when_omitted()
+    public async Task Create_defaults_isolation_to_shared_when_omitted_and_host_declares_no_default()
     {
         var fx = new Fixture();
         await fx.SeedImageAsync();
 
+        // The seeded host advertises only shared and declares no stronger default → omitted falls to shared.
         var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: null));
 
         Assert.Equal("shared", created.Lease.Isolation);
         var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
         Assert.Equal("shared", spec.Isolation); // passes through the tunnel frame
+    }
+
+    [Fact]
+    public async Task Create_defaults_isolation_to_the_hosts_declared_default_when_omitted()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        // Host offers all three tiers and leads with vm (its wisp default_isolation).
+        await fx.SetHostIsolationAsync("vm", "shared", "sandboxed", "vm");
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(isolation: null));
+
+        Assert.Equal("vm", created.Lease.Isolation);
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.Equal("vm", spec.Isolation); // the host's declared default rides the tunnel frame
     }
 
     [Theory]
