@@ -221,15 +221,61 @@ public class TunnelDisconnectCoordinatorTests
     }
 
     [Fact]
-    public async Task A_heartbeat_with_no_pending_grace_does_not_reconcile()
+    public async Task Steady_state_heartbeat_ends_active_unreported_lease_as_container_lost()
     {
+        // A silently-dead container: the manager has an active lease but the host does not report it.
+        // The continuous reconciliation path must end it as container_lost WITHOUT a tunnel disconnect.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
-        // Steady-state heartbeat (no prior disconnect) must leave an active lease untouched.
+        // No disconnect ever happened — this is a steady-state heartbeat that omits the lease.
         await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, Array.Empty<Guid>());
 
-        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+        var ended = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, ended!.Status);
+        Assert.Equal(LeaseEndReason.ContainerLost, ended.EndReason);
+    }
+
+    [Fact]
+    public async Task Steady_state_heartbeat_with_matching_lease_set_performs_zero_writes()
+    {
+        // Steady-state (reported set == active set) must produce no DB writes — no updated_at churn.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        var before = await fx.ReloadAsync(lease.Id);
+
+        // Heartbeat reports the lease as live — perfect match with the manager's active set.
+        await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
+
+        var after = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(before, after); // record equality: every field identical, no write occurred
+    }
+
+    [Fact]
+    public async Task Steady_state_heartbeat_revives_host_disconnect_ended_lease()
+    {
+        // A live host contract with no active manager lease: the lease was ended as host_disconnect
+        // (simulating drift — e.g. a manager restart mid-flight) but the container kept running.
+        // A steady-state heartbeat (no pending grace or post-grace flags) must revive it.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Directly set the lease to Ended/host_disconnect to simulate drift without going through the
+        // coordinator's disconnect path (no pending grace or post-grace flags remain).
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.HostDisconnect, endedAt: T0);
+        Assert.False(fx.Coordinator.HasPendingGrace(fx.HostKey));
+        Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+
+        // Steady-state heartbeat reports the lease as still live → continuous path must revive it.
+        fx.Clock.Advance(TimeSpan.FromSeconds(15));
+        await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
+
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, revived!.Status);
+        Assert.Null(revived.EndReason);
+        Assert.Null(revived.EndedAt);
     }
 
     [Fact]

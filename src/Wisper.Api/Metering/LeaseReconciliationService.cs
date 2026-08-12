@@ -230,6 +230,112 @@ public sealed class LeaseReconciliationService
         return new PostGraceReconcileOutcome(revived, orphaned);
     }
 
+    /// <summary>
+    /// On every heartbeat (steady-state and post-grace fall-through): set-diff the agent's reported live
+    /// leases (<paramref name="reportedLeaseIds"/>) against the manager's <c>active</c> set for
+    /// <paramref name="hostId"/> and heal any drift.
+    /// <list type="bullet">
+    /// <item><b>Active not reported</b> → silent container death: flush billing to <c>now</c> and end as
+    /// <c>container_lost</c>, freeing capacity without a tunnel disconnect.</item>
+    /// <item><b>Reported not active</b> → live contract without a manager lease: revive if it was ended as
+    /// <c>host_disconnect</c> (the container kept running); flag orphaned otherwise so the host tears it
+    /// down.</item>
+    /// <item><b>Equal sets</b> → steady-state fast-path: <b>zero writes</b> — mirrors the
+    /// <see cref="Wisper.Api.Tunnel.HostPresenceService"/> no-change guard.</item>
+    /// </list>
+    /// Suspended leases are left untouched; they are managed by the grace-window path.
+    /// Idempotent: repeated heartbeats with the same reported set converge on a single outcome.
+    /// </summary>
+    public async Task<HeartbeatReconcileOutcome> ReconcileHeartbeatAsync(
+        Guid hostId,
+        IReadOnlyCollection<Guid> reportedLeaseIds,
+        CancellationToken ct = default)
+    {
+        var reported = reportedLeaseIds as IReadOnlySet<Guid> ?? new HashSet<Guid>(reportedLeaseIds);
+
+        // Only consider active (not suspended) leases; suspended ones are under grace-window management.
+        var activeLeases = (await _leases.ListActiveByHostAsync(hostId, ct))
+            .Where(l => l.Status == LeaseStatus.Active)
+            .ToList();
+
+        var activeIds = new HashSet<Guid>(activeLeases.Select(l => l.Id));
+
+        // Steady-state fast-path: both sets equal → nothing to do, zero writes.
+        if (reported.SetEquals(activeIds))
+        {
+            return HeartbeatReconcileOutcome.Empty;
+        }
+
+        var now = _time.GetUtcNow();
+        var containerLost = new List<Guid>();
+        var revived = new List<Guid>();
+        var orphaned = new List<Guid>();
+
+        // Active leases the host no longer reports → silent container death.
+        foreach (var lease in activeLeases)
+        {
+            if (reported.Contains(lease.Id))
+            {
+                continue;
+            }
+
+            await _meter.FlushLeaseAsync(lease, now, ct);
+            await _leases.TransitionStateAsync(
+                lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.ContainerLost, endedAt: now, ct: ct);
+            await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+            containerLost.Add(lease.Id);
+            _logger.LogInformation(
+                "lease {LeaseId} ended (container_lost) on heartbeat for host {HostId}; finalized at {Now:O}",
+                lease.Id, hostId, now);
+        }
+
+        // Reported contracts the manager has no active lease for → check for revival or orphan.
+        foreach (var leaseId in reported)
+        {
+            if (activeIds.Contains(leaseId))
+            {
+                continue; // already live in the manager — no action needed
+            }
+
+            var lease = await _leases.GetByIdAsync(leaseId, ct);
+
+            if (lease is null || lease.HostId != hostId)
+            {
+                orphaned.Add(leaseId);
+                continue;
+            }
+
+            // Suspended is under grace management; already active is consistent — skip both.
+            if (lease.Status is LeaseStatus.Active or LeaseStatus.Suspended)
+            {
+                continue;
+            }
+
+            if (lease.Status != LeaseStatus.Ended || lease.EndReason != LeaseEndReason.HostDisconnect)
+            {
+                orphaned.Add(leaseId);
+                continue;
+            }
+
+            // Container kept running through an agent restart / grace expiry: revive with the same
+            // semantics as RevivePostGraceAsync — billing restarts at now, offline gap never billed.
+            var revival = lease with
+            {
+                Status = LeaseStatus.Active,
+                EndReason = null,
+                EndedAt = null,
+                LastMeteredAt = now,
+            };
+            await _leases.UpdateAsync(revival, ct);
+            revived.Add(leaseId);
+            _logger.LogInformation(
+                "lease {LeaseId} revived on heartbeat for host {HostId}; billing restarts at {Now:O}",
+                leaseId, hostId, now);
+        }
+
+        return new HeartbeatReconcileOutcome(containerLost, revived, orphaned);
+    }
+
     private async Task EndSuspendedAsync(
         Lease lease, LeaseEndReason reason, DateTimeOffset lastHealthyAt, CancellationToken ct)
     {
@@ -265,3 +371,21 @@ public sealed record ReconcileOutcome(
 public sealed record PostGraceReconcileOutcome(
     IReadOnlyList<Guid> Revived,
     IReadOnlyList<Guid> Orphaned);
+
+/// <summary>
+/// The result of <see cref="LeaseReconciliationService.ReconcileHeartbeatAsync"/>: lease ids ended as
+/// <c>container_lost</c> (active but not reported), lease ids revived back to <c>active</c> (reported but
+/// ended as <c>host_disconnect</c>), and lease ids orphaned (reported but not reviviable).
+/// </summary>
+public sealed record HeartbeatReconcileOutcome(
+    IReadOnlyList<Guid> ContainerLost,
+    IReadOnlyList<Guid> Revived,
+    IReadOnlyList<Guid> Orphaned)
+{
+    /// <summary>Whether any drift was found and healed (false in the steady-state no-op path).</summary>
+    public bool HasChanges => ContainerLost.Count > 0 || Revived.Count > 0 || Orphaned.Count > 0;
+
+    /// <summary>The singleton empty outcome returned by the steady-state fast-path (zero writes).</summary>
+    public static readonly HeartbeatReconcileOutcome Empty =
+        new(Array.Empty<Guid>(), Array.Empty<Guid>(), Array.Empty<Guid>());
+}
