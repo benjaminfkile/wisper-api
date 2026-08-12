@@ -203,17 +203,20 @@ public sealed class TunnelDisconnectCoordinator
     }
 
     /// <summary>
-    /// On the first heartbeat after a reconnect: reconciles the manager's lease state against what the agent
-    /// actually runs (docs/TUNNEL.md §8). Two paths:
+    /// On every heartbeat: reconciles the manager's lease state against what the agent actually runs
+    /// (docs/TUNNEL.md §8). Three paths, each falling through to the continuous reconciliation step:
     /// <list type="bullet">
     /// <item><b>Within grace</b> — set-diff the reported live leases against the host's <c>suspended</c> set
-    /// (resume the ones still present, end <c>container_lost</c> the ones gone).</item>
+    /// (resume the ones still present, end <c>container_lost</c> the ones gone). Returns early — the grace
+    /// path already yields a fully consistent active set.</item>
     /// <item><b>Post-grace</b> — leases were already ended as <c>host_disconnect</c> when grace expired, but
     /// the containers kept running. Revive any live contracts that map to those ended leases so the manager
-    /// count matches what the host actually has.</item>
+    /// count matches what the host actually has. Falls through to the continuous step.</item>
+    /// <item><b>Continuous (every beat)</b> — set-diff the reported set against the manager's <c>active</c>
+    /// set for the host: end silently-dead containers as <c>container_lost</c>, revive live contracts that
+    /// were ended as <c>host_disconnect</c>, flag true orphans. Zero writes in the steady-state common case
+    /// (reported set == active set). A no-op for a non-Guid host id.</item>
     /// </list>
-    /// Steady-state heartbeats (no pending grace and no post-grace flag) are a no-op. A no-op for a
-    /// non-Guid host id.
     /// </summary>
     public async Task OnHeartbeatAsync(
         string hostId, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default)
@@ -240,6 +243,7 @@ public sealed class TunnelDisconnectCoordinator
             {
                 _logger.LogError(ex, "reconnect: reconciling leases for host {HostId} failed", host);
             }
+            // The grace path yields a fully consistent active set; no further reconciliation needed.
             return;
         }
 
@@ -261,6 +265,25 @@ public sealed class TunnelDisconnectCoordinator
             {
                 _logger.LogError(ex, "post-grace reconnect: reviving leases for host {HostId} failed", host);
             }
+        }
+
+        // Continuous path: runs on every non-grace heartbeat (post-grace fall-through and steady-state).
+        // Set-diff the reported set against the manager's active set and heal any drift: silently-dead
+        // containers are ended (container_lost), live contracts without a manager lease are revived or
+        // orphaned. Zero writes in the common case (reported set == active set).
+        try
+        {
+            var heartbeat = await _reconciler.ReconcileHeartbeatAsync(host, liveLeaseIds, ct);
+            if (heartbeat.HasChanges)
+            {
+                _logger.LogInformation(
+                    "host {HostId} heartbeat reconciled: {Lost} container_lost, {Revived} revived, {Orphaned} orphaned",
+                    host, heartbeat.ContainerLost.Count, heartbeat.Revived.Count, heartbeat.Orphaned.Count);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "heartbeat: continuous reconciliation for host {HostId} failed", host);
         }
     }
 
