@@ -95,6 +95,7 @@ builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
 // the POST /stripe/webhook ingest pipeline — persist-then-process into stripe_events (PK dedupe), then
 // dispatch to idempotent, order-independent handlers with retry-safe failure recording. The payment/
 // account/transfer handlers are stubs here; later billing tasks (P6.2+) fill in the ledger effects.
+// The dev environment carries Stripe *test* keys (sk_test_/whsec_) in Secrets Manager; unset ⇒ fail-closed.
 builder.Services.AddWisperPayments(builder.Configuration);
 
 // Scheduled host payouts (docs/PAYMENTS.md §6, P6.5): a background loop (default daily) that, per host whose
