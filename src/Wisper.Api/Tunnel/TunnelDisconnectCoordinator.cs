@@ -33,6 +33,12 @@ public sealed class TunnelDisconnectCoordinator
     private readonly IHostPresence? _presence;
     private readonly ConcurrentDictionary<Guid, GraceEntry> _grace = new();
 
+    // Hosts that reconnected AFTER their grace window already expired: their leases were ended as
+    // host_disconnect but the containers kept running (wisp stops the agent, not the containers). The first
+    // heartbeat after such a reconnect must revive any matching leases so the manager count stays accurate
+    // (docs/TUNNEL.md §8). Used as a concurrent set; the bool value is always true.
+    private readonly ConcurrentDictionary<Guid, bool> _pendingPostGraceReconcile = new();
+
     public TunnelDisconnectCoordinator(
         LeaseReconciliationService reconciler,
         IOptionsMonitor<TunnelOptions> options,
@@ -68,6 +74,10 @@ public sealed class TunnelDisconnectCoordinator
         {
             return Task.CompletedTask;
         }
+
+        // A new disconnect resets any pending post-grace state from a prior reconnect — the current
+        // disconnect will manage the lease set from here on.
+        _pendingPostGraceReconcile.TryRemove(host, out _);
 
         SuspendOutcome outcome;
         try
@@ -136,6 +146,15 @@ public sealed class TunnelDisconnectCoordinator
             _logger.LogInformation(
                 "host {HostId} grace expired with no reconnect: {Count} lease(s) ended (host_disconnect)",
                 host, ended);
+
+            // Mark the host for post-grace reconciliation: if it reconnects later, its containers may still
+            // be running (wisp stops the agent, not the containers). The first heartbeat will revive any
+            // live contracts that map to the leases we just ended, keeping the manager count accurate
+            // (docs/TUNNEL.md §8).
+            if (ended > 0)
+            {
+                _pendingPostGraceReconcile[host] = true;
+            }
         }
         catch (Exception ex)
         {
@@ -184,35 +203,76 @@ public sealed class TunnelDisconnectCoordinator
     }
 
     /// <summary>
-    /// On the first heartbeat after a reconnect: set-diff the agent's reported live leases against the
-    /// host's suspended set — resume the ones still present, end (<c>container_lost</c>) the ones gone
-    /// (docs/TUNNEL.md §8). A no-op when there is no pending grace window (steady-state heartbeats do not
-    /// reconcile here) or for a non-Guid host id.
+    /// On the first heartbeat after a reconnect: reconciles the manager's lease state against what the agent
+    /// actually runs (docs/TUNNEL.md §8). Two paths:
+    /// <list type="bullet">
+    /// <item><b>Within grace</b> — set-diff the reported live leases against the host's <c>suspended</c> set
+    /// (resume the ones still present, end <c>container_lost</c> the ones gone).</item>
+    /// <item><b>Post-grace</b> — leases were already ended as <c>host_disconnect</c> when grace expired, but
+    /// the containers kept running. Revive any live contracts that map to those ended leases so the manager
+    /// count matches what the host actually has.</item>
+    /// </list>
+    /// Steady-state heartbeats (no pending grace and no post-grace flag) are a no-op. A no-op for a
+    /// non-Guid host id.
     /// </summary>
     public async Task OnHeartbeatAsync(
         string hostId, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default)
     {
-        if (!Guid.TryParse(hostId, out var host) || !_grace.TryRemove(host, out var entry))
+        if (!Guid.TryParse(hostId, out var host))
         {
             return;
         }
 
-        entry.Cts.Cancel();
-        entry.Cts.Dispose();
-        try
+        // Primary path: reconnect within the grace window — the leases are still suspended and the agent
+        // reported its live set, so we can set-diff and resume/end accordingly.
+        if (_grace.TryRemove(host, out var entry))
         {
-            var outcome = await _reconciler.ReconcileHostAsync(host, liveLeaseIds, entry.LastHealthyAt, ct);
-            _logger.LogInformation(
-                "host {HostId} reconnect reconciled: {Resumed} resumed, {Lost} container_lost",
-                host, outcome.Resumed.Count, outcome.ContainerLost.Count);
+            entry.Cts.Cancel();
+            entry.Cts.Dispose();
+            try
+            {
+                var outcome = await _reconciler.ReconcileHostAsync(host, liveLeaseIds, entry.LastHealthyAt, ct);
+                _logger.LogInformation(
+                    "host {HostId} reconnect reconciled: {Resumed} resumed, {Lost} container_lost",
+                    host, outcome.Resumed.Count, outcome.ContainerLost.Count);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "reconnect: reconciling leases for host {HostId} failed", host);
+            }
+            return;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        // Secondary path: reconnect AFTER grace expiry. Leases were ended as host_disconnect, but the
+        // containers kept running (wisp stops the agent, not the containers). Revive any live contracts that
+        // map to those ended leases so the manager capacity count matches what the host actually has
+        // (docs/TUNNEL.md §8). Without this, the catalog advertises free capacity while wisp is full.
+        if (_pendingPostGraceReconcile.TryRemove(host, out _))
         {
-            _logger.LogError(ex, "reconnect: reconciling leases for host {HostId} failed", host);
+            var reconnectAt = _time.GetUtcNow();
+            try
+            {
+                var outcome = await _reconciler.RevivePostGraceAsync(host, liveLeaseIds, reconnectAt, ct);
+                _logger.LogInformation(
+                    "host {HostId} post-grace reconnect reconciled: {Revived} revived, {Orphaned} orphaned",
+                    host, outcome.Revived.Count, outcome.Orphaned.Count);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "post-grace reconnect: reviving leases for host {HostId} failed", host);
+            }
         }
     }
 
     /// <summary>Whether a grace window is currently pending for <paramref name="hostId"/> (diagnostics/tests).</summary>
     public bool HasPendingGrace(string hostId) =>
         Guid.TryParse(hostId, out var host) && _grace.ContainsKey(host);
+
+    /// <summary>
+    /// Whether a post-grace reconciliation is pending for <paramref name="hostId"/> — the host reconnected
+    /// after its grace window expired and the first heartbeat has not yet run the revival pass
+    /// (diagnostics/tests).
+    /// </summary>
+    public bool HasPendingPostGraceReconcile(string hostId) =>
+        Guid.TryParse(hostId, out var host) && _pendingPostGraceReconcile.ContainsKey(host);
 }

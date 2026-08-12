@@ -244,4 +244,132 @@ public class TunnelDisconnectCoordinatorTests
 
         Assert.False(fx.Coordinator.HasPendingGrace("dev-host-alpha"));
     }
+
+    // ---- Post-grace reconnect reconciliation (docs/TUNNEL.md §8) ----
+
+    [Fact]
+    public async Task Grace_expiry_marks_the_host_for_post_grace_reconciliation()
+    {
+        var fx = await ReadyAsync();
+        await fx.SeedActiveLeaseAsync();
+
+        var graceTask = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+
+        // No reconnect: grace fires and the lease is ended.
+        fx.Grace.Fire();
+        await graceTask;
+
+        Assert.False(fx.Coordinator.HasPendingGrace(fx.HostKey));
+        Assert.True(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+    }
+
+    [Fact]
+    public async Task PostGrace_reconnect_with_live_contract_revives_the_lease()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Disconnect → grace → grace expires → lease ended as host_disconnect.
+        var graceTask = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+        fx.Grace.Fire();
+        await graceTask;
+
+        var endedLease = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, endedLease!.Status);
+        Assert.Equal(LeaseEndReason.HostDisconnect, endedLease.EndReason);
+        Assert.Equal(HostStatus.Offline, await fx.HostStatusAsync());
+
+        // Host reconnects after grace (container still running).
+        fx.Coordinator.OnReconnected(fx.HostKey);
+        Assert.True(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+
+        // First heartbeat reports the lease as still live → revive.
+        fx.Clock.Advance(TimeSpan.FromSeconds(15));
+        await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
+
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, revived!.Status);
+        Assert.Null(revived.EndReason);
+        Assert.Null(revived.EndedAt);
+        Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+    }
+
+    [Fact]
+    public async Task PostGrace_reconnect_capacity_count_matches_after_revival()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Grace expiry: lease ended, capacity appears free.
+        var graceTask = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+        fx.Grace.Fire();
+        await graceTask;
+        Assert.Equal(0, await fx.Leases.CountActiveByHostAsync(fx.HostId));
+
+        // Post-grace reconnect with live contract.
+        fx.Coordinator.OnReconnected(fx.HostKey);
+        await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
+
+        // Manager count now reflects the running container — no phantom free slot.
+        Assert.Equal(1, await fx.Leases.CountActiveByHostAsync(fx.HostId));
+    }
+
+    [Fact]
+    public async Task PostGrace_reconnect_with_no_live_contracts_leaves_lease_ended()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        var graceTask = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+        fx.Grace.Fire();
+        await graceTask;
+
+        // Host reconnects but reports no live contracts (container actually died).
+        fx.Coordinator.OnReconnected(fx.HostKey);
+        await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, Array.Empty<Guid>());
+
+        // Lease stays ended — there is nothing to revive.
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.HostDisconnect, stored.EndReason);
+        Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+    }
+
+    [Fact]
+    public async Task PostGrace_flag_is_cleared_on_a_fresh_disconnect()
+    {
+        var fx = await ReadyAsync();
+        await fx.SeedActiveLeaseAsync();
+
+        // First cycle: grace fires, post-grace flag is set.
+        var graceTask1 = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+        fx.Grace.Fire();
+        await graceTask1;
+        Assert.True(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+
+        // The host disconnects again before sending a heartbeat — the flag must be reset.
+        _ = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0.AddSeconds(15));
+        Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+    }
+
+    [Fact]
+    public async Task Grace_expiry_without_ended_leases_does_not_set_post_grace_flag()
+    {
+        // If the host had no live leases when grace fired (e.g. all were already released), there is
+        // nothing to revive, so the post-grace flag must not be set.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        var graceTask = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0);
+
+        // Release the lease while the grace timer is running (consumer cancelled it).
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        fx.Grace.Fire();
+        await graceTask;
+
+        // Grace fires but nothing was suspended to end, so ended = 0 → no post-grace flag.
+        Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
+    }
 }

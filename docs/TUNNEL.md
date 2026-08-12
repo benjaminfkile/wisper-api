@@ -157,6 +157,8 @@ Tunnel loss must be handled without either **billing a consumer through a blind 
 
 **On grace expiry (no reconnect):** end all that host's suspended leases (`end_reason = host_disconnect`), finalize billing at last-healthy time, mark the host `offline` (so the catalog drops it), stamping last-seen at last-healthy. wisp's TTL guarantees the abandoned containers are reaped regardless. A tunnel that closes with **no leases to protect** has nothing to wait for, so the host is marked `offline` immediately rather than arming an empty grace window. Marking `offline` never clears an admin **suspension** — a suspended host stays suspended.
 
+**On reconnect after grace expiry (post-grace path):** an operator restart or a prolonged outage may push the reconnect past the grace window, so the manager has already ended the leases as `host_disconnect`. However, the **containers are still running on the host** (wispd/agent stops, not the containers). If the agent's first `host.heartbeat` after reconnect reports live contracts that map to those `host_disconnect`-ended leases, Wisper **revives** them — back to `active`, meter watermark reset to the reconnect instant so the offline gap is never billed, same lease id. This prevents a permanent desync where the catalog advertises free capacity while the host is actually full, which would cause a new create to be green-lit by the manager guard but rejected by wisp with `at_capacity`. Contracts the agent reports that have no revivable lease (not found, ended for another reason, or TTL already expired) are orphaned; wisp's TTL reaper reclaims those containers regardless.
+
 Reconciliation is an idempotent set-diff run on every reconnect, so repeated flaps converge correctly.
 
 ## 9. Flow control & backpressure
