@@ -292,4 +292,122 @@ public class LeaseReconciliationServiceTests
         Assert.Empty(reconcile.ContainerLost);
         Assert.Equal(0, ended);
     }
+
+    // ---- Post-grace revival (docs/TUNNEL.md §8) ----
+
+    [Fact]
+    public async Task RevivePostGrace_revives_a_lease_ended_as_host_disconnect()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Drop + grace expiry: lease ends as host_disconnect.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        var beforeRevive = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, beforeRevive!.Status);
+        Assert.Equal(LeaseEndReason.HostDisconnect, beforeRevive.EndReason);
+
+        // Host reconnects after grace (container still running): revive the lease.
+        fx.Clock.Advance(TimeSpan.FromMinutes(5)); // T0+360, well past grace
+        var reconnectAt = fx.Clock.GetUtcNow();
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+
+        Assert.Equal(new[] { lease.Id }, outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(lease.Id, revived!.Id);              // same lease id preserved
+        Assert.Equal(LeaseStatus.Active, revived.Status);  // back to active
+        Assert.Null(revived.EndReason);                    // end_reason cleared
+        Assert.Null(revived.EndedAt);                      // ended_at cleared
+        Assert.Equal(reconnectAt, revived.LastMeteredAt);  // meter restarts at reconnect
+        Assert.Equal(60, revived.BillableSeconds);          // pre-drop usage preserved
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_meter_watermark_is_at_reconnect_not_at_last_healthy()
+    {
+        // The offline gap (last-healthy → reconnect) must never be billed: the meter watermark is
+        // set to the reconnect instant so the next tick only accrues from that point forward.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        // Reconnect 5 minutes after grace expiry (container was still running).
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        var reconnectAt = fx.Clock.GetUtcNow(); // T0+360
+        await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+
+        var revived = await fx.ReloadAsync(lease.Id);
+        // Meter restarts at reconnect, not at last-healthy: the 5-minute offline gap is unbillable.
+        Assert.Equal(reconnectAt, revived!.LastMeteredAt);
+        Assert.Equal(60, revived.BillableSeconds); // pre-drop usage preserved, gap not accrued
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_skips_a_lease_ended_for_other_reasons()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // End the lease as released (consumer cancelled), not host_disconnect.
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, T0);
+
+        Assert.Empty(outcome.Revived);
+        Assert.Equal(new[] { lease.Id }, outcome.Orphaned);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status); // unchanged
+        Assert.Equal(LeaseEndReason.Released, stored.EndReason);
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_skips_an_already_active_lease()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(); // already active
+
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, T0);
+
+        Assert.Empty(outcome.Revived);
+        Assert.Empty(outcome.Orphaned); // already counted, not orphaned
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_reports_unknown_lease_ids_as_orphaned()
+    {
+        var fx = await ReadyAsync();
+        var unknownId = Guid.NewGuid();
+
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { unknownId }, T0);
+
+        Assert.Empty(outcome.Revived);
+        Assert.Equal(new[] { unknownId }, outcome.Orphaned);
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_is_a_no_op_when_no_contracts_reported()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0);
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0);
+
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, Array.Empty<Guid>(), T0);
+
+        Assert.Empty(outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+
+        // Lease remains ended — no containers were reported, nothing to revive.
+        Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
 }
