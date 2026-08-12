@@ -168,6 +168,68 @@ public sealed class LeaseReconciliationService
         return suspended.Count;
     }
 
+    /// <summary>
+    /// On host reconnect <b>after</b> grace expiry (docs/TUNNEL.md §8): for each live contract the agent
+    /// reports (<paramref name="liveLeaseIds"/>), look up the corresponding lease and, if it was ended as
+    /// <c>host_disconnect</c> for this host (the container kept running through the agent restart), revive it
+    /// back to <c>active</c>. The meter watermark is reset to <paramref name="reconnectAt"/> so the offline
+    /// gap is never billed — identical semantics to the within-grace resume path. The same lease id and
+    /// accumulated usage ledger are preserved. Contracts that cannot be revived (not found, ended for another
+    /// reason, or belonging to a different host) are returned as orphaned; the caller may tear them down.
+    /// </summary>
+    public async Task<PostGraceReconcileOutcome> RevivePostGraceAsync(
+        Guid hostId,
+        IReadOnlyCollection<Guid> liveLeaseIds,
+        DateTimeOffset reconnectAt,
+        CancellationToken ct = default)
+    {
+        var revived = new List<Guid>();
+        var orphaned = new List<Guid>();
+
+        foreach (var leaseId in liveLeaseIds)
+        {
+            var lease = await _leases.GetByIdAsync(leaseId, ct);
+
+            if (lease is null || lease.HostId != hostId)
+            {
+                orphaned.Add(leaseId);
+                continue;
+            }
+
+            // Already active or suspended → already counted by the manager, no action needed.
+            if (lease.Status is LeaseStatus.Active or LeaseStatus.Suspended)
+            {
+                continue;
+            }
+
+            if (lease.Status != LeaseStatus.Ended || lease.EndReason != LeaseEndReason.HostDisconnect)
+            {
+                // Ended for another reason (released, container_lost, etc.) — the container is orphaned
+                // and should be torn down; we cannot revive a purposefully-ended lease.
+                orphaned.Add(leaseId);
+                continue;
+            }
+
+            // The container kept running through the agent restart: revive the lease (docs/TUNNEL.md §8,
+            // preferred over teardown — the workload never died). Use UpdateAsync to clear end_reason and
+            // ended_at; TransitionStateAsync's COALESCE would leave those stale values in place.
+            var revival = lease with
+            {
+                Status = LeaseStatus.Active,
+                EndReason = null,
+                EndedAt = null,
+                LastMeteredAt = reconnectAt,
+            };
+            await _leases.UpdateAsync(revival, ct);
+            revived.Add(leaseId);
+            _logger.LogInformation(
+                "lease {LeaseId} revived (host {HostId} reconnected post-grace); billing restarts at {ReconnectAt:O}",
+                leaseId, hostId, reconnectAt);
+        }
+
+        return new PostGraceReconcileOutcome(revived, orphaned);
+    }
+
     private async Task EndSuspendedAsync(
         Lease lease, LeaseEndReason reason, DateTimeOffset lastHealthyAt, CancellationToken ct)
     {
@@ -194,3 +256,12 @@ public readonly record struct SuspendOutcome(int NewlySuspended, int TotalSuspen
 public sealed record ReconcileOutcome(
     IReadOnlyList<Guid> Resumed,
     IReadOnlyList<Guid> ContainerLost);
+
+/// <summary>
+/// The result of <see cref="LeaseReconciliationService.RevivePostGraceAsync"/>: lease ids revived back to
+/// <c>active</c> (container kept running through the agent restart) and lease ids whose containers could not
+/// be revived (ended for a different reason, not found, or wrong host).
+/// </summary>
+public sealed record PostGraceReconcileOutcome(
+    IReadOnlyList<Guid> Revived,
+    IReadOnlyList<Guid> Orphaned);
