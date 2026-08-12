@@ -1232,6 +1232,10 @@ public class LeaseServiceTests
         }
 
         public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<RevivalHoldOutcome> PlaceRevivalHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+            Task.FromResult(RevivalHoldOutcome.Allow(holdTxnId: null));
     }
 
     private sealed class DenyingWalletGate : ILeaseWalletGate
@@ -1254,6 +1258,10 @@ public class LeaseServiceTests
             Task.FromResult<Guid?>(null); // never reached — the deny gates before provisioning
 
         public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<RevivalHoldOutcome> PlaceRevivalHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+            Task.FromResult(RevivalHoldOutcome.Deny(_required, _available));
     }
 
     /// <summary>
@@ -1276,5 +1284,9 @@ public class LeaseServiceTests
             throw _failure;
 
         public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<RevivalHoldOutcome> PlaceRevivalHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+            throw _failure;
     }
 }

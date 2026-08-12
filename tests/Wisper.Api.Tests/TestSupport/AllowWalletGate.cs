@@ -19,4 +19,8 @@ public sealed class AllowWalletGate : ILeaseWalletGate
         Task.FromResult<Guid?>(null);
 
     public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
+
+    public Task<RevivalHoldOutcome> PlaceRevivalHoldAsync(
+        Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+        Task.FromResult(RevivalHoldOutcome.Allow(holdTxnId: null));
 }

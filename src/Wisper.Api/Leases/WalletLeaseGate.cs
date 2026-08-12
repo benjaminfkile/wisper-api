@@ -117,6 +117,10 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         // The hold covered the whole max lease (⌈ttl/60⌉·price); the charged amount is the cumulative
         // integer-floor charge the meter posted for the accrued billable_seconds. The remainder is exactly
         // what is still earmarked in lease_holds for this lease, so releasing it zeroes the lease's hold.
+        // (For a lease that was revived after a grace-expiry release, the pre-revive remainder already
+        // returned to the wallet under a distinct release key; this second release, keyed to the revival
+        // hold generation via lease.HoldTxnId, unwinds only what is still earmarked now — the ledger's
+        // non-negative guard on lease_holds is the backstop if the arithmetic is ever wrong.)
         var holdCents = LeaseHoldPricing.EstimateHoldCents(lease.TtlSeconds, lease.PriceCentsPerMin);
         if (holdCents <= 0)
         {
@@ -136,12 +140,16 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         var holds = await _ledger.GetOrCreateAccountAsync(
             LedgerAccountKind.LeaseHolds, null, currency, ct);
 
-        // Keyed by the lease id so the several lease-end drivers (consumer DELETE, grace expiry,
-        // container-lost) converge on a single release — a second attempt dedupes and moves no new money.
+        // Keyed per hold generation (lease id + current lease.HoldTxnId) so the several lease-end drivers
+        // (consumer DELETE, grace expiry, container-lost) converge on a single release — a second attempt
+        // dedupes and moves no new money. Bundling the hold txn id in also means a post-revive end does
+        // NOT collide with the original hold's release (task #23): after revive stamps the new
+        // hold_txn_id, this key becomes distinct from the pre-revive release key, so the second cycle's
+        // remainder actually posts back to the wallet.
         var posted = await _ledger.PostAsync(
             LedgerFlows.HoldRelease(
                 holds.Id, wallet.Id, leaseId, remainderCents,
-                idempotencyKey: ReleaseIdempotencyKey(leaseId),
+                idempotencyKey: ReleaseIdempotencyKey(leaseId, lease.HoldTxnId),
                 memo: $"hold_release {leaseId} {remainderCents}¢"),
             ct);
         _logger.LogInformation(
@@ -149,11 +157,79 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
             leaseId, remainderCents, holdCents, chargedCents, posted.WasDeduplicated ? " [replay]" : string.Empty);
     }
 
+    public async Task<RevivalHoldOutcome> PlaceRevivalHoldAsync(
+        Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default)
+    {
+        if (holdCents <= 0)
+        {
+            return RevivalHoldOutcome.Allow(holdTxnId: null); // free image: no hold to earmark
+        }
+
+        // Mirror the create-time balance gate (docs/PAYMENTS.md §4): a revived paid lease must not run
+        // active without a wallet hold covering its remaining time. A shortfall denies the revive so the
+        // caller ends the lease rather than silently reviving into an unbacked active state
+        // (docs/TUNNEL.md §8 — wisp's TTL reaper reclaims the container regardless).
+        var wallet = await _ledger.GetOrCreateAccountAsync(
+            LedgerAccountKind.UserWallet, consumerUserId, currency, ct);
+        if (wallet.BalanceCents < holdCents)
+        {
+            _logger.LogWarning(
+                "revive denied for lease {LeaseId}: wallet balance {Available}¢ short of revival hold {Required}¢",
+                leaseId, wallet.BalanceCents, holdCents);
+            return RevivalHoldOutcome.Deny(holdCents, wallet.BalanceCents);
+        }
+
+        var holds = await _ledger.GetOrCreateAccountAsync(
+            LedgerAccountKind.LeaseHolds, null, currency, ct);
+
+        try
+        {
+            // Keyed by the lease id (revival slot) so a repeated revive/flap for the same lease dedupes
+            // at the ledger and cannot stack duplicate holds.
+            var posted = await _ledger.PostAsync(
+                LedgerFlows.LeaseHold(
+                    wallet.Id, holds.Id, leaseId, holdCents,
+                    idempotencyKey: RevivalHoldIdempotencyKey(leaseId),
+                    memo: $"lease_hold {leaseId} {holdCents}¢ (revive)"),
+                ct);
+            _logger.LogInformation(
+                "placed revival wallet hold for lease {LeaseId}: {Hold}¢{Replay}",
+                leaseId, holdCents, posted.WasDeduplicated ? " [replay]" : string.Empty);
+            return RevivalHoldOutcome.Allow(posted.Transaction.Id);
+        }
+        catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
+        {
+            // Wallet drained between the balance check and the post (a rare race). Surface as a denied
+            // outcome — same hard gate, one step later — so the reconciler ends the lease rather than
+            // reviving unbacked.
+            _logger.LogWarning(ex,
+                "revive denied for lease {LeaseId}: wallet drained between check and post (required {Required}¢)",
+                leaseId, holdCents);
+            return RevivalHoldOutcome.Deny(holdCents, availableCents: 0);
+        }
+    }
+
     /// <summary>The <c>lease_hold</c> idempotency key — stable per lease id.</summary>
     public static string HoldIdempotencyKey(Guid leaseId) => $"lease_hold:{leaseId:D}";
 
-    /// <summary>The <c>hold_release</c> idempotency key — stable per lease id.</summary>
-    public static string ReleaseIdempotencyKey(Guid leaseId) => $"hold_release:{leaseId:D}";
+    /// <summary>
+    /// The <c>lease_hold</c> idempotency key for a post-grace revival — a distinct slot per lease id so a
+    /// revive after the pre-drop hold was already released (grace expiry) posts a fresh earmark rather than
+    /// dedup-replaying the original. Repeated revive attempts for the same lease still dedupe on this key,
+    /// so a flap cannot stack duplicate holds.
+    /// </summary>
+    public static string RevivalHoldIdempotencyKey(Guid leaseId) => $"lease_hold:{leaseId:D}:revive";
+
+    /// <summary>
+    /// The <c>hold_release</c> idempotency key — stable per hold generation, so multiple lease-end drivers
+    /// converge on a single release and a post-revive end does not collide with the pre-revive release.
+    /// Falls back to the lease-id-only form when the hold txn id is unknown (a lease whose hold never
+    /// posted, e.g. a free image or a create that failed before stamping the txn id).
+    /// </summary>
+    public static string ReleaseIdempotencyKey(Guid leaseId, Guid? holdTxnId) =>
+        holdTxnId is { } txnId
+            ? $"hold_release:{leaseId:D}:{txnId:D}"
+            : $"hold_release:{leaseId:D}";
 
     /// <summary>
     /// Enforces <c>platform_policy.max_concurrent_leases_per_user</c> (docs/API.md §11): counts the caller's
