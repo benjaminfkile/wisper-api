@@ -27,7 +27,10 @@ public sealed class CognitoAuthOptions
     /// <summary>
     /// Accepted audiences — the Cognito app-client id(s). When empty, audience is not
     /// validated (Cognito access tokens carry <c>client_id</c> rather than <c>aud</c>);
-    /// set it to require the <c>aud</c> claim (id tokens).
+    /// set it to require the <c>aud</c> claim (id tokens). Multiple ids are supported
+    /// (<c>Auth:Audience:0</c>, <c>Auth:Audience:1</c>, …) so one deployment can accept
+    /// id tokens from several app clients — e.g. the consumer/host web client and the
+    /// separate admin-panel client that each mint tokens with their own <c>aud</c>.
     /// </summary>
     public IList<string> Audience { get; set; } = new List<string>();
 
