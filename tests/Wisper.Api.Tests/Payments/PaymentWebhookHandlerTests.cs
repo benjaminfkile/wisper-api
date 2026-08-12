@@ -66,17 +66,34 @@ public class PaymentWebhookHandlerTests
     }
 
     private static Stripe.Event Refunded(
-        string eventId, string customerId, long refundAmount, string refundId = "re_1", string currency = "usd")
+        string eventId,
+        string customerId,
+        long refundAmount,
+        string refundId = "re_1",
+        string chargeId = "ch_1",
+        string currency = "usd") =>
+        RefundedMulti(
+            eventId, customerId, chargeId, currency,
+            (refundId, refundAmount));
+
+    private static Stripe.Event RefundedMulti(
+        string eventId,
+        string customerId,
+        string chargeId,
+        string currency,
+        params (string RefundId, long Amount)[] refunds)
     {
         var charge = new Stripe.Charge
         {
-            Id = "ch_1",
+            Id = chargeId,
             Currency = currency,
             CustomerId = customerId,
-            AmountRefunded = refundAmount,
+            AmountRefunded = refunds.Sum(r => r.Amount),
             Refunds = new Stripe.StripeList<Stripe.Refund>
             {
-                Data = new List<Stripe.Refund> { new() { Id = refundId, Amount = refundAmount } },
+                Data = refunds
+                    .Select(r => new Stripe.Refund { Id = r.RefundId, Amount = r.Amount })
+                    .ToList(),
             },
         };
         return new Stripe.Event
@@ -165,6 +182,123 @@ public class PaymentWebhookHandlerTests
 
         var accounts = await fx.Ledger.ReconcileAsync();
         Assert.DoesNotContain(accounts, a => a.Kind == LedgerAccountKind.UserWallet);
+    }
+
+    [Fact]
+    public async Task Refunded_webhook_then_api_debits_the_wallet_exactly_once()
+    {
+        // Regression for the double-debit bug (task #33): the webhook path used to key by charge id /
+        // event id, so an API-initiated refund posted twice — once from the API, once from the webhook.
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync("cus_1");
+        await fx.FundWalletAsync(user.Id, 5000);
+
+        // The webhook fires FIRST (Stripe re-order can happen — the API HTTP hop can be slower than the
+        // webhook delivery under some conditions).
+        await fx.Handler.HandleAsync(Refunded("evt_1", "cus_1", refundAmount: 2000, refundId: "re_1"));
+        Assert.Equal(3000, await fx.WalletAsync(user.Id));
+
+        // Now the API path posts under the SAME refund id — must dedupe at the ledger, no extra debit.
+        var wallet = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user.Id);
+        var cash = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+        var fees = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
+        await fx.Ledger.PostAsync(LedgerFlows.Refund(
+            wallet.Id, cash.Id, fees.Id, grossAmountCents: 2000, stripeFeeCents: 0,
+            idempotencyKey: BillingService.RefundIdempotencyKey("re_1")));
+
+        Assert.Equal(3000, await fx.WalletAsync(user.Id));
+    }
+
+    [Fact]
+    public async Task Refunded_api_then_webhook_debits_the_wallet_exactly_once()
+    {
+        // Regression for the double-debit bug (task #33): the mirror ordering to the test above — API
+        // fires first, then webhook. Both must land on the same idempotency key so only one debit posts.
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync("cus_1");
+        await fx.FundWalletAsync(user.Id, 5000);
+
+        var wallet = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user.Id);
+        var cash = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+        var fees = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
+        await fx.Ledger.PostAsync(LedgerFlows.Refund(
+            wallet.Id, cash.Id, fees.Id, grossAmountCents: 2000, stripeFeeCents: 0,
+            idempotencyKey: BillingService.RefundIdempotencyKey("re_1")));
+        Assert.Equal(3000, await fx.WalletAsync(user.Id));
+
+        await fx.Handler.HandleAsync(Refunded("evt_1", "cus_1", refundAmount: 2000, refundId: "re_1"));
+
+        Assert.Equal(3000, await fx.WalletAsync(user.Id));
+    }
+
+    [Fact]
+    public async Task Refunded_two_distinct_refunds_on_the_same_charge_each_debit_once()
+    {
+        // Regression for the "second refund silently dropped" bug (task #33): keying the webhook by charge
+        // id (rather than refund id) collapsed distinct refunds on the same charge onto one idempotency key,
+        // so the second refund's webhook debit was wrongly deduped. Each refund must post its own debit.
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync("cus_1");
+        await fx.FundWalletAsync(user.Id, 5000);
+
+        // First refund lands (via the webhook).
+        await fx.Handler.HandleAsync(Refunded("evt_1", "cus_1", refundAmount: 2000, refundId: "re_1"));
+        Assert.Equal(3000, await fx.WalletAsync(user.Id));
+
+        // A second refund on the same charge — a new refund id, its own debit must post.
+        await fx.Handler.HandleAsync(RefundedMulti(
+            "evt_2", "cus_1", chargeId: "ch_1", currency: "usd",
+            ("re_1", 2000),   // already posted — must dedupe
+            ("re_2", 500)));  // new — must post
+
+        Assert.Equal(2500, await fx.WalletAsync(user.Id));
+    }
+
+    [Fact]
+    public async Task Refunded_redelivery_of_the_same_event_is_a_no_op()
+    {
+        // Stripe re-delivers a charge.refunded event: the ledger dedupe on refund id must keep the wallet
+        // at exactly one debit per distinct refund.
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync("cus_1");
+        await fx.FundWalletAsync(user.Id, 5000);
+        var evt = Refunded("evt_dup", "cus_1", refundAmount: 1500, refundId: "re_1");
+
+        await fx.Handler.HandleAsync(evt);
+        await fx.Handler.HandleAsync(evt);
+        await fx.Handler.HandleAsync(evt);
+
+        Assert.Equal(3500, await fx.WalletAsync(user.Id));
+    }
+
+    [Fact]
+    public async Task Refunded_without_expanded_refunds_is_a_no_op()
+    {
+        // Without the refund id we can't safely dedupe with the API path — the handler must skip and warn
+        // rather than post under a wrong key that would double-debit. (In production Stripe expands
+        // data.object.refunds on charge.refunded; a missing list is a config/payload issue to flag.)
+        var fx = new Fixture();
+        var user = await fx.SeedUserAsync("cus_1");
+        await fx.FundWalletAsync(user.Id, 2000);
+
+        var charge = new Stripe.Charge
+        {
+            Id = "ch_1",
+            Currency = "usd",
+            CustomerId = "cus_1",
+            AmountRefunded = 1000,
+            // Refunds intentionally absent — the SDK sometimes populates only when explicitly expanded.
+        };
+        var evt = new Stripe.Event
+        {
+            Id = "evt_no_refunds",
+            Type = Stripe.EventTypes.ChargeRefunded,
+            Data = new Stripe.EventData { Object = charge },
+        };
+
+        await fx.Handler.HandleAsync(evt); // no throw
+
+        Assert.Equal(2000, await fx.WalletAsync(user.Id)); // unchanged
     }
 
     // ---- charge.dispute.created -------------------------------------------------------------------

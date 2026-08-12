@@ -77,9 +77,13 @@ public sealed class PaymentWebhookHandler : IStripeWebhookHandler
     }
 
     /// <summary>
-    /// <c>charge.refunded</c> → post a <c>refund</c> ledger txn keyed by the Stripe refund id (docs/PAYMENTS.md
-    /// §7, §8). Dedupes against an API-initiated refund; a refund that overdraws the wallet is blocked and left
-    /// for an admin adjustment (logged, not thrown, so the pipeline is not wedged).
+    /// <c>charge.refunded</c> → post one <c>refund</c> ledger txn per refund in <c>charge.refunds.data</c>,
+    /// each keyed by its Stripe <b>refund id</b> (<see cref="Wisper.Api.Billing.BillingService.RefundIdempotencyKey"/>) —
+    /// the same key the API path uses, so an API-initiated refund and its webhook dedupe to one posting, while
+    /// a dashboard-initiated refund posts here (docs/PAYMENTS.md §7, §8). Every refund on the charge is
+    /// enumerated so a second refund on the same charge gets its own distinct key rather than colliding with
+    /// (and being wrongly deduped against) the first. A refund that would overdraw the wallet is blocked and
+    /// left for an admin adjustment (logged, not thrown, so the pipeline is not wedged).
     /// </summary>
     private async Task HandleRefundedAsync(Event evt, CancellationToken ct)
     {
@@ -89,55 +93,73 @@ public sealed class PaymentWebhookHandler : IStripeWebhookHandler
             return;
         }
 
+        // We MUST have refund objects to key posts by refund id — the only key that dedupes with the API path
+        // (BillingService.RefundIdempotencyKey). Without it, posting under charge id or event id would either
+        // double-debit (different key than the API path) or drop a subsequent refund on the same charge (same
+        // key as an earlier one). Skip and warn — Stripe expands data.object.refunds on charge.refunded by
+        // default; a missing list is a payload/config issue to flag, not something to paper over.
+        var refunds = charge.Refunds?.Data;
+        if (refunds is null || refunds.Count == 0)
+        {
+            _logger.LogWarning(
+                "charge.refunded ({Event}) charge {Charge} carried no expanded refunds — no-op (cannot key posts " +
+                "by refund id to dedupe with the API path)", evt.Id, charge.Id);
+            return;
+        }
+
         var user = await ResolveUserAsync(charge.Metadata, charge.CustomerId, charge.PaymentIntent, evt, "charge.refunded", ct);
         if (user is null)
         {
             return; // benign no-op — logged in the resolver
         }
 
-        // The specific refund this event describes — its id keys the ledger effect (dedupe with the API path),
-        // its amount is what was returned. Fall back to the cumulative amount + event id only if the refund
-        // object isn't present.
-        var refund = charge.Refunds?.Data?.FirstOrDefault();
-        var amountCents = refund?.Amount ?? charge.AmountRefunded;
-        if (amountCents <= 0)
-        {
-            _logger.LogWarning("charge.refunded {Charge} ({Event}) has non-positive amount — no-op", charge.Id, evt.Id);
-            return;
-        }
-
-        var idempotencyKey = refund is not null
-            ? Wisper.Api.Billing.BillingService.RefundIdempotencyKey(refund.Id)
-            : $"refund_event:{evt.Id}";
         var currency = string.IsNullOrWhiteSpace(charge.Currency) ? Currency : charge.Currency;
-
         var wallet = await _ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user.Id, currency, ct);
         var platformCash = await _ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null, currency, ct);
         var stripeFees = await _ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null, currency, ct);
 
-        try
+        foreach (var refund in refunds)
         {
-            var posted = await _ledger.PostAsync(
-                LedgerFlows.Refund(
-                    wallet.Id, platformCash.Id, stripeFees.Id,
-                    grossAmountCents: amountCents,
-                    stripeFeeCents: 0,
-                    idempotencyKey: idempotencyKey,
-                    externalRef: refund?.Id ?? charge.Id,
-                    memo: $"refund {refund?.Id ?? charge.Id} for user {user.Id} (charge {charge.Id})"),
-                ct);
-            _logger.LogInformation(
-                "charge.refunded ({Event}) posted refund of {Amount}¢ for user {User}{Replay}",
-                evt.Id, amountCents, user.Id, posted.WasDeduplicated ? " [replay]" : string.Empty);
-        }
-        catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
-        {
-            // Refunding spent credits would drive the wallet negative — blocked (docs/PAYMENTS.md §7, §12). A
-            // recovery is an audited admin adjustment, not an automatic negative here. Not thrown, so the event
-            // is Processed rather than wedged into an endless retry.
-            _logger.LogError(
-                "charge.refunded ({Event}) for user {User} exceeds unspent wallet balance — blocked; an admin " +
-                "adjustment is required (docs/PAYMENTS.md §7)", evt.Id, user.Id);
+            if (string.IsNullOrWhiteSpace(refund.Id))
+            {
+                _logger.LogWarning(
+                    "charge.refunded ({Event}) charge {Charge} contained a refund with no id — skipped",
+                    evt.Id, charge.Id);
+                continue;
+            }
+
+            if (refund.Amount <= 0)
+            {
+                _logger.LogWarning(
+                    "charge.refunded ({Event}) refund {Refund} has non-positive amount — skipped",
+                    evt.Id, refund.Id);
+                continue;
+            }
+
+            try
+            {
+                var posted = await _ledger.PostAsync(
+                    LedgerFlows.Refund(
+                        wallet.Id, platformCash.Id, stripeFees.Id,
+                        grossAmountCents: refund.Amount,
+                        stripeFeeCents: 0,
+                        idempotencyKey: Wisper.Api.Billing.BillingService.RefundIdempotencyKey(refund.Id),
+                        externalRef: refund.Id,
+                        memo: $"refund {refund.Id} for user {user.Id} (charge {charge.Id})"),
+                    ct);
+                _logger.LogInformation(
+                    "charge.refunded ({Event}) posted refund {Refund} of {Amount}¢ for user {User}{Replay}",
+                    evt.Id, refund.Id, refund.Amount, user.Id, posted.WasDeduplicated ? " [replay]" : string.Empty);
+            }
+            catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
+            {
+                // Refunding spent credits would drive the wallet negative — blocked (docs/PAYMENTS.md §7, §12).
+                // A recovery is an audited admin adjustment, not an automatic negative here. Not thrown, so the
+                // event is Processed and the remaining refunds in the batch still get posted.
+                _logger.LogError(
+                    "charge.refunded ({Event}) refund {Refund} for user {User} exceeds unspent wallet balance — " +
+                    "blocked; an admin adjustment is required (docs/PAYMENTS.md §7)", evt.Id, refund.Id, user.Id);
+            }
         }
     }
 
