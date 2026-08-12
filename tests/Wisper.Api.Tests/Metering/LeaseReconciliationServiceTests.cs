@@ -39,6 +39,7 @@ public class LeaseReconciliationServiceTests
         public LedgerService Ledger { get; }
         public PlatformPolicyService Policy { get; }
         public MeteringService Meter { get; }
+        public WalletLeaseGate WalletGate { get; }
         public LeaseReconciliationService Reconciler { get; }
 
         public Guid ConsumerId { get; } = Guid.NewGuid();
@@ -53,10 +54,10 @@ public class LeaseReconciliationServiceTests
                 Leases, Usage, Hosts, Ledger, Policy, Clock, NullLogger<MeteringService>.Instance);
             var fraud = new FraudGuardService(
                 Ledger, Leases, Policy, Clock, NullLogger<FraudGuardService>.Instance);
-            var walletGate = new WalletLeaseGate(
+            WalletGate = new WalletLeaseGate(
                 Ledger, Leases, Policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             Reconciler = new LeaseReconciliationService(
-                Leases, Meter, walletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
+                Leases, Meter, WalletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
         }
 
         public async Task SeedAsync()
@@ -99,6 +100,12 @@ public class LeaseReconciliationServiceTests
 
         private async Task FundHoldAsync(Guid leaseId, long holdCents)
         {
+            if (holdCents <= 0)
+            {
+                // Free image: no hold posted at create (docs/PAYMENTS.md §4). Nothing to fund.
+                return;
+            }
+
             var wallet = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, ConsumerId);
             var cash = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
             var fees = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
@@ -112,6 +119,64 @@ public class LeaseReconciliationServiceTests
         }
 
         public Task<Lease?> ReloadAsync(Guid leaseId) => Leases.GetByIdAsync(leaseId);
+
+        /// <summary>Consumer wallet balance in cents (topped-up cash minus outstanding holds).</summary>
+        public Task<long> WalletCentsAsync() => Ledger.GetWalletBalanceCentsAsync(ConsumerId);
+
+        /// <summary>Total earmarked-in-lease_holds balance across every lease id.</summary>
+        public async Task<long> HoldsCentsAsync()
+        {
+            var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
+            return holds.BalanceCents;
+        }
+
+        /// <summary>Signed net amount posted against <c>lease_holds</c> for a single lease id.</summary>
+        public async Task<long> HoldsCentsForAsync(Guid leaseId)
+        {
+            var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
+            var entries = await Ledger.ListEntriesForAccountAsync(holds.Id);
+            long sum = 0;
+            foreach (var entry in entries.Where(e => e.LeaseId == leaseId))
+            {
+                // lease_holds is credit-normal: credits grow the earmark, debits shrink it.
+                sum += entry.CreditCents - entry.DebitCents;
+            }
+            return sum;
+        }
+
+        /// <summary>Count of <c>lease_hold</c> ledger transactions ever posted for a lease id.</summary>
+        public async Task<int> HoldTxnCountForAsync(Guid leaseId)
+        {
+            var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
+            var txns = await Ledger.ListAccountTransactionsAsync(holds.Id);
+            return txns.Count(t =>
+                t.Transaction.Kind == LedgerTxnKind.LeaseHold && t.Transaction.LeaseId == leaseId);
+        }
+
+        /// <summary>Tops the wallet up with cash so revive tests have funds beyond the initial hold.</summary>
+        public async Task TopUpAsync(long cents, string tag)
+        {
+            var wallet = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, ConsumerId);
+            var cash = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+            var fees = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
+            await Ledger.PostAsync(LedgerFlows.Topup(
+                wallet.Id, cash.Id, fees.Id, grossAmountCents: cents, stripeFeeCents: 0,
+                idempotencyKey: $"topup:{tag}"));
+        }
+
+        /// <summary>
+        /// Drains the wallet by moving <paramref name="cents"/> back to platform_cash — the revive
+        /// deny-path tests need the wallet empty at revive time to trigger insufficient funds. Adjustment
+        /// keeps the ledger balanced and honors the non-negative wallet guard.
+        /// </summary>
+        public async Task DrainWalletAsync(long cents, string tag)
+        {
+            var wallet = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, ConsumerId);
+            var cash = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+            await Ledger.PostAsync(LedgerFlows.Adjustment(
+                debitAccountId: wallet.Id, creditAccountId: cash.Id, amountCents: cents,
+                idempotencyKey: $"drain:{tag}"));
+        }
     }
 
     private static async Task<Fixture> ReadyAsync()
@@ -558,9 +623,13 @@ public class LeaseReconciliationServiceTests
         var dying = await fx.SeedActiveLeaseAsync();
         var revivable = await fx.SeedActiveLeaseAsync();
 
-        // End revivable as host_disconnect to simulate missed teardown.
-        await fx.Leases.TransitionStateAsync(
-            revivable.Id, LeaseStatus.Ended, endReason: LeaseEndReason.HostDisconnect, endedAt: T0);
+        // Move revivable through the full grace-expiry teardown (suspend → end as host_disconnect) so its
+        // pre-drop hold is properly released back to the wallet, matching the state the reconciler leaves
+        // a lease in when grace really expires (task #23 — the revive re-hold gate draws from this returned
+        // balance). Suspending only revivable directly (not via SuspendHostLeasesAsync, which would take
+        // dying with it) keeps dying Active so the container_lost set-diff arm still fires.
+        await fx.Leases.TransitionStateAsync(revivable.Id, LeaseStatus.Suspended);
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0);
 
         fx.Clock.Advance(TimeSpan.FromSeconds(15));
 
@@ -636,5 +705,298 @@ public class LeaseReconciliationServiceTests
         // → fast-path, zero writes.
         Assert.Same(HeartbeatReconcileOutcome.Empty, outcome);
         Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    // ---- Revive re-holds the wallet (task #23, docs/PAYMENTS.md §4) ----
+    //
+    // Grace expiry releases the pre-drop hold; a revived paid lease MUST re-place a hold covering its
+    // remaining time before it returns to active, or it accrues charges with nothing earmarked (the
+    // create-time 402 gate would never re-run). Insufficient funds at revive must not silently produce
+    // an unbacked active lease; the lease is ended (payment_failed) and wisp's TTL reaper reclaims the
+    // container.
+
+    [Fact]
+    public async Task RevivePostGrace_re_places_the_wallet_hold_for_the_remaining_lease_time()
+    {
+        // AC83: a revived paid lease has a wallet hold covering its remaining time.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // 60 healthy seconds → grace expiry: hold is released (3600¢ − 60¢ charged = 3540¢ back to wallet),
+        // so the wallet now holds exactly the amount the revive path needs to re-earmark.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        var walletBeforeRevive = await fx.WalletCentsAsync();
+        Assert.Equal(3540, walletBeforeRevive); // 3600 topped-up − 60 charged
+
+        // Post-grace reconnect: revive re-places the hold.
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        var reconnectAt = fx.Clock.GetUtcNow();
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+
+        Assert.Equal(new[] { lease.Id }, outcome.Revived);
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, revived!.Status);
+
+        // The revival hold sizes at ⌈(TtlSeconds − BillableSeconds)/60⌉·price = ⌈3540/60⌉·60 = 3540¢:
+        // exactly what the grace-expiry release returned. Wallet is fully re-earmarked, lease_holds
+        // shows the revival hold for this lease id, and the revive updated hold_txn_id to a new txn.
+        Assert.Equal(0, await fx.WalletCentsAsync());
+        Assert.Equal(3540, await fx.HoldsCentsForAsync(lease.Id));
+        Assert.NotNull(revived.HoldTxnId);
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_denies_and_ends_the_lease_when_the_wallet_is_short()
+    {
+        // AC84: at revive with insufficient funds, do NOT leave the lease active-and-unbacked. Ended
+        // (payment_failed) so wisp's TTL reaper reclaims the container; the lease is reported as orphaned
+        // so the caller can also drive teardown.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        // Drain the wallet after the release so the revive gate has nothing to work with (simulates a
+        // consumer who spent the returned funds on a different lease in the outage window).
+        await fx.DrainWalletAsync(3540, tag: "insufficient-funds-revive");
+        Assert.Equal(0, await fx.WalletCentsAsync());
+
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        var reconnectAt = fx.Clock.GetUtcNow();
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+
+        Assert.Empty(outcome.Revived);
+        Assert.Equal(new[] { lease.Id }, outcome.Orphaned);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.PaymentFailed, stored.EndReason);
+        Assert.Equal(reconnectAt, stored.EndedAt); // re-stamped: end reason changed at revive-denied instant
+
+        // Wallet stays empty, no phantom hold was placed for the lease id.
+        Assert.Equal(0, await fx.WalletCentsAsync());
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_is_idempotent_and_does_not_stack_holds_on_repeated_flap()
+    {
+        // AC86: repeated revive/flap must not stack duplicate holds — hold ops are keyed by lease id in
+        // the wallet gate. The second revive call sees the lease already Active and skips; even if it did
+        // re-enter the wallet gate path, the revival hold key dedupes so no second hold posts.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        var reconnectAt = fx.Clock.GetUtcNow();
+
+        // Two revive calls with the same reported set — a heartbeat flap after post-grace reconnect.
+        var first = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+        var second = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+
+        Assert.Equal(new[] { lease.Id }, first.Revived);
+        Assert.Empty(second.Revived); // second call sees lease Active, no re-revive
+
+        // Exactly ONE revival hold posted (plus the original create-time hold = 2 lease_hold txns total).
+        Assert.Equal(2, await fx.HoldTxnCountForAsync(lease.Id));
+        // And the physical earmark for the lease matches the single revival hold, not stacked.
+        Assert.Equal(3540, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_repeated_wallet_gate_call_dedupes_at_ledger()
+    {
+        // AC86 (defense in depth): if the reconciler's state guard is bypassed, the wallet gate itself
+        // dedupes on the revival hold's lease-id-keyed idempotency key so no second hold posts.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+
+        // Fund extra so a second successful (non-dedup) post would visibly stack the earmark.
+        await fx.TopUpAsync(cents: 3540, tag: "extra");
+
+        var reconnectAt = fx.Clock.GetUtcNow();
+        var first = await fx.WalletGate.PlaceRevivalHoldAsync(fx.ConsumerId, lease.Id, holdCents: 3540, "usd");
+        var second = await fx.WalletGate.PlaceRevivalHoldAsync(fx.ConsumerId, lease.Id, holdCents: 3540, "usd");
+
+        Assert.True(first.Allowed);
+        Assert.True(second.Allowed);
+        Assert.Equal(first.HoldTxnId, second.HoldTxnId); // dedup replay returns the same txn id
+
+        // Physical earmark reflects a single hold, not two — the extra top-up is still in the wallet.
+        Assert.Equal(3540, await fx.HoldsCentsForAsync(lease.Id));
+        Assert.Equal(3540, await fx.WalletCentsAsync()); // the extra top-up untouched
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_paid_lease_never_transitions_to_active_when_hold_is_refused()
+    {
+        // AC83+AC84 combined: even in the edge case where funds were released but immediately drained, the
+        // ended→active transition must not occur without a wallet hold in place.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        await fx.DrainWalletAsync(3540, tag: "paid-lease-never-active-drain");
+
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, fx.Clock.GetUtcNow());
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.NotEqual(LeaseStatus.Active, stored!.Status); // never revived unbacked
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_free_image_revives_without_placing_a_hold()
+    {
+        // A zero-priced image needs no hold to be leased in the first place (docs/PAYMENTS.md §4);
+        // the revive path must degenerate cleanly the same way — the lease returns to active and no
+        // lease_hold ever posts.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(price: 0, holdCents: 0);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        var outcome = await fx.Reconciler.RevivePostGraceAsync(
+            fx.HostId, new[] { lease.Id }, fx.Clock.GetUtcNow());
+
+        Assert.Equal(new[] { lease.Id }, outcome.Revived);
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+        Assert.Equal(0, await fx.HoldTxnCountForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_meter_still_restarts_at_reconnect_and_gap_is_never_billed()
+    {
+        // AC87: the #21 meter-restart-at-reconnect invariant is unchanged by task #23 — the revive path
+        // still resets LastMeteredAt to the reconnect instant so the offline gap is never back-billed,
+        // and a subsequent meter tick bills exactly the post-revive interval.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        fx.Clock.Advance(TimeSpan.FromMinutes(5)); // T0+360
+        var reconnectAt = fx.Clock.GetUtcNow();
+        await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
+
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(reconnectAt, revived!.LastMeteredAt); // meter restart, not backfilled to last-healthy
+        Assert.Equal(60, revived.BillableSeconds);          // gap not billed
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Meter.RunTickAsync();
+        var after = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(120, after!.BillableSeconds); // 60 pre-drop + 60 post-resume; 5-minute gap absent
+    }
+
+    [Fact]
+    public async Task RevivePostGrace_stamps_new_hold_txn_id_so_second_release_does_not_dedup()
+    {
+        // Correctness of the release side after a revive: the revived lease's hold_txn_id changes, which
+        // makes the ReleaseHoldAsync idempotency key distinct from the pre-revive release. A second end
+        // therefore actually posts the release rather than dedup-replaying the first — the revival hold's
+        // remainder returns to the wallet.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        var originalHoldTxnId = (await fx.ReloadAsync(lease.Id))!.HoldTxnId;
+        Assert.Null(originalHoldTxnId); // fixture seeds the lease without stamping HoldTxnId
+
+        // Grace expiry: first hold released. Wallet gets 3540 back (3600 − 60 charged, but nothing was
+        // charged yet, so 3600 back).
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0);
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0);
+        Assert.Equal(3600, await fx.WalletCentsAsync());
+
+        // Revive: places a fresh hold, stamps hold_txn_id on the row.
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, fx.Clock.GetUtcNow());
+        var afterRevive = await fx.ReloadAsync(lease.Id);
+        Assert.NotNull(afterRevive!.HoldTxnId);
+        Assert.Equal(0, await fx.WalletCentsAsync()); // fully re-earmarked
+
+        // Second end (consumer DELETE-style) after a bit of runtime: the release must actually post,
+        // returning the (uncharged) revival hold back to the wallet.
+        await fx.WalletGate.ReleaseHoldAsync(lease.Id);
+        Assert.Equal(3600, await fx.WalletCentsAsync()); // revival hold returned
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    // ---- Within-grace suspend → resume keeps exactly one hold (task #23 AC85) ----
+
+    [Fact]
+    public async Task Suspend_then_resume_within_grace_keeps_exactly_one_hold_intact()
+    {
+        // AC85: suspend does NOT release the hold (only end does); resume needs no new hold. The full
+        // suspend → resume cycle must leave exactly one lease_hold in place — no duplicate posted, no
+        // gap where the lease ran active with no hold.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        var beforeHoldsForLease = await fx.HoldsCentsForAsync(lease.Id);
+        var beforeHoldTxnCount = await fx.HoldTxnCountForAsync(lease.Id);
+        Assert.Equal(3600, beforeHoldsForLease);
+        Assert.Equal(1, beforeHoldTxnCount);
+
+        // Tunnel drop within grace: suspend at last-healthy. The hold stays intact — a suspended lease
+        // simply pauses metering, it does not touch lease_holds.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        var afterSuspend = await fx.HoldsCentsForAsync(lease.Id);
+        var afterSuspendCharged = MeteringService.ChargeCentsFor(60, PricePerMin);
+        Assert.Equal(beforeHoldsForLease - afterSuspendCharged, afterSuspend); // only the charge debited
+        Assert.Equal(1, await fx.HoldTxnCountForAsync(lease.Id));               // still one hold txn
+
+        // Reconnect within grace: resume. No new hold posted; the existing earmark carries through.
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+        await fx.Reconciler.ReconcileHostAsync(
+            fx.HostId, new[] { lease.Id }, lastHealthyAt: T0.AddSeconds(60));
+        var resumed = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, resumed!.Status);
+
+        Assert.Equal(afterSuspend, await fx.HoldsCentsForAsync(lease.Id)); // physical earmark unchanged
+        Assert.Equal(1, await fx.HoldTxnCountForAsync(lease.Id));           // still exactly one hold txn
+    }
+
+    [Fact]
+    public async Task Suspend_then_resume_is_idempotent_across_repeated_flaps_on_the_single_hold()
+    {
+        // A flappy tunnel drives suspend → resume → suspend → resume many times; the single hold survives
+        // every cycle. Number of lease_hold txns stays at 1 (create-time), and the physical earmark
+        // shrinks only by the meter's charges — never re-earmarked or duplicated.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        for (var flap = 0; flap < 3; flap++)
+        {
+            fx.Clock.Advance(TimeSpan.FromSeconds(60));
+            var lastHealthy = fx.Clock.GetUtcNow();
+            await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, lastHealthy);
+            fx.Clock.Advance(TimeSpan.FromSeconds(30));
+            await fx.Reconciler.ReconcileHostAsync(fx.HostId, new[] { lease.Id }, lastHealthy);
+        }
+
+        Assert.Equal(1, await fx.HoldTxnCountForAsync(lease.Id));
     }
 }
