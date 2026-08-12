@@ -174,7 +174,12 @@ public sealed class LeaseReconciliationService
     /// <c>host_disconnect</c> for this host (the container kept running through the agent restart), revive it
     /// back to <c>active</c>. The meter watermark is reset to <paramref name="reconnectAt"/> so the offline
     /// gap is never billed — identical semantics to the within-grace resume path. The same lease id and
-    /// accumulated usage ledger are preserved. Contracts that cannot be revived (not found, ended for another
+    /// accumulated usage ledger are preserved. Before the ended→active transition, a fresh wallet hold is
+    /// re-placed for the lease's remaining time at the lease price (docs/PAYMENTS.md §4, mirroring lease
+    /// create): grace-expiry already released the pre-drop hold, so a revived paid lease would otherwise
+    /// run active with no backing hold. If the consumer's wallet is now short of the revival hold, the
+    /// lease is <b>ended (payment_failed)</b> instead of revived (wisp's TTL reaper reclaims the container)
+    /// — no lease is ever revived unbacked. Contracts that cannot be revived (not found, ended for another
     /// reason, or belonging to a different host) are returned as orphaned; the caller may tear them down.
     /// </summary>
     public async Task<PostGraceReconcileOutcome> RevivePostGraceAsync(
@@ -211,16 +216,26 @@ public sealed class LeaseReconciliationService
             }
 
             // The container kept running through the agent restart: revive the lease (docs/TUNNEL.md §8,
-            // preferred over teardown — the workload never died). Use UpdateAsync to clear end_reason and
-            // ended_at; TransitionStateAsync's COALESCE would leave those stale values in place.
-            var revival = lease with
+            // preferred over teardown — the workload never died). Re-place the wallet hold BEFORE the
+            // ended→active transition (task #23): grace-expiry released the pre-drop hold, so without a
+            // fresh hold the revived lease would run active with no wallet earmark and the create-time
+            // 402 gate would never re-run.
+            if (!await TryRevivePaidLeaseAsync(lease, reconnectAt, orphaned, ct))
+            {
+                continue;
+            }
+
+            // Use UpdateAsync to clear end_reason and ended_at; TransitionStateAsync's COALESCE would leave
+            // those stale values in place.
+            var revival = await GetForRevivalAsync(leaseId, ct);
+            var updated = revival with
             {
                 Status = LeaseStatus.Active,
                 EndReason = null,
                 EndedAt = null,
                 LastMeteredAt = reconnectAt,
             };
-            await _leases.UpdateAsync(revival, ct);
+            await _leases.UpdateAsync(updated, ct);
             revived.Add(leaseId);
             _logger.LogInformation(
                 "lease {LeaseId} revived (host {HostId} reconnected post-grace); billing restarts at {ReconnectAt:O}",
@@ -318,15 +333,23 @@ public sealed class LeaseReconciliationService
             }
 
             // Container kept running through an agent restart / grace expiry: revive with the same
-            // semantics as RevivePostGraceAsync — billing restarts at now, offline gap never billed.
-            var revival = lease with
+            // semantics as RevivePostGraceAsync — billing restarts at now, offline gap never billed. Same
+            // re-hold gate: a paid lease must have a wallet hold covering its remaining time before it
+            // returns to active (task #23), or it is ended (payment_failed) instead.
+            if (!await TryRevivePaidLeaseAsync(lease, now, orphaned, ct))
+            {
+                continue;
+            }
+
+            var revival = await GetForRevivalAsync(leaseId, ct);
+            var updated = revival with
             {
                 Status = LeaseStatus.Active,
                 EndReason = null,
                 EndedAt = null,
                 LastMeteredAt = now,
             };
-            await _leases.UpdateAsync(revival, ct);
+            await _leases.UpdateAsync(updated, ct);
             revived.Add(leaseId);
             _logger.LogInformation(
                 "lease {LeaseId} revived on heartbeat for host {HostId}; billing restarts at {Now:O}",
@@ -341,11 +364,64 @@ public sealed class LeaseReconciliationService
     {
         // The lease was already flushed to last-healthy when it suspended, so its charged total is final;
         // end it, then return the unused hold remainder to the wallet (docs/PAYMENTS.md §4). Release is
-        // keyed by lease id, so a repeated grace/reconnect flap converges on a single hold_release.
+        // keyed per hold generation (lease id + current hold_txn_id), so a repeated grace/reconnect flap
+        // converges on a single hold_release for this generation.
         await _leases.TransitionStateAsync(
             lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: lastHealthyAt, ct: ct);
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
     }
+
+    /// <summary>
+    /// Re-establishes the wallet hold for a lease about to be revived (task #23, docs/PAYMENTS.md §4). The
+    /// pre-drop hold was already released at grace expiry, so a revived paid lease must re-earmark funds
+    /// covering its remaining billable time before it returns to <c>active</c>. On allow (or a free image),
+    /// stamps the fresh <c>hold_txn_id</c> onto the lease row and returns <c>true</c>. On deny (wallet
+    /// short of the revival hold), ends the lease as <c>payment_failed</c> instead of reviving unbacked,
+    /// flags it as orphaned so the caller tears the container down, and returns <c>false</c>. Repeated
+    /// revive attempts for the same lease are idempotent — the revival hold key dedupes at the ledger.
+    /// </summary>
+    private async Task<bool> TryRevivePaidLeaseAsync(
+        Lease lease, DateTimeOffset reconnectAt, List<Guid> orphaned, CancellationToken ct)
+    {
+        var revivalHoldCents = LeaseHoldPricing.EstimateRevivalHoldCents(
+            lease.TtlSeconds, lease.BillableSeconds, lease.PriceCentsPerMin);
+        var outcome = await _walletGate.PlaceRevivalHoldAsync(
+            lease.ConsumerUserId, lease.Id, revivalHoldCents, lease.Currency, ct);
+
+        if (!outcome.Allowed)
+        {
+            // Do not revive into an unbacked active lease (docs/PAYMENTS.md §4, task #23): end the lease as
+            // payment_failed so wisp's TTL reaper reclaims the container — no unpaid active runtime.
+            await _leases.TransitionStateAsync(
+                lease.Id, LeaseStatus.Ended,
+                endReason: LeaseEndReason.PaymentFailed, endedAt: reconnectAt, ct: ct);
+            orphaned.Add(lease.Id);
+            _logger.LogWarning(
+                "lease {LeaseId} not revived on host {HostId} reconnect: wallet short of revival hold" +
+                " ({Available}¢ < {Required}¢); ended (payment_failed), container reclaimed by wisp TTL",
+                lease.Id, lease.HostId, outcome.Decision.AvailableCents, outcome.Decision.RequiredCents);
+            return false;
+        }
+
+        // On allow (paid or free), stamp the fresh hold generation onto the row so ReleaseHoldAsync's
+        // key does not collide with the pre-revive release. A free image leaves HoldTxnId untouched
+        // (still null); a paid lease overwrites the pre-drop txn id with the revival one.
+        if (outcome.HoldTxnId is { } txnId)
+        {
+            await _leases.UpdateAsync(lease with { HoldTxnId = txnId }, ct);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Reloads the lease row so the post-hold-stamping revival transition sees the fresh
+    /// <see cref="Lease.HoldTxnId"/>. Throws if the row disappeared mid-revive (a bug — nothing else
+    /// should delete it while the reconciler holds the operation).
+    /// </summary>
+    private async Task<Lease> GetForRevivalAsync(Guid leaseId, CancellationToken ct) =>
+        await _leases.GetByIdAsync(leaseId, ct)
+            ?? throw new InvalidOperationException($"lease {leaseId} vanished during revival");
 }
 
 /// <summary>
