@@ -410,4 +410,231 @@ public class LeaseReconciliationServiceTests
         // Lease remains ended — no containers were reported, nothing to revive.
         Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(lease.Id))!.Status);
     }
+
+    // ---- Continuous heartbeat reconciliation (task #22) ----
+
+    [Fact]
+    public async Task ReconcileHeartbeat_ends_active_unreported_lease_as_container_lost()
+    {
+        // AC78: silent container death — the manager has an active lease the host no longer reports.
+        // The heartbeat reconciliation must end it as container_lost without a tunnel disconnect.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+
+        Assert.Equal(new[] { lease.Id }, outcome.ContainerLost);
+        Assert.Empty(outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.ContainerLost, stored.EndReason);
+        // Finalized at the heartbeat instant (not at a prior last-healthy): billing runs to now.
+        Assert.Equal(fx.Clock.GetUtcNow(), stored.EndedAt);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_billing_is_flushed_before_container_lost_end()
+    {
+        // Ending a silently-dead active lease must flush the accrued billing first so the charged total
+        // reflects the full healthy interval up to the heartbeat instant.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(60, stored.BillableSeconds); // 60s billed up to the heartbeat instant
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_steady_state_matching_set_produces_zero_writes()
+    {
+        // AC80: when reported set == manager active set, the method must return empty and touch no rows.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        var before = await fx.ReloadAsync(lease.Id);
+
+        // Heartbeat reports exactly the active set — nothing to heal.
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        Assert.False(outcome.HasChanges);
+        Assert.Empty(outcome.ContainerLost);
+        Assert.Empty(outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+        Assert.Same(HeartbeatReconcileOutcome.Empty, outcome); // singleton fast-path
+
+        // Record must be byte-for-byte identical — no write occurred.
+        var after = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_empty_host_with_empty_report_is_zero_writes()
+    {
+        // Edge: no active leases and no reported leases → both sets empty → zero writes.
+        var fx = await ReadyAsync();
+
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+
+        Assert.Same(HeartbeatReconcileOutcome.Empty, outcome);
+        Assert.False(outcome.HasChanges);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_revives_host_disconnect_ended_lease()
+    {
+        // AC79: a live contract with no active manager lease — ended as host_disconnect — must be revived.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Simulate the lease being ended as host_disconnect (e.g. missed frame / manager restart).
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(lease.Id))!.Status);
+
+        // A heartbeat that reports the lease as still live must revive it.
+        fx.Clock.Advance(TimeSpan.FromSeconds(15)); // T0+75
+        var heartbeatAt = fx.Clock.GetUtcNow();
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        Assert.Equal(new[] { lease.Id }, outcome.Revived);
+        Assert.Empty(outcome.ContainerLost);
+        Assert.Empty(outcome.Orphaned);
+
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, revived!.Status);
+        Assert.Null(revived.EndReason);
+        Assert.Null(revived.EndedAt);
+        Assert.Equal(heartbeatAt, revived.LastMeteredAt); // billing restarts at heartbeat time
+        Assert.Equal(60, revived.BillableSeconds);         // pre-disconnect usage preserved
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_orphans_reported_lease_ended_for_other_reason()
+    {
+        // A reported lease that was ended for a non-host_disconnect reason cannot be revived — orphan it.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        Assert.Empty(outcome.ContainerLost);
+        Assert.Empty(outcome.Revived);
+        Assert.Equal(new[] { lease.Id }, outcome.Orphaned);
+
+        // Lease stays ended with original reason — we must not touch purposefully-ended leases.
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Released, stored.EndReason);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_orphans_unknown_reported_lease_id()
+    {
+        var fx = await ReadyAsync();
+        var unknownId = Guid.NewGuid();
+
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { unknownId });
+
+        Assert.Empty(outcome.ContainerLost);
+        Assert.Empty(outcome.Revived);
+        Assert.Equal(new[] { unknownId }, outcome.Orphaned);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_set_diff_ends_absent_and_revives_present_together()
+    {
+        // Mixed drift: one active lease silently died, one ended/host_disconnect needs revival.
+        var fx = await ReadyAsync();
+        var dying = await fx.SeedActiveLeaseAsync();
+        var revivable = await fx.SeedActiveLeaseAsync();
+
+        // End revivable as host_disconnect to simulate missed teardown.
+        await fx.Leases.TransitionStateAsync(
+            revivable.Id, LeaseStatus.Ended, endReason: LeaseEndReason.HostDisconnect, endedAt: T0);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(15));
+
+        // Heartbeat: reports revivable (still running) but NOT dying (silently dead).
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(
+            fx.HostId, new[] { revivable.Id });
+
+        Assert.Equal(new[] { dying.Id }, outcome.ContainerLost);
+        Assert.Equal(new[] { revivable.Id }, outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+
+        Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(dying.Id))!.Status);
+        Assert.Equal(LeaseEndReason.ContainerLost, (await fx.ReloadAsync(dying.Id))!.EndReason);
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(revivable.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_is_idempotent_for_container_lost()
+    {
+        // AC81: repeated heartbeats that omit a silently-dead lease converge — second call is a no-op.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        var first = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+        Assert.Equal(new[] { lease.Id }, first.ContainerLost);
+
+        // Second heartbeat: lease is already ended — active set is empty, reported set is empty.
+        var second = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+        Assert.Same(HeartbeatReconcileOutcome.Empty, second); // fast-path: both sets empty
+        Assert.False(second.HasChanges);
+
+        // Lease is still Ended — idempotent.
+        Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_is_idempotent_for_revival()
+    {
+        // AC81: repeated heartbeats that report a revivable lease converge — second call is a no-op.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0);
+        await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(15));
+        var first = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+        Assert.Equal(new[] { lease.Id }, first.Revived);
+
+        // Second heartbeat: lease is now active, reported set matches active set.
+        var second = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+        Assert.Same(HeartbeatReconcileOutcome.Empty, second); // steady-state fast-path
+        Assert.False(second.HasChanges);
+
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_suspended_leases_are_not_touched()
+    {
+        // Suspended leases are under grace-window management and must not be affected by heartbeat
+        // reconciliation (ending or reviving them here would race with the grace path).
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Suspend the lease (simulates a mid-grace state).
+        await fx.Leases.TransitionStateAsync(lease.Id, LeaseStatus.Suspended);
+
+        // Heartbeat reports no leases — but the suspended lease must not be ended here.
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+
+        // Both the active set (empty after filtering suspended) and the reported set (empty) are equal
+        // → fast-path, zero writes.
+        Assert.Same(HeartbeatReconcileOutcome.Empty, outcome);
+        Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
 }
