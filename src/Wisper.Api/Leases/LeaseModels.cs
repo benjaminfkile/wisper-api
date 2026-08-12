@@ -121,6 +121,7 @@ public sealed record LeaseView(
     [property: JsonPropertyName("billable_seconds")] long BillableSeconds,
     [property: JsonPropertyName("cost_cents_so_far")] long CostCentsSoFar,
     [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt,
+    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt,
     [property: JsonPropertyName("end_reason")] string? EndReason,
     [property: JsonPropertyName("isolation")] string Isolation,
     [property: JsonPropertyName("os")] string? Os = null)
@@ -153,6 +154,7 @@ public sealed record LeaseView(
             BillableSeconds: lease.BillableSeconds,
             CostCentsSoFar: RunningCostCents(lease),
             ExpiresAt: ExpiresAtOf(lease),
+            EndedAt: lease.EndedAt,
             EndReason: lease.EndReason is { } reason ? PgEnum.ToSnakeLabel(reason) : null,
             Isolation: lease.Isolation,
             Os: os);
