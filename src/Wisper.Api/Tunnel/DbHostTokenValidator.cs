@@ -18,8 +18,9 @@ namespace Wisper.Api.Tunnel;
 /// Postgres table in production, or the in-memory store on a DB-less dev boot (docs/DATA_MODEL.md §1) —
 /// so an agent token issued by <c>POST /v1/hosts</c> resolves in either mode. A token the store does not
 /// recognize falls through to the config-backed allow-list (<see cref="ConfigHostTokenValidator"/>), the
-/// operator bootstrap escape hatch. In production the config allow-list is empty, so the store is the sole
-/// source of truth and an unknown token fails closed.
+/// operator bootstrap escape hatch. That fallback is itself env-gated: it fails closed in any non-Development
+/// environment regardless of the configured <c>Tunnel:HostTokens</c>, so a deployed environment always uses
+/// the DB as the sole source of truth and an unknown token fails closed even if a secret ships static tokens.
 /// </para>
 /// </summary>
 public sealed class DbHostTokenValidator : IHostTokenValidator
