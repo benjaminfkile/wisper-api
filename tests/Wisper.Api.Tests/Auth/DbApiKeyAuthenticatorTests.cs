@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Wisper.Api.ApiKeys;
 using Wisper.Api.Auth;
 using Wisper.Api.Domain;
@@ -20,7 +21,8 @@ public class DbApiKeyAuthenticatorTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 20, 0, 0, 0, TimeSpan.Zero);
 
-    private static ConfigApiKeyAuthenticator Config(params (string key, string userId, string[] scopes)[] entries)
+    private static ConfigApiKeyAuthenticator Config(
+        InMemoryUserRepository users, params (string key, string userId, string[] scopes)[] entries)
     {
         var options = new CognitoAuthOptions();
         foreach (var (key, userId, scopes) in entries)
@@ -28,7 +30,10 @@ public class DbApiKeyAuthenticatorTests
             options.ApiKeys[key] = new ApiKeyGrant { UserId = userId, Scopes = scopes };
         }
 
-        return new ConfigApiKeyAuthenticator(new StaticOptionsMonitor<CognitoAuthOptions>(options));
+        return new ConfigApiKeyAuthenticator(
+            new StaticOptionsMonitor<CognitoAuthOptions>(options),
+            users,
+            NullLogger<ConfigApiKeyAuthenticator>.Instance);
     }
 
     private static async Task<User> SeedUser(
@@ -62,7 +67,12 @@ public class DbApiKeyAuthenticatorTests
     private static DbApiKeyAuthenticator Build(
         InMemoryApiKeyRepository keys, InMemoryUserRepository users,
         ConfigApiKeyAuthenticator? config = null, TimeProvider? time = null) =>
-        new(keys, users, time ?? new FakeTimeProvider(T0), config ?? Config());
+        new(
+            keys,
+            users,
+            time ?? new FakeTimeProvider(T0),
+            config ?? Config(users),
+            NullLogger<DbApiKeyAuthenticator>.Instance);
 
     [Fact]
     public async Task Resolves_an_active_key_to_the_owner_with_key_scopes()
@@ -145,7 +155,7 @@ public class DbApiKeyAuthenticatorTests
         var (_, token) = await SeedKey(keys, owner.Id, new[] { "consumer" });
         // The config allow-list holds the same raw token, to prove a recognized-but-suspended key never
         // falls through to the fallback.
-        var authenticator = Build(keys, users, Config((token, "cfg-user", new[] { "consumer" })));
+        var authenticator = Build(keys, users, Config(users, (token, "cfg-user", new[] { "consumer" })));
 
         Assert.Null(await authenticator.AuthenticateAsync(token));
     }
@@ -154,7 +164,8 @@ public class DbApiKeyAuthenticatorTests
     public async Task Missing_owner_fails_closed()
     {
         var keys = new InMemoryApiKeyRepository();
-        // Key owned by a user id with no matching row.
+        // Key owned by a user id with no matching row — must reject as 401 (not throw), and never fall
+        // through to the config allow-list.
         var (_, token) = await SeedKey(keys, Guid.NewGuid(), new[] { "consumer" });
         var authenticator = Build(keys, new InMemoryUserRepository());
 
@@ -175,14 +186,30 @@ public class DbApiKeyAuthenticatorTests
     public async Task Falls_back_to_config_when_the_store_does_not_hold_the_key()
     {
         // The store has no matching key → the lookup misses and the config allow-list resolves the key.
+        // The config subject must map to an existing user, per the same owner-must-exist gate the DB path enforces.
+        var users = new InMemoryUserRepository();
+        await SeedUser(users, "dev-user");
         var authenticator = Build(
-            new InMemoryApiKeyRepository(), new InMemoryUserRepository(),
-            Config(("wck_live_dev", "dev-user", new[] { "consumer" })));
+            new InMemoryApiKeyRepository(), users,
+            Config(users, ("wck_live_dev", "dev-user", new[] { "consumer" })));
 
         var principal = await authenticator.AuthenticateAsync("wck_live_dev");
 
         Assert.NotNull(principal);
         Assert.Equal("dev-user", principal!.GetSubject());
         Assert.True(principal.HasRole(WisperRole.Consumer));
+    }
+
+    [Fact]
+    public async Task Fallback_config_key_with_unresolvable_subject_fails_closed()
+    {
+        // Regression: when the store misses and the config fallback fires but the config's UserId names no
+        // user, the whole authenticator rejects (401) instead of returning a principal that would 500
+        // every downstream user-resolution call.
+        var authenticator = Build(
+            new InMemoryApiKeyRepository(), new InMemoryUserRepository(),
+            Config(new InMemoryUserRepository(), ("wck_live_dev", "no-such-sub", new[] { "consumer" })));
+
+        Assert.Null(await authenticator.AuthenticateAsync("wck_live_dev"));
     }
 }
