@@ -4,6 +4,7 @@ using Npgsql;
 using Wisper.Api.Domain;
 using Wisper.Api.Ledger;
 using Wisper.Api.Leases;
+using Wisper.Api.Metering;
 using Wisper.Api.Persistence;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
@@ -132,9 +133,12 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
                 Ledger, Leases, policy, clock, NullLogger<FraudGuardService>.Instance);
             WalletGate = new WalletLeaseGate(
                 Ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
+            var usage = new LeaseUsageRepository(_db);
+            var meter = new MeteringService(
+                Leases, usage, Hosts, Ledger, policy, clock, NullLogger<MeteringService>.Instance);
             Service = new LeaseService(
                 Leases, Hosts, Images, new FakeTunnelRelay(), new FakeHostCapabilitySource(),
-                WalletGate, policy, clock);
+                WalletGate, meter, policy, clock);
         }
 
         public UserRepository Users { get; }

@@ -108,6 +108,61 @@ public sealed class MeteringService
     }
 
     /// <summary>
+    /// The on-lease-end flush every finalization driver (consumer DELETE, TTL expiry / container-lost)
+    /// must run BEFORE the wallet hold release, so the final billable interval — the tail between the
+    /// last 60s tick and the stop — is charged and <see cref="Lease.BillableSeconds"/> reflects the full
+    /// metered runtime the hold release sizes off (task #34). The flush watermark is
+    /// <paramref name="now"/> capped at the lease's TTL (<c>started_at + ttl_seconds</c> — the lease was
+    /// not entitled to run past it, so any post-TTL tail is not billable) and at the host's last-healthy
+    /// liveness point (the same cap <see cref="RunTickAsync"/> applies — a blind window is structurally
+    /// un-billable). Returns the flush result, or <c>null</c> when there is no such lease / no billable
+    /// tail / the lease is no longer active (a suspended lease was already flushed to last-healthy).
+    /// </summary>
+    public async Task<MeteringFlushResult?> FinalizeLeaseAsync(
+        Guid leaseId, DateTimeOffset now, CancellationToken ct = default)
+    {
+        var lease = await _leases.GetByIdAsync(leaseId, ct);
+        return lease is null ? null : await FinalizeLeaseAsync(lease, now, ct);
+    }
+
+    /// <summary>
+    /// Same on-end flush as <see cref="FinalizeLeaseAsync(Guid, DateTimeOffset, CancellationToken)"/>
+    /// against a lease already loaded by the caller.
+    /// </summary>
+    public Task<MeteringFlushResult?> FinalizeLeaseAsync(
+        Lease lease, DateTimeOffset now, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        return FlushLeaseAsync(lease, ComputeFinalizationWatermark(lease, now), ct);
+    }
+
+    private DateTimeOffset ComputeFinalizationWatermark(Lease lease, DateTimeOffset now)
+    {
+        var asOf = now;
+
+        // TTL cap: the lease was not entitled to run past started_at + ttl_seconds, so any tail beyond
+        // it is not billable regardless of when we noticed the stop (task #34).
+        if (lease.StartedAt is { } startedAt)
+        {
+            var ttlCap = startedAt.AddSeconds(lease.TtlSeconds);
+            if (ttlCap < asOf)
+            {
+                asOf = ttlCap;
+            }
+        }
+
+        // Liveness cap: mirror RunTickAsync's rule so a blind window past last-healthy is structurally
+        // un-billable (docs/TUNNEL.md §8). A null liveness source (unit tests) means no gating; a
+        // liveness source that returns null (no live tunnel) leaves the cap at whatever TTL/`now` gave.
+        if (_liveness?.LastHealthyAt(lease.HostId) is { } lastHealthy && lastHealthy < asOf)
+        {
+            asOf = lastHealthy;
+        }
+
+        return asOf;
+    }
+
+    /// <summary>
     /// Flushes the accrued metering interval for a single active lease up to <paramref name="asOf"/>:
     /// accrues the healthy seconds since the watermark, posts the <c>lease_charge</c> (fee-split from
     /// the active policy), writes the <c>lease_usage</c> row, and advances the watermark. Idempotent on

@@ -366,6 +366,26 @@ public class MeteringServiceTests
         Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
     }
 
+    [Fact]
+    public async Task FinalizeLease_caps_the_flush_watermark_at_started_at_plus_ttl()
+    {
+        // Task #34: the on-end finalization must cap at ttl even when `now` is past it — the lease was
+        // not entitled to run past its TTL, so a release / TTL-expiry / container-lost finalize called
+        // some seconds after TTL must still only bill up to started_at + ttl_seconds.
+        var fx = await ReadyFixtureAsync();
+        var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 180);
+        await fx.FundHoldAsync(lease.Id, holdCents: 180);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(220)); // 40s past TTL
+        var end = await fx.NewService().FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+
+        Assert.NotNull(end);
+        Assert.Equal(180, end!.Usage.BillableSeconds);
+        Assert.Equal(T0.AddSeconds(180), end.Usage.PeriodEnd);
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.Equal(180, stored!.BillableSeconds);
+    }
+
     [Theory]
     [InlineData(0, 0, 0)]        // sub-second / zero
     [InlineData(60, 60, 60)]    // one minute @ 1¢/s

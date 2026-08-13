@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Metering;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
@@ -37,6 +38,7 @@ public sealed class LeaseService : ILeaseService
     private readonly ITunnelRelay _relay;
     private readonly IHostCapabilitySource _capabilities;
     private readonly ILeaseWalletGate _walletGate;
+    private readonly MeteringService _meter;
     private readonly PlatformPolicyService _policy;
     private readonly TimeProvider _time;
 
@@ -47,6 +49,7 @@ public sealed class LeaseService : ILeaseService
         ITunnelRelay relay,
         IHostCapabilitySource capabilities,
         ILeaseWalletGate walletGate,
+        MeteringService meter,
         PlatformPolicyService policy,
         TimeProvider time)
     {
@@ -56,6 +59,7 @@ public sealed class LeaseService : ILeaseService
         _relay = relay;
         _capabilities = capabilities;
         _walletGate = walletGate;
+        _meter = meter;
         _policy = policy;
         _time = time;
     }
@@ -376,6 +380,14 @@ public sealed class LeaseService : ILeaseService
         }
 
         var now = _time.GetUtcNow();
+
+        // Flush the final billable interval BEFORE transitioning to ended so the hold release below
+        // sizes off the full metered runtime, not a stale watermark that leaves the tail between the
+        // last 60s tick and the stop unbilled (task #34). The flush is capped at ttl and last-healthy
+        // host liveness (same cap RunTickAsync applies), so the consumer is charged exactly the healthy
+        // seconds up to the stop and never past what the lease was entitled to run.
+        await _meter.FinalizeLeaseAsync(lease.Id, now, ct);
+
         var ended = await _leases.TransitionStateAsync(
             lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: now, ct: ct);
 

@@ -75,7 +75,8 @@ public class LeaseReconciliationServiceTests
             HostId = host.Id;
         }
 
-        public async Task<Lease> SeedActiveLeaseAsync(long price = PricePerMin, long holdCents = 3600)
+        public async Task<Lease> SeedActiveLeaseAsync(
+            long price = PricePerMin, long holdCents = 3600, int ttlSeconds = 3600)
         {
             var lease = await Leases.CreateAsync(new Lease
             {
@@ -85,7 +86,7 @@ public class LeaseReconciliationServiceTests
                 HostImageId = Guid.NewGuid(),
                 ImageRef = "reg/wisp-base:latest",
                 Network = NetworkMode.Open,
-                TtlSeconds = 3600,
+                TtlSeconds = ttlSeconds,
                 PriceCentsPerMin = price,
                 Currency = "usd",
                 Status = LeaseStatus.Active,
@@ -514,6 +515,26 @@ public class LeaseReconciliationServiceTests
         var stored = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
         Assert.Equal(60, stored.BillableSeconds); // 60s billed up to the heartbeat instant
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_container_lost_flush_caps_at_lease_ttl()
+    {
+        // Task #34: the TTL-expiry / container-lost path (host reaped the container at TTL, we only
+        // notice at the next heartbeat) must not bill past the lease TTL. Before the fix, the flush
+        // used `now` (heartbeat instant) and over-billed the post-TTL tail.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 180, holdCents: 180);
+
+        // Heartbeat arrives at 210s — 30s past the 180s TTL. The container is gone (not in the reported
+        // set), so container-lost fires; billing must cap at 180s (started_at + ttl), not 210s.
+        fx.Clock.Advance(TimeSpan.FromSeconds(210));
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+
+        Assert.Equal(new[] { lease.Id }, outcome.ContainerLost);
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(180, stored.BillableSeconds); // capped at TTL, not 210s wall-clock
     }
 
     [Fact]

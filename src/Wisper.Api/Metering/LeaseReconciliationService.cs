@@ -294,7 +294,10 @@ public sealed class LeaseReconciliationService
                 continue;
             }
 
-            await _meter.FlushLeaseAsync(lease, now, ct);
+            // Finalize (task #34): cap the tail flush at ttl and last-healthy — a container that ran
+            // past its TTL before we noticed it silently died is not billable past the TTL, and the
+            // heartbeat's `now` may otherwise over-bill the tail past what the lease was entitled to.
+            await _meter.FinalizeLeaseAsync(lease, now, ct);
             await _leases.TransitionStateAsync(
                 lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.ContainerLost, endedAt: now, ct: ct);
             await _walletGate.ReleaseHoldAsync(lease.Id, ct);
