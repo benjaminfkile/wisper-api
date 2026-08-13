@@ -1,6 +1,8 @@
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Ledger;
 using Wisper.Api.Leases;
+using Wisper.Api.Metering;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
@@ -29,17 +31,93 @@ public class LeaseServiceTests
         public InMemoryHostImageRepository Images { get; } = new();
         public FakeTunnelRelay Relay { get; } = new();
         public FakeHostCapabilitySource Capabilities { get; } = new();
-        public ILeaseWalletGate WalletGate { get; set; } = new AllowWalletGate();
         public InMemoryPlatformPolicyRepository Policies { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
         public Guid ConsumerId { get; } = Guid.NewGuid();
 
+        public InMemoryLeaseUsageRepository Usage { get; } = new();
+        public InMemoryLedgerStore LedgerStore { get; } = new();
+        public LedgerService Ledger { get; }
+
+        public ILeaseWalletGate WalletGate { get; set; }
+
         public Host? Host { get; private set; }
         public HostImage? Image { get; private set; }
 
+        public Fixture()
+        {
+            // Default to the real WalletLeaseGate wired to the in-memory ledger so the release-path
+            // meter flush (task #34) actually has a hold to debit and produces a valid hold_release
+            // remainder. Tests that need a specific gate double (DenyingWalletGate, HoldFailsWalletGate)
+            // still override this via the { WalletGate = ... } object initializer.
+            Ledger = new LedgerService(LedgerStore);
+            var policy = new PlatformPolicyService(Policies, Clock);
+            var fraud = new FraudGuardService(
+                Ledger, Leases, policy, Clock,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<FraudGuardService>.Instance);
+            WalletGate = new WalletLeaseGate(
+                Ledger, Leases, policy, fraud,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<WalletLeaseGate>.Instance);
+        }
+
         public LeaseService Service() =>
             new(Leases, Hosts, Images, Relay, Capabilities, WalletGate,
-                new PlatformPolicyService(Policies, Clock), Clock);
+                Meter(), new PlatformPolicyService(Policies, Clock), Clock);
+
+        public MeteringService Meter() =>
+            new(Leases, Usage, Hosts, Ledger, new PlatformPolicyService(Policies, Clock),
+                Clock, Microsoft.Extensions.Logging.Abstractions.NullLogger<MeteringService>.Instance);
+
+        /// <summary>
+        /// Tops up the consumer wallet by <paramref name="amountCents"/> so the wallet gate can cover
+        /// the up-front lease hold when the real <see cref="WalletLeaseGate"/> is in use.
+        /// </summary>
+        public async Task FundWalletAsync(long amountCents, Guid? consumerUserId = null)
+        {
+            var user = consumerUserId ?? ConsumerId;
+            var wallet = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user, "usd");
+            var cash = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null, "usd");
+            var fees = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null, "usd");
+            await Ledger.PostAsync(LedgerFlows.Topup(
+                wallet.Id, cash.Id, fees.Id,
+                grossAmountCents: amountCents, stripeFeeCents: 0,
+                idempotencyKey: $"topup:{user:D}:{amountCents}"));
+        }
+
+        public async Task<long> BalanceAsync(LedgerAccountKind kind, Guid? owner = null)
+        {
+            var account = await Ledger.GetOrCreateAccountAsync(kind, owner, "usd");
+            return await Ledger.GetBalanceAsync(account.Id);
+        }
+
+        private bool _walletFunded;
+
+        private async Task EnsureWalletFundedAsync()
+        {
+            if (_walletFunded)
+            {
+                return;
+            }
+
+            _walletFunded = true;
+            await FundWalletAsync(amountCents: 10_000_000);
+        }
+
+        private bool _defaultPolicySeeded;
+
+        private async Task EnsureDefaultPolicyAsync()
+        {
+            if (_defaultPolicySeeded)
+            {
+                return;
+            }
+
+            _defaultPolicySeeded = true;
+            // Seed at a strictly earlier instant than T0 so a test-published policy at T0 (e.g. the
+            // min_isolation floor tests) is unambiguously the "newest" active version.
+            await new PlatformPolicyService(Policies, Clock).PublishAsync(
+                new PlatformPolicy { FeeBps = 0, EffectiveFrom = T0.AddSeconds(-1) });
+        }
 
         /// <summary>Publishes a platform policy version setting the minimum isolation floor (task #418).</summary>
         public Task SetMinIsolationAsync(string? minIsolation) =>
@@ -118,6 +196,15 @@ public class LeaseServiceTests
             int? memoryMb = null,
             int gpus = 0)
         {
+            // Seed a default platform policy so the on-release meter flush (task #34) has a fee_bps to
+            // split by. Idempotent per fixture — later tests may still publish a superseding version.
+            await EnsureDefaultPolicyAsync();
+
+            // Pre-fund the consumer wallet generously so the real WalletLeaseGate can cover any up-front
+            // hold under test (create tests exercise a range of TTL/price combos). Free images (price 0)
+            // pass through — the topup is a no-op there because the hold gate does not require funds.
+            await EnsureWalletFundedAsync();
+
             var host = await Hosts.CreateAsync(new Host
             {
                 Id = Guid.NewGuid(),
@@ -1048,7 +1135,9 @@ public class LeaseServiceTests
         await fx.SeedImageAsync();
         var svc = fx.Service();
         var mine = await svc.CreateAsync(fx.ConsumerId, fx.Request());
-        await svc.CreateAsync(Guid.NewGuid(), fx.Request()); // another user's lease
+        var otherUser = Guid.NewGuid();
+        await fx.FundWalletAsync(amountCents: 10_000_000, consumerUserId: otherUser);
+        await svc.CreateAsync(otherUser, fx.Request()); // another user's lease
 
         var active = await svc.ListAsync(fx.ConsumerId, new LeaseListQuery { Status = LeaseStatus.Active, Limit = 25 });
         Assert.Equal(TunnelLeaseId.Format(mine.Lease.Id), Assert.Single(active.Data).Id);
@@ -1152,6 +1241,94 @@ public class LeaseServiceTests
 
         Assert.Null(view);
         Assert.Empty(fx.Relay.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task Release_flushes_the_final_metered_interval_before_the_hold_is_released()
+    {
+        // Task #34 regression (live E2E on wisper-api-dev 2026-08-12): a lease released between two 60s
+        // ticks was settled off the stale watermark, leaving the 40s+ tail unbilled and returning too
+        // much of the hold to the wallet. The fix: the release path must flush the meter up to the stop
+        // (capped at ttl) BEFORE computing the hold release, so billable_seconds reflects the whole
+        // metered runtime and the hold_release remainder is sized off it.
+        var fx = new Fixture();
+        // Price 60¢/min = 1¢/s so the numbers line up with the E2E report — every billable second is a
+        // billable cent. TTL 180s → hold = ⌈180/60⌉·60 = 180¢.
+        await fx.SeedImageAsync(price: 60, maxTtl: 3600);
+        var created = await fx.Service().CreateAsync(
+            fx.ConsumerId, fx.Request(ttlSeconds: 180));
+        var meter = fx.Meter();
+
+        // Run one 60s tick (mirrors the periodic MeteringHostedService), then release mid-interval at
+        // 90s — the exact shape of the bug: last_metered_at at 60s, release 30s later.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        Assert.Equal(1, await meter.RunTickAsync());
+        var afterTick = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal(60, afterTick!.BillableSeconds);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(30));
+        await fx.Service().ReleaseAsync(fx.ConsumerId, created.Lease.Id);
+
+        // The final 30s tail was billed on release (billable_seconds advanced past the stale watermark),
+        // so the total charged equals the full metered runtime — no unbilled tail.
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal(90, stored!.BillableSeconds);
+        Assert.Equal(LeaseStatus.Ended, stored.Status);
+
+        // The ledger reflects the full charge (60¢ tick + 30¢ tail = 90¢) and the wallet hold release
+        // returned exactly the remainder (hold 180¢ − charged 90¢ = 90¢). Nothing is left unbilled.
+        Assert.Equal(90, await fx.BalanceAsync(LedgerAccountKind.HostEarnings, fx.Host!.OwnerUserId)
+            + await fx.BalanceAsync(LedgerAccountKind.PlatformRevenue));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
+    }
+
+    [Fact]
+    public async Task Release_caps_the_final_flush_at_the_lease_ttl()
+    {
+        // A lease released AFTER its TTL (the E2E bug scenario — DELETE arrived 6s past TTL) must not
+        // bill for the post-TTL tail: the lease was not entitled to run past its TTL, so the flush
+        // caps at started_at + ttl_seconds even when the caller stops later.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 60, maxTtl: 3600);
+        var created = await fx.Service().CreateAsync(
+            fx.ConsumerId, fx.Request(ttlSeconds: 180));
+
+        // Two ticks land 60s and 120s in; the second half of the run is unmetered (last_metered_at at
+        // 120s). Then advance 66s past that — 6s past the 180s TTL — and release.
+        var meter = fx.Meter();
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await meter.RunTickAsync();
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await meter.RunTickAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(66));
+        await fx.Service().ReleaseAsync(fx.ConsumerId, created.Lease.Id);
+
+        // billable_seconds is capped at TTL (180s), not the wall-clock 186s at release time.
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal(180, stored!.BillableSeconds);
+        // The wallet hold is fully consumed: hold 180¢ − charged 180¢ = 0¢ remainder.
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
+    }
+
+    [Fact]
+    public async Task Release_before_any_tick_still_bills_the_short_runtime()
+    {
+        // A lease released before its first 60s tick fires (a sub-minute lifetime) must still bill for
+        // the seconds it ran — the on-end flush is the only chance to charge for that runtime.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 60, maxTtl: 3600);
+        var created = await fx.Service().CreateAsync(
+            fx.ConsumerId, fx.Request(ttlSeconds: 180));
+
+        // 20s in, released — no periodic tick has run yet. At 60¢/min (1¢/s), that's a 20¢ bill.
+        fx.Clock.Advance(TimeSpan.FromSeconds(20));
+        await fx.Service().ReleaseAsync(fx.ConsumerId, created.Lease.Id);
+
+        var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
+        Assert.Equal(20, stored!.BillableSeconds);
+        Assert.Equal(20, await fx.BalanceAsync(LedgerAccountKind.HostEarnings, fx.Host!.OwnerUserId)
+            + await fx.BalanceAsync(LedgerAccountKind.PlatformRevenue));
     }
 
     [Fact]
