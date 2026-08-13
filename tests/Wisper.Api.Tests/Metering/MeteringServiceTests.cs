@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Wisper.Api.Domain;
 using Wisper.Api.Ledger;
+using Wisper.Api.Leases;
 using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
@@ -394,4 +395,47 @@ public class MeteringServiceTests
     [InlineData(30, 30, 15)]    // 30s @ 0.5¢/s → ⌊15⌋
     public void ChargeCentsFor_floors_seconds_at_the_per_minute_price(long seconds, long price, long expected) =>
         Assert.Equal(expected, MeteringService.ChargeCentsFor(seconds, price));
+
+    [Fact]
+    public async Task Lease_view_running_cost_equals_the_sum_of_posted_lease_charge_at_every_tick()
+    {
+        // Reproduces the wisper-api-dev finding (task #35, 2026-08-12): at billable_seconds=137 on a
+        // 60¢/min lease the ledger charged 60+60+17=137¢ but a whole-minute display would show 120¢.
+        // The read-side CostCentsSoFar must share the meter's per-second formula so the two never diverge.
+        var fx = await ReadyFixtureAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.FundHoldAsync(lease.Id, holdCents: 3600);
+        var meter = fx.NewService();
+
+        // Tick 1 — 60s billed, 60¢ posted; display and ledger agree at whole-minute boundary.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await meter.RunTickAsync();
+        await AssertViewMatchesLedgerAsync(fx, lease.Id, expectedSeconds: 60, expectedCharge: 60);
+
+        // Tick 2 — another 60s billed; whole-minute rounding still happens to agree at 120s.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await meter.RunTickAsync();
+        await AssertViewMatchesLedgerAsync(fx, lease.Id, expectedSeconds: 120, expectedCharge: 120);
+
+        // Final flush of the partial 17s — this is where whole-minute display used to lie:
+        // ⌊137/60⌋·60 = 120¢ shown, but the ledger has actually charged 137¢.
+        fx.Clock.Advance(TimeSpan.FromSeconds(17));
+        await meter.FlushLeaseByIdAsync(lease.Id, fx.Clock.GetUtcNow());
+        await AssertViewMatchesLedgerAsync(fx, lease.Id, expectedSeconds: 137, expectedCharge: 137);
+    }
+
+    private static async Task AssertViewMatchesLedgerAsync(
+        Fixture fx, Guid leaseId, long expectedSeconds, long expectedCharge)
+    {
+        var stored = await fx.Leases.GetByIdAsync(leaseId);
+        Assert.Equal(expectedSeconds, stored!.BillableSeconds);
+
+        var chargedByLedger = (await fx.Usage.ListByLeaseAsync(leaseId)).Sum(u => u.AmountCents);
+        Assert.Equal(expectedCharge, chargedByLedger);
+
+        var view = LeaseView.From(stored);
+        Assert.Equal(chargedByLedger, view.CostCentsSoFar);
+        Assert.Equal(MeteringService.ChargeCentsFor(stored.BillableSeconds, stored.PriceCentsPerMin),
+            view.CostCentsSoFar);
+    }
 }
