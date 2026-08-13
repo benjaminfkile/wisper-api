@@ -1,3 +1,4 @@
+using DbUp.Engine.Output;
 using Wisper.Api.Persistence;
 using Xunit;
 
@@ -43,5 +44,41 @@ public class MigrationRunnerTests
         var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
 
         Assert.ThrowsAny<ArgumentException>(() => MigrationRunner.Run("", logger));
+    }
+
+    /// <summary>
+    /// Regression for the CloudWatch connection-string leak: DbUp's default ConsoleUpgradeLog
+    /// prints "Master ConnectionString => Host=...;Username=...;Password=******;..." at the
+    /// EnsureDatabase step. <see cref="MigrationRunner"/> routes that step through
+    /// <see cref="MigrationRunner.SilentEnsureLog"/> instead. Whatever DbUp hands to that sink
+    /// — including the master connection string — must be dropped.
+    /// </summary>
+    [Fact]
+    public void Silent_ensure_log_discards_all_output_including_connection_string()
+    {
+        var log = (IUpgradeLog)MigrationRunner.SilentEnsureLog;
+
+        var recording = new RecordingLog();
+        Assert.IsAssignableFrom<IUpgradeLog>(log);
+        Assert.NotSame(recording, log);
+
+        // Simulate the exact leak DbUp's ConsoleUpgradeLog would produce.
+        log.WriteInformation(
+            "Master ConnectionString => Host={0};Port=5432;Database=postgres;Username={1};Password=******;SSL Mode=Require",
+            "db.internal", "wisper_app");
+        log.WriteInformation("Beginning database upgrade");
+        log.WriteWarning("Something odd: Host=leaked;Username=leaked");
+        log.WriteError("Something failed: Host=leaked;Username=leaked");
+
+        // The sink is a black hole — nothing observable, no state, no throw.
+        Assert.Empty(recording.Messages);
+    }
+
+    private sealed class RecordingLog : IUpgradeLog
+    {
+        public List<string> Messages { get; } = new();
+        public void WriteInformation(string format, params object[] args) => Messages.Add(string.Format(format, args));
+        public void WriteWarning(string format, params object[] args) => Messages.Add(string.Format(format, args));
+        public void WriteError(string format, params object[] args) => Messages.Add(string.Format(format, args));
     }
 }

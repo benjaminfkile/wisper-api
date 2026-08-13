@@ -1,6 +1,7 @@
 using System.Reflection;
 using DbUp;
 using DbUp.Engine;
+using DbUp.Engine.Output;
 
 namespace Wisper.Api.Persistence;
 
@@ -19,6 +20,15 @@ public static class MigrationRunner
     private static readonly Assembly ScriptAssembly = typeof(MigrationRunner).Assembly;
 
     /// <summary>
+    /// A discarding <see cref="IUpgradeLog"/> used only for the ensure-database step. DbUp's
+    /// default <c>ConsoleUpgradeLog</c> prints "Master ConnectionString =&gt; ..." to stdout at
+    /// that step, leaking host/username/database to CloudWatch even with the password masked. The
+    /// ensure step throws on failure, so nothing important is lost by dropping its informational
+    /// output — errors still surface as exceptions and abort startup.
+    /// </summary>
+    public static readonly IUpgradeLog SilentEnsureLog = new NullUpgradeLog();
+
+    /// <summary>
     /// Runs all pending migrations against <paramref name="connectionString"/>. Throws if the
     /// upgrade fails (so a bad migration aborts startup loudly rather than booting on a half-applied
     /// schema). Callers must only invoke this when a database is configured.
@@ -28,7 +38,10 @@ public static class MigrationRunner
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
 
         // Create the target logical database if it does not yet exist (docs/DATA_MODEL.md §15).
-        EnsureDatabase.For.PostgresqlDatabase(connectionString);
+        // Route DbUp's own logging into a silent sink so the master connection string never lands
+        // in stdout/CloudWatch; emit a single plain success line via the structured logger instead.
+        EnsureDatabase.For.PostgresqlDatabase(connectionString, SilentEnsureLog);
+        logger.LogInformation("database ensured (connection ok)");
 
         var upgrader = DeployChanges.To
             .PostgresqlDatabase(connectionString)
@@ -45,6 +58,13 @@ public static class MigrationRunner
         }
 
         return result;
+    }
+
+    private sealed class NullUpgradeLog : IUpgradeLog
+    {
+        public void WriteInformation(string format, params object[] args) { }
+        public void WriteWarning(string format, params object[] args) { }
+        public void WriteError(string format, params object[] args) { }
     }
 
     /// <summary>Whether an embedded resource name is one of our ordered migration scripts.</summary>
