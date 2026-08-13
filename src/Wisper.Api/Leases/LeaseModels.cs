@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Wisper.Api.Domain;
+using Wisper.Api.Metering;
 
 namespace Wisper.Api.Leases;
 
@@ -161,12 +162,14 @@ public sealed record LeaseView(
     }
 
     /// <summary>
-    /// The running cost placeholder: billed minutes so far × price (docs/API.md §5). Metering (P5) is the
-    /// authority for <c>billable_seconds</c>; here it is simply the persisted watermark, so this stays
-    /// truthful (0 until the meter accrues) rather than guessing from wall-clock.
+    /// The running cost the consumer sees (docs/API.md §5): the exact per-second charge the metering
+    /// ledger posts, computed via <see cref="MeteringService.ChargeCentsFor"/> from the persisted
+    /// <c>billable_seconds</c> watermark. Sharing the formula guarantees the display always matches the
+    /// sum of posted <c>lease_charge</c> for the lease — whole-minute rounding here would under-report the
+    /// actual charge (137s at 60¢/min: ledger 137¢, whole-minute 120¢).
     /// </summary>
     private static long RunningCostCents(Lease lease) =>
-        lease.BillableSeconds / 60 * lease.PriceCentsPerMin;
+        MeteringService.ChargeCentsFor(lease.BillableSeconds, lease.PriceCentsPerMin);
 
     /// <summary>When the lease's TTL elapses, measured from meter start; null until it starts.</summary>
     private static DateTimeOffset? ExpiresAtOf(Lease lease) =>
