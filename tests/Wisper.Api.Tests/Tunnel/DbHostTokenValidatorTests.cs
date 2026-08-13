@@ -1,3 +1,5 @@
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Domain;
 using Wisper.Api.Hosts;
@@ -19,6 +21,11 @@ public class DbHostTokenValidatorTests
     private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
 
     private static ConfigHostTokenValidator Config(params (string token, string hostId)[] tokens)
+        => Config(Environments.Development, tokens);
+
+    private static ConfigHostTokenValidator Config(
+        string environmentName,
+        params (string token, string hostId)[] tokens)
     {
         var options = new TunnelOptions();
         foreach (var (token, hostId) in tokens)
@@ -26,7 +33,9 @@ public class DbHostTokenValidatorTests
             options.HostTokens[token] = hostId;
         }
 
-        return new ConfigHostTokenValidator(new StaticOptionsMonitor<TunnelOptions>(options));
+        return new ConfigHostTokenValidator(
+            new StaticOptionsMonitor<TunnelOptions>(options),
+            new FakeHostEnvironment(environmentName));
     }
 
     private static Host SeedHost(InMemoryHostRepository hosts, string token)
@@ -109,5 +118,39 @@ public class DbHostTokenValidatorTests
 
         Assert.False((await validator.ValidateAsync(null)).Succeeded);
         Assert.False((await validator.ValidateAsync("")).Succeeded);
+    }
+
+    [Theory]
+    [InlineData("Production")]
+    [InlineData("Staging")]
+    public async Task Static_fallback_is_not_consulted_outside_Development(string environment)
+    {
+        // A DB-issued token (via the store) MUST still resolve — the env gate only closes the
+        // static fallback, not the DB path (task #39).
+        var hosts = new InMemoryHostRepository();
+        var dbToken = HostAgentToken.Issue().Token;
+        var host = SeedHost(hosts, dbToken);
+
+        // The config carries a static token that WOULD resolve in Development. Outside Development
+        // it must fail closed — a deployed secret can no longer mint a long-lived host bearer.
+        var validator = new DbHostTokenValidator(hosts, Config(environment, ("static-dev-token", "host-static")));
+
+        var staticResult = await validator.ValidateAsync("static-dev-token");
+        Assert.False(staticResult.Succeeded);
+        Assert.Null(staticResult.HostId);
+
+        var dbResult = await validator.ValidateAsync(dbToken);
+        Assert.True(dbResult.Succeeded);
+        Assert.Equal(host.Id.ToString(), dbResult.HostId);
+    }
+
+    private sealed class FakeHostEnvironment : IHostEnvironment
+    {
+        public FakeHostEnvironment(string environmentName) => EnvironmentName = environmentName;
+
+        public string EnvironmentName { get; set; }
+        public string ApplicationName { get; set; } = "Wisper.Api.Tests";
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 }
