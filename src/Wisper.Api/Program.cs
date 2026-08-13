@@ -182,10 +182,14 @@ app.MapGet("/healthz", health);
 // The host agent tunnel (docs/TUNNEL.md §3). Unversioned, raw WebSocket, alongside /healthz.
 app.MapAgentTunnel();
 
-// DEV-ONLY, money-free lease drive endpoints (Phase-1 test harness). Only mapped when
-// Tunnel:EnableDevEndpoints is true; replaced by the real /v1/leases surface once accounts land.
+// DEV-ONLY, money-free lease drive endpoints (Phase-1 test harness). Structurally gated on the
+// hosting environment being Development — the deployed container runs as Production, so these
+// endpoints are unreachable in any deployed environment regardless of secret misconfiguration
+// (unauthenticated RCE against any connected host). The Tunnel:EnableDevEndpoints flag is still
+// honoured on top so a local `dotnet run` can leave them off. Replaced by the real /v1/leases
+// surface once accounts land.
 var tunnelOptions = app.Services.GetRequiredService<IOptions<TunnelOptions>>().Value;
-if (tunnelOptions.EnableDevEndpoints)
+if (app.Environment.IsDevelopment() && tunnelOptions.EnableDevEndpoints)
 {
     app.MapDevLeaseEndpoints();
     // Raw-WebSocket interactive shell harness (docs/API.md §7); replaced by WS /v1/leases/:id/shell.
