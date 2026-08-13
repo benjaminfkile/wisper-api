@@ -37,17 +37,20 @@ public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
     private readonly IUserRepository _users;
     private readonly TimeProvider _time;
     private readonly ConfigApiKeyAuthenticator _fallback;
+    private readonly ILogger<DbApiKeyAuthenticator> _logger;
 
     public DbApiKeyAuthenticator(
         IApiKeyRepository keys,
         IUserRepository users,
         TimeProvider time,
-        ConfigApiKeyAuthenticator fallback)
+        ConfigApiKeyAuthenticator fallback,
+        ILogger<DbApiKeyAuthenticator> logger)
     {
         _keys = keys;
         _users = users;
         _time = time;
         _fallback = fallback;
+        _logger = logger;
     }
 
     public async Task<ClaimsPrincipal?> AuthenticateAsync(string? bearerToken, CancellationToken ct = default)
@@ -65,10 +68,15 @@ public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
         {
             // Known, active key: the owner must exist and be active, else fail closed (a suspended or
             // deleted owner gates the key exactly as a host suspension gates the tunnel). A recognized
-            // key never falls through to the config allow-list.
+            // key never falls through to the config allow-list. A missing/suspended owner is an auth
+            // failure (401), not a 500 downstream — log a single line naming the key so operators can
+            // spot the mis-linked row instead of chasing an opaque server error.
             var user = await _users.GetByIdAsync(key.UserId, ct);
             if (user is null || user.Status != UserStatus.Active)
             {
+                _logger.LogWarning(
+                    "API key {KeyId} (prefix {KeyPrefix}) has owner user_id={OwnerId} that resolves to no active user; rejecting as 401.",
+                    key.Id, key.TokenPrefix, key.UserId);
                 return null;
             }
 

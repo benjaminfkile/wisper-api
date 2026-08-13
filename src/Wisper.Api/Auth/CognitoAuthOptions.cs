@@ -86,15 +86,17 @@ public sealed class ApiKeyGrant
     /// <summary>
     /// The subject the key authenticates as — the identity the resolved principal carries (the same
     /// value the JWT/DB-key paths put in the <c>sub</c> claim, so downstream resolves the same user).
+    /// Must name an <b>existing active user</b>: an unresolvable <c>UserId</c> fails authentication with
+    /// 401 (task #36), it does not silently mint a stale account — so downstream user resolution can never
+    /// 500 out of a misconfigured allow-list entry.
     /// </summary>
     public string? UserId { get; set; }
 
     /// <summary>
     /// The email the key authenticates as — mirrors the DB-key path (which carries the owning user's
-    /// email). It seeds the principal's <c>email</c> claim so a config key can <b>bootstrap</b> the
-    /// operator's account (<c>users.email</c> is NOT NULL, docs/DATA_MODEL.md §3) on a DB-less boot; without
-    /// it the operator cannot register a host or place a lease. Optional and empty in production, where this
-    /// allow-list is inert.
+    /// email). Seeds the principal's <c>email</c> claim so any downstream that displays the caller's email
+    /// (e.g. audit rows) sees the same value the DB-key path would. Optional and empty in production, where
+    /// this allow-list is inert.
     /// </summary>
     public string? Email { get; set; }
 

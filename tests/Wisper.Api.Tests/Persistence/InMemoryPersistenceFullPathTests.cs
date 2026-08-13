@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Wisper.Api.Domain;
 using Wisper.Api.Leases;
 using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
 using Xunit;
@@ -32,6 +33,8 @@ namespace Wisper.Api.Tests.Persistence;
 public class InMemoryPersistenceFullPathTests
 {
     private const string ApiKey = "wck_live_selfhost0operator";
+    private const string OperatorSub = "self-host-operator";
+    private const string OperatorEmail = "operator@self-hosted.test";
     private const string ImageRef = "reg/wisp-base:latest";
 
     private sealed class Fixture
@@ -47,9 +50,10 @@ public class InMemoryPersistenceFullPathTests
             new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
                 // A single config API key with consumer+host scopes — the operator-bootstrap escape hatch
-                // that lets a self-hosted operator drive /v1 with no Postgres and no Cognito.
-                builder.UseSetting($"Auth:ApiKeys:{ApiKey}:UserId", "self-host-operator");
-                builder.UseSetting($"Auth:ApiKeys:{ApiKey}:Email", "operator@self-hosted.test");
+                // that lets a self-hosted operator drive /v1 with no Postgres and no Cognito. The named
+                // subject must resolve to a real user (task #36) — the fixture seeds it below.
+                builder.UseSetting($"Auth:ApiKeys:{ApiKey}:UserId", OperatorSub);
+                builder.UseSetting($"Auth:ApiKeys:{ApiKey}:Email", OperatorEmail);
                 builder.UseSetting($"Auth:ApiKeys:{ApiKey}:Scopes:0", "consumer");
                 builder.UseSetting($"Auth:ApiKeys:{ApiKey}:Scopes:1", "host");
                 builder.ConfigureTestServices(services =>
@@ -75,15 +79,26 @@ public class InMemoryPersistenceFullPathTests
         return client;
     }
 
+    private static Task SeedOperator(IUserRepository users) => users.CreateAsync(new User
+    {
+        CognitoSub = OperatorSub,
+        Email = OperatorEmail,
+        Status = UserStatus.Active,
+    });
+
     [Fact]
     public async Task Self_hosted_flow_runs_end_to_end_on_a_db_less_boot()
     {
         var fx = new Fixture();
         using var factory = fx.Build();
+        // Seed the operator's user in the in-memory store so the config API key's subject resolves —
+        // task #36 requires the config sub to name a real user (else 401), so the DB-less operator must
+        // pre-provision this row. In production this would come from real user registration.
+        await SeedOperator(factory.Services.GetRequiredService<IUserRepository>());
         var client = Authed(factory);
 
-        // 1) Register a host. The api-key principal (host scope) provisions the operator's user in the
-        //    in-memory user store and the host lands in the in-memory host store.
+        // 1) Register a host. The api-key principal (host scope) drives POST /v1/hosts and the host lands
+        //    in the in-memory host store, tied to the pre-seeded operator user.
         var registered = await (await client.PostAsJsonAsync("/v1/hosts", new { name = "home-server-1", label = "us" }))
             .EnsureCreated().Content.ReadFromJsonAsync<HostRegisteredDto>();
         Assert.NotNull(registered);
