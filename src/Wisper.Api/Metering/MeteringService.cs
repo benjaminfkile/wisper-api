@@ -68,23 +68,20 @@ public sealed class MeteringService
         {
             ct.ThrowIfCancellationRequested();
 
-            // Cap accrual at the host's last-healthy liveness point so a blind window is structurally
-            // un-billable (docs/TUNNEL.md §8). A host with no live tunnel is skipped this tick — the
-            // disconnect path flushes it to last-healthy and suspends it. No liveness source (unit tests)
-            // means no gating: bill straight up to `now`.
-            var asOf = now;
-            if (_liveness is not null)
+            // Skip a lease whose host has no live tunnel: the disconnect path flushes to last-healthy and
+            // suspends. Left un-skipped, we'd charge across a blind window (docs/TUNNEL.md §8). A null
+            // liveness source (unit tests) means no gating.
+            if (_liveness is not null && _liveness.LastHealthyAt(lease.HostId) is null)
             {
-                if (_liveness.LastHealthyAt(lease.HostId) is not { } lastHealthy)
-                {
-                    continue;
-                }
-
-                if (lastHealthy < asOf)
-                {
-                    asOf = lastHealthy;
-                }
+                continue;
             }
+
+            // The tick applies the SAME caps (TTL + liveness) as the on-end finalize path — a single source
+            // of truth (task #54) means a runaway "still reported" lease past its TTL cannot accrue billable
+            // seconds past started_at + ttl_seconds. A ceiling-hit lease is a cheap no-op this tick: the
+            // watermark won't advance (elapsedSeconds == 0), no ledger post is attempted, and lifecycle
+            // transition is left to the reconciliation paths.
+            var asOf = ComputeCappedWatermark(lease, now);
 
             if (await FlushLeaseAsync(lease, asOf, ct) is not null)
             {
@@ -133,15 +130,22 @@ public sealed class MeteringService
         Lease lease, DateTimeOffset now, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        return FlushLeaseAsync(lease, ComputeFinalizationWatermark(lease, now), ct);
+        return FlushLeaseAsync(lease, ComputeCappedWatermark(lease, now), ct);
     }
 
-    private DateTimeOffset ComputeFinalizationWatermark(Lease lease, DateTimeOffset now)
+    /// <summary>
+    /// The single source of truth for the "as-of" watermark a flush is allowed to bill up to (task #54).
+    /// Applies the TTL cap (<c>started_at + ttl_seconds</c> — the lease was not entitled to run past it,
+    /// so a post-TTL tail is not billable, task #34) and the liveness cap (last-healthy — a blind window
+    /// past that is structurally un-billable, docs/TUNNEL.md §8). Both the periodic tick and the on-end
+    /// finalize call this so the two cannot drift: if the tick capped less strictly than finalize, the
+    /// finalize's shorter watermark would land BEHIND <c>last_metered_at</c> and short-circuit to null,
+    /// leaving an overcharge un-corrected.
+    /// </summary>
+    private DateTimeOffset ComputeCappedWatermark(Lease lease, DateTimeOffset now)
     {
         var asOf = now;
 
-        // TTL cap: the lease was not entitled to run past started_at + ttl_seconds, so any tail beyond
-        // it is not billable regardless of when we noticed the stop (task #34).
         if (lease.StartedAt is { } startedAt)
         {
             var ttlCap = startedAt.AddSeconds(lease.TtlSeconds);
@@ -151,9 +155,9 @@ public sealed class MeteringService
             }
         }
 
-        // Liveness cap: mirror RunTickAsync's rule so a blind window past last-healthy is structurally
-        // un-billable (docs/TUNNEL.md §8). A null liveness source (unit tests) means no gating; a
-        // liveness source that returns null (no live tunnel) leaves the cap at whatever TTL/`now` gave.
+        // A null liveness source (unit tests) means no gating; a liveness source that returns null (no
+        // live tunnel) leaves the cap at whatever TTL/`now` gave — the tick handles the "no live tunnel"
+        // case by skipping the lease entirely, but the finalize path still needs to bill up to TTL.
         if (_liveness?.LastHealthyAt(lease.HostId) is { } lastHealthy && lastHealthy < asOf)
         {
             asOf = lastHealthy;
