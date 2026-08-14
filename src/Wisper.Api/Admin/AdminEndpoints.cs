@@ -5,6 +5,7 @@ using Wisper.Api.Auth;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Infrastructure.Idempotency;
+using Wisper.Api.Leases;
 using Wisper.Api.Persistence.Audit;
 
 namespace Wisper.Api.Admin;
@@ -43,6 +44,8 @@ public static class AdminEndpoints
         admin.MapPost("/adjustments", AdjustAsync);
         admin.MapGet("/audit", GetAuditAsync);
         admin.MapGet("/ledger/accounts/{id}", GetLedgerAccountAsync);
+        admin.MapGet("/leases", ListLeasesAsync);
+        admin.MapPost("/leases/{id}/end", ForceEndLeaseAsync);
     }
 
     private static async Task<IResult> GetOverviewAsync(
@@ -196,6 +199,24 @@ public static class AdminEndpoints
         return Results.Json(await admin.GetLedgerAccountAsync(accountId, ct));
     }
 
+    private static async Task<IResult> ListLeasesAsync(
+        HttpContext http, AdminService admin, IUserAccountService accounts, CancellationToken ct)
+    {
+        await accounts.BootstrapAsync(http.User, ct);
+        var (limit, offset) = ParsePaging(http.Request.Query);
+        var status = ParseLeaseStatus(http.Request.Query["status"].ToString());
+        var pastTtl = ParseBool(http.Request.Query["past_ttl"].ToString(), "past_ttl");
+        return Results.Json(await admin.ListLeasesAsync(status, pastTtl, limit, offset, ct));
+    }
+
+    private static async Task<IResult> ForceEndLeaseAsync(
+        string id, HttpContext http, AdminService admin, IUserAccountService accounts, CancellationToken ct)
+    {
+        var leaseId = ParseLeaseId(id);
+        var actor = await accounts.BootstrapAsync(http.User, ct);
+        return Results.Json(await admin.ForceEndLeaseAsync(actor.Id, leaseId, ct));
+    }
+
     /// <summary>
     /// Wraps a money-mutating admin write in the <c>Idempotency-Key</c> replay/conflict/lock protocol
     /// (docs/API.md §9): replays a stored response, 409s a conflicting/in-flight reuse, else runs the
@@ -315,6 +336,77 @@ public static class AdminEndpoints
         Guid.TryParse(id, out var parsed)
             ? parsed
             : throw new ApiException(ApiErrorCode.NotFound, $"No such {what} '{id}'.");
+
+    /// <summary>
+    /// Parses an admin lease id — the same <c>lease_&lt;guid&gt;</c> token the consumer surface accepts —
+    /// AND falls back to a plain uuid so an operator pasting either shape can end the lease. A non-parseable
+    /// id is <c>404</c> so the id shape is never leaked (docs/API.md §3).
+    /// </summary>
+    private static Guid ParseLeaseId(string id)
+    {
+        if (TunnelLeaseId.TryParse(id, out var fromToken))
+        {
+            return fromToken;
+        }
+
+        if (Guid.TryParse(id, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new ApiException(ApiErrorCode.NotFound, $"No such lease '{id}'.");
+    }
+
+    /// <summary>
+    /// Parses the optional <c>status</c> query for the admin lease listing (task #57): a blank value means
+    /// "any non-terminal status", and any other value is validated against <see cref="LeaseStatus"/> so a
+    /// typo surfaces as a <c>validation_error</c> rather than a silent match-nothing.
+    /// </summary>
+    private static LeaseStatus? ParseLeaseStatus(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!Enum.TryParse<LeaseStatus>(value, ignoreCase: true, out var status) || !Enum.IsDefined(status))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError, "Unknown 'status'.", new { field = "status" });
+        }
+
+        return status;
+    }
+
+    /// <summary>
+    /// Parses an optional boolean query flag ("true"/"false"/"1"/"0", case-insensitive). Blank ⇒ false;
+    /// anything else ⇒ <c>validation_error</c> so a typo (<c>past_ttl=yes</c>) does not silently do nothing.
+    /// </summary>
+    private static bool ParseBool(string? value, string field)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (bool.TryParse(value, out var parsed))
+        {
+            return parsed;
+        }
+
+        if (value == "1")
+        {
+            return true;
+        }
+
+        if (value == "0")
+        {
+            return false;
+        }
+
+        throw new ApiException(
+            ApiErrorCode.ValidationError, $"'{field}' must be a boolean.", new { field });
+    }
 
     private static string? NullIfBlank(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;

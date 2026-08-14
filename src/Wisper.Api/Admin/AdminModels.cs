@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Wisper.Api.Domain;
+using Wisper.Api.Leases;
 using Host = Wisper.Api.Domain.Host;
 
 namespace Wisper.Api.Admin;
@@ -224,3 +225,45 @@ public sealed record LedgerEntryView(
 public sealed record LedgerAccountForensicsResponse(
     [property: JsonPropertyName("account")] LedgerAccountView Account,
     [property: JsonPropertyName("entries")] IReadOnlyList<LedgerEntryView> Entries);
+
+/// <summary>
+/// A lease as the admin sees it (docs/API.md §8, task #57) — identity, owner and host, current lifecycle
+/// state, TTL/price snapshot and the metering timeline. The admin listing surfaces the <c>active +
+/// suspended</c> set so an operator can find stuck leases (suspended older than X, active past TTL)
+/// without SQL; <see cref="ExpiresAt"/> lets the caller/UI compute "past TTL" from the returned row.
+/// </summary>
+public sealed record AdminLeaseView(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("consumer_user_id")] Guid ConsumerUserId,
+    [property: JsonPropertyName("host_id")] Guid HostId,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("end_reason")] string? EndReason,
+    [property: JsonPropertyName("ttl_seconds")] int TtlSeconds,
+    [property: JsonPropertyName("price_cents_per_min")] long PriceCentsPerMin,
+    [property: JsonPropertyName("currency")] string Currency,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("started_at")] DateTimeOffset? StartedAt,
+    [property: JsonPropertyName("last_metered_at")] DateTimeOffset? LastMeteredAt,
+    [property: JsonPropertyName("billable_seconds")] long BillableSeconds,
+    [property: JsonPropertyName("suspended_at")] DateTimeOffset? SuspendedAt,
+    [property: JsonPropertyName("ended_at")] DateTimeOffset? EndedAt,
+    [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt)
+{
+    /// <summary>Projects a stored <see cref="Lease"/> to its admin wire view (task #57).</summary>
+    public static AdminLeaseView From(Lease lease) => new(
+        TunnelLeaseId.Format(lease.Id),
+        lease.ConsumerUserId,
+        lease.HostId,
+        PgEnum.ToLabel(lease.Status),
+        lease.EndReason is { } r ? PgEnum.ToSnakeLabel(r) : null,
+        lease.TtlSeconds,
+        lease.PriceCentsPerMin,
+        lease.Currency,
+        lease.CreatedAt,
+        lease.StartedAt,
+        lease.LastMeteredAt,
+        lease.BillableSeconds,
+        lease.SuspendedAt,
+        lease.EndedAt,
+        lease.StartedAt is { } started ? started.AddSeconds(lease.TtlSeconds) : null);
+}

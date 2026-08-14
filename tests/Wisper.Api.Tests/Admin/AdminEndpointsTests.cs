@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Wisper.Api.Auth;
 using Wisper.Api.Domain;
+using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Payments;
 using Wisper.Api.Persistence.Audit;
@@ -16,6 +17,7 @@ using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Policy;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
+using Wisper.Api.Tunnel;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -39,6 +41,7 @@ public class AdminEndpointsTests
         public InMemoryPlatformPolicyRepository Policy { get; } = new();
         public InMemoryIdempotencyKeyRepository Idempotency { get; } = new();
         public FakeStripeBillingGateway Stripe { get; } = new();
+        public FakeTunnelRelay Relay { get; } = new();
 
         public FakeJwtValidator Validator { get; } = new()
         {
@@ -67,6 +70,8 @@ public class AdminEndpointsTests
                     services.AddSingleton<IIdempotencyKeyRepository>(Idempotency);
                     services.RemoveAll<IStripeBillingGateway>();
                     services.AddSingleton<IStripeBillingGateway>(Stripe);
+                    services.RemoveAll<ITunnelRelay>();
+                    services.AddSingleton<ITunnelRelay>(Relay);
                 }));
 
         public async Task<Guid> SeedUserAsync(string email)
@@ -301,6 +306,83 @@ public class AdminEndpointsTests
         Assert.Equal(500, forensics.Account.BalanceCents);
         Assert.NotEmpty(forensics.Entries);
     }
+
+    [Fact]
+    public async Task Admin_force_end_ends_the_lease_and_admin_lease_list_surfaces_it()
+    {
+        // Task #57 endpoint integration: the wire surface exposes GET /v1/admin/leases and
+        // POST /v1/admin/leases/{id}/end, and the two compose end-to-end over the real app host.
+        var fx = new Fixture();
+        var consumer = await fx.SeedUserAsync("c@example.com");
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.SeedHostAsync(owner, "h1");
+
+        // A minimal active lease with a hold, so the release path has something to unwind.
+        var lease = new Lease
+        {
+            Id = Guid.NewGuid(),
+            ConsumerUserId = consumer,
+            HostId = host.Id,
+            HostImageId = Guid.NewGuid(),
+            ImageRef = "reg/wisp-base:latest",
+            Network = NetworkMode.Open,
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 0, // free image → no hold-release accounting to reason about
+            Currency = "usd",
+            Status = LeaseStatus.Active,
+            CreatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            StartedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            LastMeteredAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        };
+        await fx.Leases.CreateAsync(lease);
+
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        // Listing surfaces it.
+        var listing = await client.GetFromJsonAsync<LeaseListDto>("/v1/admin/leases");
+        var listed = Assert.Single(listing!.Data);
+        Assert.Equal("active", listed.Status);
+
+        // Force-end returns the ended view.
+        var end = await client.PostAsync($"/v1/admin/leases/{lease.Id}/end", null);
+        Assert.Equal(HttpStatusCode.OK, end.StatusCode);
+        var ended = await end.Content.ReadFromJsonAsync<LeaseDto>();
+        Assert.Equal("ended", ended!.Status);
+        Assert.Equal("admin", ended.EndReason);
+
+        // Lease.release was relayed to the host (host has a live tunnel via FakeTunnelRelay).
+        Assert.Single(fx.Relay.ReleaseCalls);
+
+        // Audit row records lease.admin_end.
+        var audit = await client.GetFromJsonAsync<AuditPageDto>($"/v1/admin/audit?action=lease.admin_end");
+        var entry = Assert.Single(audit!.Data);
+        Assert.Equal(lease.Id, entry.TargetId);
+
+        // A second POST is a no-op success (idempotent) and does not relay again.
+        var replay = await client.PostAsync($"/v1/admin/leases/{lease.Id}/end", null);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.Single(fx.Relay.ReleaseCalls); // still one — no double notify
+    }
+
+    [Fact]
+    public async Task Admin_force_end_on_unknown_lease_is_404()
+    {
+        var fx = new Fixture();
+        using var factory = fx.Build();
+
+        var response = await Authed(factory)
+            .PostAsync($"/v1/admin/leases/{Guid.NewGuid()}/end", null);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    private sealed record LeaseListDto([property: JsonPropertyName("data")] IReadOnlyList<LeaseDto> Data);
+
+    private sealed record LeaseDto(
+        [property: JsonPropertyName("id")] string Id,
+        [property: JsonPropertyName("status")] string Status,
+        [property: JsonPropertyName("end_reason")] string? EndReason);
 
     private static HttpRequestMessage Json(HttpMethod method, string path, object body, string? idempotencyKey)
     {
