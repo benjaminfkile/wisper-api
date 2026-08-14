@@ -287,6 +287,39 @@ public sealed class TunnelDisconnectCoordinator
         }
     }
 
+    /// <summary>
+    /// On an unsolicited <c>lease.ended</c> frame from the agent (docs/TUNNEL.md §5, §8): route into the
+    /// reconciliation path so billing is finalized (TTL + last-healthy capped), the lease transitions to
+    /// <c>ended</c> with the mapped <paramref name="reason"/>, and the wallet hold is released — the same
+    /// three-step end path the heartbeat set-diff runs for a silently-vanished container, but driven by
+    /// the host's explicit signal (so it fires up to a heartbeat sooner, and carries the correct
+    /// <c>expired</c> reason where the set-diff would say <c>container_lost</c>). Idempotent — an already-
+    /// terminal lease is a no-op. Exception-safe: a reconciliation failure logs but never disrupts the
+    /// tunnel plumbing (mirrors the heartbeat hook). A no-op for a non-Guid host id (the Phase-1 dev/no-DB
+    /// harness).
+    /// </summary>
+    public async Task OnLeaseEndedAsync(
+        string hostId, Guid leaseId, LeaseEndReason reason, CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(hostId, out var host))
+        {
+            return;
+        }
+
+        try
+        {
+            var outcome = await _reconciler.EndLeaseFromAgentAsync(host, leaseId, reason, ct);
+            _logger.LogInformation(
+                "host {HostId} lease.ended: lease {LeaseId} outcome={Outcome} reason={Reason}",
+                host, leaseId, outcome, PgEnum.ToSnakeLabel(reason));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(
+                ex, "lease.ended: routing lease {LeaseId} for host {HostId} failed", leaseId, host);
+        }
+    }
+
     /// <summary>Whether a grace window is currently pending for <paramref name="hostId"/> (diagnostics/tests).</summary>
     public bool HasPendingGrace(string hostId) =>
         Guid.TryParse(hostId, out var host) && _grace.ContainsKey(host);

@@ -439,6 +439,69 @@ public sealed class LeaseReconciliationService
         return new HeartbeatReconcileOutcome(containerLost, revived, orphaned);
     }
 
+    /// <summary>
+    /// On an unsolicited <c>lease.ended</c> frame from the agent (docs/TUNNEL.md §5, §8): the host's local
+    /// reaper / TTL / abnormal-exit ended the container. Finalize billing at the TTL + last-healthy capped
+    /// watermark, transition the lease to <c>ended</c> with the mapped <paramref name="reason"/>, and release
+    /// the wallet hold — the same three-step end path <see cref="ReconcileHeartbeatAsync"/> uses for the
+    /// container-lost heartbeat set-diff, only driven by the host's explicit signal (up to a heartbeat
+    /// sooner, with the correct <c>expired</c> reason where the heartbeat set-diff would say
+    /// <c>container_lost</c>). Idempotent: an already-terminal (<c>ended</c>/<c>failed</c>) lease is a no-op
+    /// — the heartbeat set-diff, a consumer release, or a sweep may already have ended it, and the
+    /// CAS-guarded transition dedupes the concurrent race so no double hold-release or double flush can
+    /// occur. A suspended lease was already flushed to last-healthy at suspend time, so no additional
+    /// finalize is attempted. Returns what happened for the caller's log/metrics.
+    /// </summary>
+    public async Task<AgentLeaseEndOutcome> EndLeaseFromAgentAsync(
+        Guid hostId, Guid leaseId, LeaseEndReason reason, CancellationToken ct = default)
+    {
+        var lease = await _leases.GetByIdAsync(leaseId, ct);
+        if (lease is null || lease.HostId != hostId)
+        {
+            return AgentLeaseEndOutcome.NotFound;
+        }
+
+        // Idempotency: an already-terminal lease is a safe no-op — the heartbeat set-diff, a consumer
+        // release, or a durable sweep may have ended it first.
+        if (lease.Status is LeaseStatus.Ended or LeaseStatus.Failed)
+        {
+            return AgentLeaseEndOutcome.AlreadyTerminal;
+        }
+
+        var now = _time.GetUtcNow();
+
+        // Only an active lease has a billable tail to flush — a suspended lease was already flushed to
+        // last-healthy at suspend time, and pending/provisioning never accrued (docs/TUNNEL.md §8).
+        // FinalizeLeaseAsync applies the same TTL + last-healthy caps the periodic tick uses (task #54).
+        if (lease.Status == LeaseStatus.Active)
+        {
+            await _meter.FinalizeLeaseAsync(lease, now, ct);
+        }
+
+        // CAS-guarded transition on the pre-flush status: if a concurrent driver won the race (heartbeat
+        // set-diff, sweep, consumer release) the WHERE clause fails, TransitionStateAsync returns null, and
+        // we do NOT re-release the hold below. This is the same conditional-transition discipline the
+        // durable-grace sweep uses (task #55).
+        var moved = await _leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: now,
+            expectedCurrentStatus: lease.Status, ct: ct);
+        if (moved is null)
+        {
+            return AgentLeaseEndOutcome.AlreadyTerminal;
+        }
+
+        // Return the unused hold to the wallet (docs/PAYMENTS.md §4). Keyed per hold generation, so a
+        // duplicate release call would dedupe at the ledger anyway — the CAS above gives zero-post
+        // idempotence on the state transition, and this makes the hold release single-post as well.
+        await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+
+        _logger.LogInformation(
+            "lease {LeaseId} ended ({Reason}) on host {HostId} lease.ended frame; finalized at {Now:O}",
+            lease.Id, PgEnum.ToSnakeLabel(reason), hostId, now);
+
+        return AgentLeaseEndOutcome.Ended;
+    }
+
     private async Task EndSuspendedAsync(
         Lease lease, LeaseEndReason reason, DateTimeOffset lastHealthyAt, CancellationToken ct)
     {
@@ -600,6 +663,22 @@ public sealed record ReconcileOutcome(
 public sealed record PostGraceReconcileOutcome(
     IReadOnlyList<Guid> Revived,
     IReadOnlyList<Guid> Orphaned);
+
+/// <summary>
+/// The result of <see cref="LeaseReconciliationService.EndLeaseFromAgentAsync"/>: what happened when the
+/// agent's unsolicited <c>lease.ended</c> frame was routed through the reconciler (docs/TUNNEL.md §5, §8).
+/// </summary>
+public enum AgentLeaseEndOutcome
+{
+    /// <summary>The lease was transitioned to <c>ended</c> and the hold released.</summary>
+    Ended,
+
+    /// <summary>The lease was already terminal (ended/failed) — no-op replay, no double release.</summary>
+    AlreadyTerminal,
+
+    /// <summary>Unknown lease id, or the frame's host id did not match the lease's host — no-op.</summary>
+    NotFound,
+}
 
 /// <summary>
 /// The result of <see cref="LeaseReconciliationService.ReconcileHeartbeatAsync"/>: lease ids ended as

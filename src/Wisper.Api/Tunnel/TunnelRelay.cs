@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Tunnel.Messages;
 
 namespace Wisper.Api.Tunnel;
@@ -20,6 +22,7 @@ public sealed class TunnelRelay : ITunnelRelay
     private readonly IHostRegistry _registry;
     private readonly IOptionsMonitor<TunnelOptions> _options;
     private readonly ILogger<TunnelRelay> _logger;
+    private readonly TunnelDisconnectCoordinator? _coordinator;
 
     // Responses that echo a request rid (lease.accepted, lease.failed, lease.released, exec.result).
     private readonly ConcurrentDictionary<(TunnelConnection, uint), TaskCompletionSource<byte[]>> _ridWaiters = new();
@@ -30,11 +33,13 @@ public sealed class TunnelRelay : ITunnelRelay
     public TunnelRelay(
         IHostRegistry registry,
         IOptionsMonitor<TunnelOptions> options,
-        ILogger<TunnelRelay> logger)
+        ILogger<TunnelRelay> logger,
+        TunnelDisconnectCoordinator? coordinator = null)
     {
         _registry = registry;
         _options = options;
         _logger = logger;
+        _coordinator = coordinator;
     }
 
     // How often the readiness wait re-checks the registry for a host that is not registered yet (its
@@ -245,8 +250,7 @@ public sealed class TunnelRelay : ITunnelRelay
                 break;
 
             case FrameTypes.LeaseEnded:
-                HandleLeaseEnded(connection, payload);
-                break;
+                return HandleLeaseEndedAsync(connection, payload, ct);
 
             case FrameTypes.Error:
                 HandleError(connection, payload);
@@ -483,7 +487,8 @@ public sealed class TunnelRelay : ITunnelRelay
         }
     }
 
-    private void HandleLeaseEnded(TunnelConnection connection, ReadOnlyMemory<byte> payload)
+    private async Task HandleLeaseEndedAsync(
+        TunnelConnection connection, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
         var ended = TryDeserialize<LeaseEnded>(payload);
         if (ended is null || string.IsNullOrEmpty(ended.LeaseId))
@@ -491,18 +496,45 @@ public sealed class TunnelRelay : ITunnelRelay
             return;
         }
 
-        // Phase 1: log the unsolicited end and complete any waiter still blocked on this lease
-        // (e.g. a create awaiting ready that the host reaped first). Full grace/reconcile is §8.
         _logger.LogInformation(
             "relay: host {HostId} reported lease {LeaseId} ended ({Reason})",
             connection.HostId, ended.LeaseId, ended.Reason);
 
+        // Complete any waiter still blocked on this lease (e.g. a create awaiting ready that the host
+        // reaped first) — the existing Phase-1 behavior, preserved so the consumer's create call returns
+        // the typed lease_failed instead of stalling until the deadline.
         if (_leaseWaiters.TryRemove((connection, ended.LeaseId), out var tcs))
         {
             tcs.TrySetException(new ApiException(
                 ApiErrorCode.LeaseFailed, $"lease ended before ready: {ended.Reason}"));
         }
+
+        // Route the explicit end into the reconciliation path (docs/TUNNEL.md §8): finalize billing,
+        // transition to ended with the mapped reason, and release the wallet hold. Without this the lease
+        // would linger active/suspended until the next heartbeat set-diff caught its absence, up to a
+        // heartbeat late and with the wrong (container_lost) reason for a TTL expiry. A missing coordinator
+        // is the unit-fixture case; a non-Guid host id or an ill-formed lease token is the Phase-1 harness.
+        if (_coordinator is null || !TunnelLeaseId.TryParse(ended.LeaseId, out var leaseGuid))
+        {
+            return;
+        }
+
+        var reason = MapAgentEndReason(ended.Reason);
+        await _coordinator.OnLeaseEndedAsync(connection.HostId, leaseGuid, reason, ct);
     }
+
+    /// <summary>
+    /// Maps the <c>lease.ended</c> frame's <c>reason</c> string (docs/TUNNEL.md §5) to the domain
+    /// <see cref="LeaseEndReason"/>. <c>expired</c> — wisp's TTL reaper fired — becomes the previously-
+    /// unused <see cref="LeaseEndReason.Expired"/>; <c>failed</c> and <c>gone</c> (and any unrecognised
+    /// value) collapse to <see cref="LeaseEndReason.ContainerLost"/>, matching the semantics the heartbeat
+    /// set-diff already applies to a silently-vanished container (docs/TUNNEL.md §8).
+    /// </summary>
+    private static LeaseEndReason MapAgentEndReason(string? reason) => reason switch
+    {
+        "expired" => LeaseEndReason.Expired,
+        _ => LeaseEndReason.ContainerLost,
+    };
 
     /// <summary>
     /// Fails an in-flight request the host reported a typed <c>error</c> for (docs/TUNNEL.md §5, §12).

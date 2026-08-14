@@ -347,6 +347,42 @@ public class TunnelRelayTests
     }
 
     [Fact]
+    public async Task Lease_ended_before_ready_fails_the_pending_create()
+    {
+        // AC188: the existing create-waiter completion behavior must survive the task #56 rewiring — a
+        // host that reaps the container before sending lease.ready, and reports lease.ended instead, must
+        // fail the create call fast (with the reason surfaced in the message) rather than let it hang until
+        // the relay deadline. Same behavior as before, just routed through the async lease-ended path.
+        using var factory = CreateFactory(relayTimeoutMs: 60000);
+        var ct = Token();
+        var socket = await ConnectAndHandshakeAsync(factory, ct);
+
+        // Fake agent: accept the create, then instead of lease.ready send an unsolicited lease.ended.
+        var responder = Task.Run(async () =>
+        {
+            var req = await ReadControlAsync(socket, ct);
+            Assert.Equal(FrameTypes.LeaseCreate, req.GetProperty("t").GetString());
+            var rid = req.GetProperty("rid").GetUInt32();
+            var leaseId = req.GetProperty("leaseId").GetString();
+
+            await SendRawAsync(socket,
+                $"{{\"t\":\"lease.accepted\",\"rid\":{rid},\"leaseId\":\"{leaseId}\"," +
+                "\"wispContractId\":\"wc_reaped\",\"status\":\"provisioning\"}", ct);
+            await SendRawAsync(socket,
+                $"{{\"t\":\"lease.ended\",\"leaseId\":\"{leaseId}\",\"reason\":\"failed\"}}", ct);
+        }, ct);
+
+        var body = "{\"hostId\":\"" + DevHostId + "\",\"image\":\"alpine\",\"ttl_seconds\":60}";
+        var response = await factory.CreateClient().PostAsync("/dev/leases", JsonContent(body), ct);
+        await responder;
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        var json = await ReadJsonAsync(response, ct);
+        Assert.Equal("lease_failed", json.GetProperty("error").GetProperty("code").GetString());
+        Assert.Contains("lease ended before ready", json.GetProperty("error").GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task No_response_is_upstream_timeout()
     {
         using var factory = CreateFactory(relayTimeoutMs: 400);
