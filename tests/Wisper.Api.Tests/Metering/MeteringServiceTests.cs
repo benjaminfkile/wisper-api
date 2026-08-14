@@ -387,6 +387,48 @@ public class MeteringServiceTests
         Assert.Equal(180, stored!.BillableSeconds);
     }
 
+    [Fact]
+    public async Task Ticks_never_advance_billable_time_or_charge_past_started_at_plus_ttl()
+    {
+        // Task #54 (billing integrity): if a host keeps reporting a lease past its TTL — wisp's reaper
+        // kills at TTL but the agent only notices on a 30s poll, and today's agent can report stale lease
+        // lists — the tick MUST apply the same TTL cap the finalize path applies (started_at + ttl_seconds).
+        // Without that cap the tick would keep charging every 60s past TTL, burn the entire hold, then
+        // throw InsufficientFunds on lease_holds and the tick would error forever while the lease stayed
+        // active; the later TTL-capped finalize would land behind the runaway watermark and short-circuit
+        // to null, leaving the overcharge un-corrected.
+        var fx = await ReadyFixtureAsync();
+        var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 120); // 2min → hold = ⌈120/60⌉·60 = 120¢
+        await fx.FundHoldAsync(lease.Id, holdCents: 120);
+        var meter = fx.NewService();
+
+        // Ten ticks of 60s each: two are within TTL (bill 60¢ each), the remaining eight are entirely past
+        // TTL and must be structurally no-ops (no charge, no ledger post, no watermark advance).
+        for (var i = 0; i < 10; i++)
+        {
+            fx.Clock.Advance(TimeSpan.FromSeconds(60));
+            await meter.RunTickAsync(); // must never throw InsufficientFunds
+        }
+
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+
+        // The watermark never advanced past the TTL cap …
+        Assert.Equal(T0.AddSeconds(120), stored!.LastMeteredAt);
+        Assert.Equal(120, stored.BillableSeconds);
+
+        // … and total posted lease_charge never exceeded the up-front hold.
+        var totalCharged = (await fx.Usage.ListByLeaseAsync(lease.Id)).Sum(u => u.AmountCents);
+        Assert.Equal(120, totalCharged);
+        Assert.True(totalCharged <= 120, $"total charged {totalCharged}¢ must not exceed the 120¢ hold");
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds)); // hold fully but exactly drawn
+
+        // A subsequent finalize past TTL must be a no-op — the tick already billed up to TTL, so
+        // elapsedSeconds is 0 and no double-charge lands.
+        var end = await meter.FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+        Assert.Null(end);
+        Assert.Equal(120, (await fx.Leases.GetByIdAsync(lease.Id))!.BillableSeconds);
+    }
+
     [Theory]
     [InlineData(0, 0, 0)]        // sub-second / zero
     [InlineData(60, 60, 60)]    // one minute @ 1¢/s
