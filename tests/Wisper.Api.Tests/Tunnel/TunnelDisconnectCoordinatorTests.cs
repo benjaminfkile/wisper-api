@@ -398,6 +398,64 @@ public class TunnelDisconnectCoordinatorTests
         Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
     }
 
+    // ---- Agent-driven lease.ended (task #56, docs/TUNNEL.md §5, §8) ----
+
+    [Fact]
+    public async Task OnLeaseEnded_expired_ends_the_lease_as_expired()
+    {
+        // AC185: the coordinator routes lease.ended(expired) into the reconciler's end path.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        await fx.Coordinator.OnLeaseEndedAsync(fx.HostKey, lease.Id, LeaseEndReason.Expired);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Expired, stored.EndReason);
+    }
+
+    [Fact]
+    public async Task OnLeaseEnded_container_lost_ends_the_lease_as_container_lost()
+    {
+        // AC186: `failed`/`gone` map to container_lost; the coordinator hands the mapped reason through.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        await fx.Coordinator.OnLeaseEndedAsync(fx.HostKey, lease.Id, LeaseEndReason.ContainerLost);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.ContainerLost, stored.EndReason);
+    }
+
+    [Fact]
+    public async Task OnLeaseEnded_already_ended_lease_is_a_no_op()
+    {
+        // AC187: an already-ended lease stays as it was — no double transition, no reason overwrite.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        await fx.Coordinator.OnLeaseEndedAsync(fx.HostKey, lease.Id, LeaseEndReason.Expired);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Released, stored.EndReason); // original reason preserved
+    }
+
+    [Fact]
+    public async Task OnLeaseEnded_non_guid_host_id_is_a_no_op()
+    {
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // A dev-harness host id is not a Guid — the reconciler is never called, the lease stays untouched.
+        await fx.Coordinator.OnLeaseEndedAsync("dev-host-alpha", lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
     [Fact]
     public async Task Grace_expiry_without_ended_leases_does_not_set_post_grace_flag()
     {

@@ -1060,4 +1060,171 @@ public class LeaseReconciliationServiceTests
 
         Assert.Equal(1, await fx.HoldTxnCountForAsync(lease.Id));
     }
+
+    // ---- Agent-driven lease.ended (task #56, docs/TUNNEL.md §5, §8) ----
+    //
+    // The unsolicited lease.ended frame from wisp's local reaper is the host's explicit "this lease died"
+    // signal (TTL, abnormal exit, etc.). Routing it through the reconciler finalizes billing with the
+    // TTL-capped watermark, transitions the lease to ended with the mapped reason, and releases the wallet
+    // hold — the same three-step end path the heartbeat set-diff runs for a silently-vanished container,
+    // but driven by the host's explicit signal (so it fires up to a heartbeat sooner and carries the
+    // correct `expired` reason where the set-diff would say `container_lost`).
+
+    [Fact]
+    public async Task EndLeaseFromAgent_expired_ends_lease_finalizes_billing_ttl_capped_and_releases_hold()
+    {
+        // AC185: lease.ended(reason=expired) on an active lease — the host's TTL reaper fired late.
+        // The lease must end as `expired`, billing must be finalized TTL-capped (not to a runaway `now`),
+        // and the wallet hold's unused remainder must return.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 180, holdCents: 180);
+
+        // The agent's lease.ended arrives 30s past TTL (the reaper is slightly late, or we only noticed
+        // now). The flush must cap at TTL (180s), not the 210s wall clock.
+        fx.Clock.Advance(TimeSpan.FromSeconds(210));
+        var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.Ended, outcome);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Expired, stored.EndReason);
+        Assert.Equal(180, stored.BillableSeconds); // capped at TTL, not 210s wall-clock
+
+        // Hold was 180¢, charged is exactly TTL (180s * 1¢/sec) = 180¢, so the release moves nothing back
+        // — full hold consumed. The lease's earmark in lease_holds is zero.
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task EndLeaseFromAgent_expired_on_a_lease_below_ttl_flushes_the_tail_and_returns_the_remainder()
+    {
+        // A short-lived lease the host reaped before TTL: the tail between the last tick and the stop
+        // must be billed (task #34), and the unused hold remainder must return to the wallet.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(); // TTL 3600s, hold 3600¢
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(90)); // 90s runtime, well under TTL
+        var walletBefore = await fx.WalletCentsAsync();
+
+        var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.Ended, outcome);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Expired, stored.EndReason);
+        Assert.Equal(90, stored.BillableSeconds); // full 90s tail flushed
+
+        // Hold released: 3600 − 90 charged = 3510 back to wallet.
+        Assert.Equal(walletBefore + 3510, await fx.WalletCentsAsync());
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task EndLeaseFromAgent_already_ended_lease_is_a_no_op_and_does_not_double_release()
+    {
+        // AC187: a lease.ended for an already-ended lease is a no-op — no double flush, no double hold
+        // release. Simulates the consumer DELETE (or the heartbeat set-diff) winning the race and the
+        // agent's frame arriving after.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // End the lease as `released` (consumer DELETE beat the agent frame). Manually simulate the
+        // finalize + release path so the state matches what the release code would leave behind.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Meter.FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: fx.Clock.GetUtcNow());
+        await fx.WalletGate.ReleaseHoldAsync(lease.Id);
+
+        var walletAfterConsumerRelease = await fx.WalletCentsAsync();
+        var holdsCentsAfterConsumerRelease = await fx.HoldsCentsForAsync(lease.Id);
+
+        // The agent's lease.ended arrives now — must be a strict no-op.
+        var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.AlreadyTerminal, outcome);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Released, stored.EndReason); // original reason preserved
+        Assert.Equal(walletAfterConsumerRelease, await fx.WalletCentsAsync()); // wallet unchanged
+        Assert.Equal(holdsCentsAfterConsumerRelease, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task EndLeaseFromAgent_on_a_suspended_lease_ends_without_re_flushing()
+    {
+        // A suspended lease was already flushed to last-healthy at suspend time; the agent's lease.ended
+        // (e.g. the reaper fired during the outage) must end it and release the hold, but no additional
+        // billing must accrue — BillableSeconds stays at last-healthy.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        var billableBefore = (await fx.ReloadAsync(lease.Id))!.BillableSeconds;
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(30));
+        var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.Ended, outcome);
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Expired, stored.EndReason);
+        Assert.Equal(billableBefore, stored.BillableSeconds); // no re-flush past suspend
+    }
+
+    [Fact]
+    public async Task EndLeaseFromAgent_unknown_lease_is_not_found()
+    {
+        var fx = await ReadyAsync();
+
+        var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, Guid.NewGuid(), LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.NotFound, outcome);
+    }
+
+    [Fact]
+    public async Task EndLeaseFromAgent_wrong_host_id_is_not_found()
+    {
+        // A lease.ended frame carrying a lease belonging to a different host: never touch it.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
+            Guid.NewGuid(), lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.NotFound, outcome);
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task EndLeaseFromAgent_is_idempotent_across_repeated_frames()
+    {
+        // Two lease.ended frames back-to-back (retry / duplicate delivery): first ends the lease, second
+        // is a no-op. Wallet balance and lease_holds earmark are unchanged by the second call.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        var first = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, lease.Id, LeaseEndReason.Expired);
+        var walletAfterFirst = await fx.WalletCentsAsync();
+        var holdsAfterFirst = await fx.HoldsCentsForAsync(lease.Id);
+
+        var second = await fx.Reconciler.EndLeaseFromAgentAsync(
+            fx.HostId, lease.Id, LeaseEndReason.Expired);
+
+        Assert.Equal(AgentLeaseEndOutcome.Ended, first);
+        Assert.Equal(AgentLeaseEndOutcome.AlreadyTerminal, second);
+        Assert.Equal(walletAfterFirst, await fx.WalletCentsAsync());
+        Assert.Equal(holdsAfterFirst, await fx.HoldsCentsForAsync(lease.Id));
+    }
 }
