@@ -709,23 +709,63 @@ public class LeaseReconciliationServiceTests
     }
 
     [Fact]
-    public async Task ReconcileHeartbeat_suspended_leases_are_not_touched()
+    public async Task ReconcileHeartbeat_suspended_reported_lease_resumes_post_restart()
     {
-        // Suspended leases are under grace-window management and must not be affected by heartbeat
-        // reconciliation (ending or reviving them here would race with the grace path).
+        // Task #55: after a wisper-api restart the in-memory grace timer is gone, but the row is still
+        // `suspended`. The coordinator routes the first heartbeat to ReconcileHeartbeatAsync (no in-memory
+        // grace entry to route to the within-grace path). A suspended lease the host reports as still live
+        // must resume — the container is still running.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
-        // Suspend the lease (simulates a mid-grace state).
-        await fx.Leases.TransitionStateAsync(lease.Id, LeaseStatus.Suspended);
+        // 60s healthy, then a suspend (simulates the pre-restart state).
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
+        Assert.NotNull((await fx.ReloadAsync(lease.Id))!.SuspendedAt);
 
-        // Heartbeat reports no leases — but the suspended lease must not be ended here.
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+        var heartbeatAt = fx.Clock.GetUtcNow();
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        Assert.Equal(new[] { lease.Id }, outcome.Revived);
+        Assert.Empty(outcome.ContainerLost);
+        Assert.Empty(outcome.Orphaned);
+
+        var resumed = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, resumed!.Status);
+        Assert.Null(resumed.SuspendedAt);                  // cleared on resume
+        Assert.Equal(heartbeatAt, resumed.LastMeteredAt);  // gap never billed
+        Assert.Equal(60, resumed.BillableSeconds);         // pre-drop usage preserved
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeat_suspended_unreported_lease_ends_container_lost_post_restart()
+    {
+        // Task #55: after a wisper-api restart the in-memory grace timer is gone. A suspended lease the
+        // host no longer reports must end as container_lost — the container is definitively gone, so we
+        // must not strand the lease as suspended waiting for a timer that will never fire.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        var suspendedAt = (await fx.ReloadAsync(lease.Id))!.SuspendedAt;
+        Assert.NotNull(suspendedAt);
+
+        // Host reconnects and reports NO live leases — container is gone.
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
         var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
 
-        // Both the active set (empty after filtering suspended) and the reported set (empty) are equal
-        // → fast-path, zero writes.
-        Assert.Same(HeartbeatReconcileOutcome.Empty, outcome);
-        Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
+        Assert.Equal(new[] { lease.Id }, outcome.ContainerLost);
+        Assert.Empty(outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+
+        var ended = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, ended!.Status);
+        Assert.Equal(LeaseEndReason.ContainerLost, ended.EndReason);
+        Assert.Equal(suspendedAt, ended.EndedAt); // finalized at the durable suspend instant
+        Assert.Equal(60, ended.BillableSeconds);  // never billed past last-healthy
     }
 
     // ---- Revive re-holds the wallet (task #23, docs/PAYMENTS.md §4) ----

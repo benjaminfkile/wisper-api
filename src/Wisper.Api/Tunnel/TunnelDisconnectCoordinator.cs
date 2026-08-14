@@ -292,6 +292,16 @@ public sealed class TunnelDisconnectCoordinator
         Guid.TryParse(hostId, out var host) && _grace.ContainsKey(host);
 
     /// <summary>
+    /// The set of host ids that currently hold an in-memory grace timer on THIS instance (task #55). The
+    /// durable grace sweep (<see cref="Wisper.Api.Metering.SuspensionSweepService"/>) skips leases whose
+    /// host is in this set — the fast in-memory path is the source of truth while its timer is armed, and
+    /// the sweep is the durable backstop for leases whose grace timer was lost across a restart /
+    /// scale-in / crash (multi-instance rule: cross-request state must live in shared storage). A snapshot,
+    /// so a concurrent add/remove during the sweep pass does not throw.
+    /// </summary>
+    public IReadOnlySet<Guid> HostsUnderInProcessGrace() => _grace.Keys.ToHashSet();
+
+    /// <summary>
     /// Whether a post-grace reconciliation is pending for <paramref name="hostId"/> — the host reconnected
     /// after its grace window expired and the first heartbeat has not yet run the revival pass
     /// (diagnostics/tests).
