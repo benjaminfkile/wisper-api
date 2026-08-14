@@ -56,6 +56,16 @@ public interface ILeaseRepository : IRepository
     Task<IReadOnlyList<Lease>> ListSuspendedOlderThanAsync(
         DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default);
 
+    /// <summary>
+    /// Every non-terminal lease (<c>status IN ('active','suspended')</c>) across every host — the working
+    /// set the admin listing surfaces so an operator can find stuck leases (task #57) without reaching for
+    /// SQL. Ordered oldest-first (by <see cref="Lease.CreatedAt"/>) so a paged view surfaces the strays
+    /// first. Excludes the terminal <c>ended</c>/<c>failed</c> and the transient <c>pending</c>/
+    /// <c>provisioning</c> — a stuck lease that needs an operator escape hatch is one holding a wallet hold
+    /// and a concurrency slot, and that is exactly the <c>active + suspended</c> set.
+    /// </summary>
+    Task<IReadOnlyList<Lease>> ListNonTerminalAsync(CancellationToken ct = default);
+
     /// <summary>Inserts a new lease and returns the stored row (with any DB-generated id).</summary>
     Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default);
 

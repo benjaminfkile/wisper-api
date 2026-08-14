@@ -44,6 +44,11 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
                        l.SuspendedAt is { } s && s <= suspendedOnOrBefore)
                 .OrderBy(l => l.SuspendedAt!.Value).ToList());
 
+    public Task<IReadOnlyList<Lease>> ListNonTerminalAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Lease>>(
+            Where(l => l.Status is LeaseStatus.Active or LeaseStatus.Suspended)
+                .OrderBy(l => l.CreatedAt).ToList());
+
     public Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         var stored = lease.Id == Guid.Empty ? lease with { Id = Guid.NewGuid() } : lease;

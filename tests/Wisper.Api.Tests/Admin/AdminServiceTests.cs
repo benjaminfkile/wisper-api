@@ -4,7 +4,9 @@ using Wisper.Api.Audit;
 using Wisper.Api.Billing;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
+using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
@@ -28,18 +30,26 @@ public class AdminServiceTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
 
+    /// <summary>Parses the wire <c>lease_&lt;guid&gt;</c> token back to its Guid for lease-set assertions.</summary>
+    private static Guid ParseLease(string token) =>
+        TunnelLeaseId.TryParse(token, out var id) ? id : throw new InvalidOperationException($"bad lease id: {token}");
+
     private sealed class Fixture
     {
         public InMemoryUserRepository Users { get; } = new();
         public InMemoryHostRepository Hosts { get; } = new();
         public InMemoryLeaseRepository Leases { get; } = new();
+        public InMemoryLeaseUsageRepository Usage { get; } = new();
         public InMemoryAuditLogRepository AuditLog { get; } = new();
         public InMemoryPlatformPolicyRepository PolicyRepo { get; } = new();
         public InMemoryLedgerStore LedgerStore { get; } = new();
         public FakeStripeBillingGateway Stripe { get; } = new();
+        public FakeTunnelRelay Relay { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
         public LedgerService Ledger { get; }
         public AuditService Audit { get; }
+        public MeteringService Meter { get; }
+        public WalletLeaseGate WalletGate { get; }
         public AdminService Service { get; }
 
         public Fixture()
@@ -52,8 +62,13 @@ public class AdminServiceTests
             var billing = new BillingService(
                 Ledger, Leases, Users, policy, fraud, Audit, Stripe, Clock,
                 NullLogger<BillingService>.Instance);
+            Meter = new MeteringService(
+                Leases, Usage, Hosts, Ledger, policy, Clock, NullLogger<MeteringService>.Instance);
+            WalletGate = new WalletLeaseGate(
+                Ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             Service = new AdminService(
-                Users, Hosts, Leases, Ledger, policy, Audit, billing, Clock);
+                Users, Hosts, Leases, Ledger, policy, Audit, billing,
+                Meter, WalletGate, Relay, Clock, NullLogger<AdminService>.Instance);
         }
 
         public async Task<Guid> SeedUserAsync(string email = "user@example.com")
@@ -88,6 +103,74 @@ public class AdminServiceTests
             var fees = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
             await Ledger.PostAsync(LedgerFlows.Topup(
                 wallet.Id, cash.Id, fees.Id, amountCents, 0, $"topup-{Guid.NewGuid():N}", externalRef: paymentIntent));
+        }
+
+        /// <summary>
+        /// Seeds a lease in <paramref name="status"/> with a funded up-front hold sized against a 1-hour TTL
+        /// at 60¢/min — the readable price where 1s = 1¢. Also publishes the active policy so charges land.
+        /// Returns the persisted <see cref="Lease"/>.
+        /// </summary>
+        public async Task<Lease> SeedLeaseAsync(
+            Guid consumerId,
+            Guid hostId,
+            LeaseStatus status,
+            DateTimeOffset startedAt,
+            int ttlSeconds = 3600,
+            long priceCentsPerMin = 60,
+            long billableSeconds = 0,
+            DateTimeOffset? lastMeteredAt = null,
+            DateTimeOffset? suspendedAt = null)
+        {
+            // Publish an active policy so metering can compute the fee split when finalize charges the tail.
+            if (await PolicyRepo.GetActiveAsync(T0) is null)
+            {
+                await PolicyRepo.AppendAsync(new PlatformPolicy { FeeBps = 1500, EffectiveFrom = T0 });
+            }
+
+            var holdCents = LeaseHoldPricing.EstimateHoldCents(ttlSeconds, priceCentsPerMin);
+            await FundWalletAsync(consumerId, holdCents, $"pi_{Guid.NewGuid():N}");
+
+            var wallet = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumerId);
+            var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
+
+            var leaseId = Guid.NewGuid();
+            var posted = await Ledger.PostAsync(LedgerFlows.LeaseHold(
+                wallet.Id, holds.Id, leaseId, holdCents, idempotencyKey: WalletLeaseGate.HoldIdempotencyKey(leaseId)));
+
+            var lease = await Leases.CreateAsync(new Lease
+            {
+                Id = leaseId,
+                ConsumerUserId = consumerId,
+                HostId = hostId,
+                HostImageId = Guid.NewGuid(),
+                ImageRef = "reg/wisp-base:latest",
+                Network = NetworkMode.Open,
+                TtlSeconds = ttlSeconds,
+                PriceCentsPerMin = priceCentsPerMin,
+                Currency = "usd",
+                Status = status,
+                HoldTxnId = posted.Transaction.Id,
+                CreatedAt = startedAt,
+                StartedAt = startedAt,
+                LastMeteredAt = lastMeteredAt ?? startedAt,
+                BillableSeconds = billableSeconds,
+                SuspendedAt = suspendedAt,
+            });
+            return lease;
+        }
+
+        /// <summary>Signed net amount posted against <c>lease_holds</c> for a single lease id.</summary>
+        public async Task<long> HoldsCentsForAsync(Guid leaseId)
+        {
+            var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
+            var entries = await Ledger.ListEntriesForAccountAsync(holds.Id);
+            long sum = 0;
+            foreach (var entry in entries.Where(e => e.LeaseId == leaseId))
+            {
+                // lease_holds is credit-normal: credits grow the earmark, debits shrink it.
+                sum += entry.CreditCents - entry.DebitCents;
+            }
+            return sum;
         }
     }
 
@@ -392,5 +475,198 @@ public class AdminServiceTests
         var ex = await Assert.ThrowsAsync<ApiException>(() =>
             fx.Service.GetLedgerAccountAsync(Guid.NewGuid()));
         Assert.Equal(ApiErrorCode.NotFound, ex.Code);
+    }
+
+    // ---- admin force-end (task #57) --------------------------------------------------------------
+
+    [Fact]
+    public async Task Force_end_on_an_active_lease_finalizes_billing_ends_admin_releases_hold_and_relays_release()
+    {
+        // Acceptance criterion #189: active lease with a connected host — billing finalized, ended(admin),
+        // hold released, release relayed to the host.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        var consumer = await fx.SeedUserAsync("c@example.com");
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.SeedHostAsync(owner);
+        var lease = await fx.SeedLeaseAsync(consumer, host.Id, LeaseStatus.Active, T0);
+
+        // 90 seconds of healthy runtime, then the admin force-ends the lease.
+        fx.Clock.Advance(TimeSpan.FromSeconds(90));
+
+        var view = await fx.Service.ForceEndLeaseAsync(admin, lease.Id);
+
+        // Wire view reflects ended(admin) with the metered tail flushed.
+        Assert.Equal("ended", view.Status);
+        Assert.Equal("admin", view.EndReason);
+
+        // The row itself is terminal, and billing was finalized to the full 90-second healthy interval —
+        // FinalizeLeaseAsync ran with a null liveness source, so `now` was the cap (task #54).
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Admin, stored.EndReason);
+        Assert.Equal(T0.AddSeconds(90), stored.EndedAt);
+        Assert.Equal(90, stored.BillableSeconds);
+
+        // Hold released: net earmark for this lease against lease_holds is zero (hold posted, then
+        // charge + release drained it). The wallet balance is restored minus the charged 90¢.
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+        var walletAcct = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer);
+        // Wallet started at 3600¢ (the hold cost), was drained to place the hold, then received
+        // (hold - charge) = 3510¢ back on release.
+        Assert.Equal(3510, walletAcct.BalanceCents);
+
+        // Release relayed to the host — the fake relay recorded exactly one lease.release for this lease.
+        var call = Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.Equal(host.Id.ToString(), call.HostId);
+        Assert.Equal(TunnelLeaseId.Format(lease.Id), call.LeaseId);
+
+        // Audit trail carries the acting admin + before/after.
+        var audit = await fx.AuditLog.ListByTargetAsync("lease", lease.Id);
+        var entry = Assert.Single(audit);
+        Assert.Equal("lease.admin_end", entry.Action);
+        Assert.Equal(admin, entry.ActorUserId);
+    }
+
+    [Fact]
+    public async Task Force_end_on_a_suspended_lease_succeeds_without_a_live_host_and_releases_the_hold()
+    {
+        // Acceptance criterion #190: suspended lease with no connected host — succeeds, finalizes to
+        // last-healthy watermark (already flushed at suspend), releases hold. wisp's TTL reaper covers the
+        // container so the tunnel notify is a no-op when the relay reports host_offline.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        var consumer = await fx.SeedUserAsync("c@example.com");
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.SeedHostAsync(owner);
+
+        // Suspended at T0+60 with 60s already billed (mirrors the SuspendHostLeases path).
+        var lease = await fx.SeedLeaseAsync(
+            consumer, host.Id, LeaseStatus.Suspended, T0,
+            billableSeconds: 60, lastMeteredAt: T0.AddSeconds(60), suspendedAt: T0.AddSeconds(60));
+
+        // No live tunnel: the relay throws host_offline. The admin end must not fail on this.
+        fx.Relay.ReleaseError = new ApiException(ApiErrorCode.HostOffline, "no live tunnel");
+
+        // 5 minutes later, admin ends it. The lease was already flushed at last-healthy at suspend time,
+        // so no additional meter tick runs and billable_seconds does not change.
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        var view = await fx.Service.ForceEndLeaseAsync(admin, lease.Id);
+
+        Assert.Equal("ended", view.Status);
+        Assert.Equal("admin", view.EndReason);
+
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Admin, stored.EndReason);
+        Assert.Equal(60, stored.BillableSeconds); // pinned at last-healthy — the gap never billed
+
+        // Hold released: the wallet gets back exactly (hold - charged-cents-so-far) = 3600 - 60 = 3540¢
+        // (a suspended lease was already flushed at suspend time, so no fresh finalize runs here). Wallet
+        // started at 3600¢ (funding), was drained by the hold post, then this release credits 3540¢ back.
+        var walletAcct = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer);
+        Assert.Equal(3540, walletAcct.BalanceCents);
+
+        // Tunnel notify was attempted (best-effort) and the host_offline was swallowed — the operation
+        // still succeeded. Recorded once so we can prove we did try.
+        Assert.Single(fx.Relay.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task Force_end_on_an_already_ended_lease_is_idempotent_no_op_no_double_release()
+    {
+        // Acceptance criterion #191: an already-ended lease is a no-op — no double hold release, no
+        // duplicate audit row, no fresh tunnel notify.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        var consumer = await fx.SeedUserAsync("c@example.com");
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.SeedHostAsync(owner);
+        var lease = await fx.SeedLeaseAsync(consumer, host.Id, LeaseStatus.Active, T0);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+
+        // First end: does the full flush + release + notify.
+        await fx.Service.ForceEndLeaseAsync(admin, lease.Id);
+        var walletAfterFirst = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer);
+        var walletBalanceAfterFirst = walletAfterFirst.BalanceCents;
+        var relayCallsAfterFirst = fx.Relay.ReleaseCalls.Count;
+        var auditAfterFirst = (await fx.AuditLog.ListByTargetAsync("lease", lease.Id)).Count;
+
+        // Second end: no wallet movement, no fresh relay call, no fresh audit row.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        var replay = await fx.Service.ForceEndLeaseAsync(admin, lease.Id);
+        Assert.Equal("ended", replay.Status);
+        Assert.Equal("admin", replay.EndReason);
+
+        var walletAfterSecond = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer);
+        Assert.Equal(walletBalanceAfterFirst, walletAfterSecond.BalanceCents);
+        Assert.Equal(relayCallsAfterFirst, fx.Relay.ReleaseCalls.Count);
+        Assert.Equal(auditAfterFirst, (await fx.AuditLog.ListByTargetAsync("lease", lease.Id)).Count);
+    }
+
+    [Fact]
+    public async Task Force_end_on_an_unknown_lease_is_404()
+    {
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service.ForceEndLeaseAsync(admin, Guid.NewGuid()));
+        Assert.Equal(ApiErrorCode.NotFound, ex.Code);
+    }
+
+    // ---- admin lease listing (task #57) ----------------------------------------------------------
+
+    [Fact]
+    public async Task List_leases_surfaces_suspended_and_past_ttl_active_and_excludes_terminal()
+    {
+        // Acceptance criterion #192: the admin listing surfaces suspended AND past-TTL active leases so
+        // an operator can find stuck leases without SQL. Terminal (ended/failed) rows are excluded.
+        var fx = new Fixture();
+        var consumer = await fx.SeedUserAsync("c@example.com");
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.SeedHostAsync(owner);
+
+        // A fresh active lease (well within its 1h TTL) — will NOT appear under past_ttl=true.
+        var freshActive = await fx.SeedLeaseAsync(consumer, host.Id, LeaseStatus.Active, T0);
+        // An active lease that started 3 hours ago — past its 1h TTL.
+        var pastTtlActive = await fx.SeedLeaseAsync(
+            consumer, host.Id, LeaseStatus.Active, T0.AddHours(-3));
+        // A suspended lease still within grace.
+        var suspended = await fx.SeedLeaseAsync(
+            consumer, host.Id, LeaseStatus.Suspended, T0.AddMinutes(-30),
+            billableSeconds: 60, lastMeteredAt: T0.AddMinutes(-30).AddSeconds(60),
+            suspendedAt: T0.AddMinutes(-30).AddSeconds(60));
+
+        // A terminal (ended) lease that must NOT appear on the listing.
+        var ended = await fx.SeedLeaseAsync(consumer, host.Id, LeaseStatus.Active, T0.AddHours(-2));
+        await fx.Leases.TransitionStateAsync(
+            ended.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0.AddHours(-1));
+
+        // Default listing: every non-terminal lease (active + suspended), oldest first.
+        var all = await fx.Service.ListLeasesAsync(status: null, pastTtl: false, limit: 50, offset: 0);
+        var allIds = all.Data.Select(v => ParseLease(v.Id)).ToHashSet();
+        Assert.Equal(3, all.Data.Count);
+        Assert.Contains(freshActive.Id, allIds);
+        Assert.Contains(pastTtlActive.Id, allIds);
+        Assert.Contains(suspended.Id, allIds);
+        Assert.DoesNotContain(ended.Id, allIds);
+
+        // status=suspended narrows to just the suspended lease.
+        var suspendedOnly = await fx.Service.ListLeasesAsync(
+            status: LeaseStatus.Suspended, pastTtl: false, limit: 50, offset: 0);
+        var only = Assert.Single(suspendedOnly.Data);
+        Assert.Equal(suspended.Id, ParseLease(only.Id));
+
+        // past_ttl=true surfaces exactly the leases whose started_at + ttl has elapsed on the fake clock —
+        // both the past-TTL active AND (given seed data) the suspended row that was seeded 30m ago with a
+        // 1h TTL is still within TTL, so it must NOT be included.
+        var pastTtlOnly = await fx.Service.ListLeasesAsync(
+            status: null, pastTtl: true, limit: 50, offset: 0);
+        var pastIds = pastTtlOnly.Data.Select(v => ParseLease(v.Id)).ToHashSet();
+        Assert.Contains(pastTtlActive.Id, pastIds);
+        Assert.DoesNotContain(freshActive.Id, pastIds);
+        Assert.DoesNotContain(suspended.Id, pastIds);
     }
 }

@@ -1,13 +1,17 @@
+using Microsoft.Extensions.Logging;
 using Wisper.Api.Audit;
 using Wisper.Api.Billing;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
+using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Policy;
+using Wisper.Api.Tunnel;
 
 namespace Wisper.Api.Admin;
 
@@ -40,7 +44,11 @@ public sealed class AdminService
     private readonly PlatformPolicyService _policy;
     private readonly AuditService _audit;
     private readonly BillingService _billing;
+    private readonly MeteringService _meter;
+    private readonly ILeaseWalletGate _walletGate;
+    private readonly ITunnelRelay _relay;
     private readonly TimeProvider _time;
+    private readonly ILogger<AdminService> _logger;
 
     public AdminService(
         IUserRepository users,
@@ -50,7 +58,11 @@ public sealed class AdminService
         PlatformPolicyService policy,
         AuditService audit,
         BillingService billing,
-        TimeProvider time)
+        MeteringService meter,
+        ILeaseWalletGate walletGate,
+        ITunnelRelay relay,
+        TimeProvider time,
+        ILogger<AdminService> logger)
     {
         _users = users;
         _hosts = hosts;
@@ -59,7 +71,11 @@ public sealed class AdminService
         _policy = policy;
         _audit = audit;
         _billing = billing;
+        _meter = meter;
+        _walletGate = walletGate;
+        _relay = relay;
         _time = time;
+        _logger = logger;
     }
 
     /// <summary>
@@ -379,6 +395,136 @@ public sealed class AdminService
             posted.Transaction.Id, amountCents, debit.Id, credit.Id, debitBalance, creditBalance);
     }
 
+    /// <summary>
+    /// The admin lease listing (docs/API.md §8, task #57) — a page of non-terminal leases
+    /// (<c>active + suspended</c>), the set an operator needs to find stuck leases without SQL. Optional
+    /// <paramref name="status"/> narrows to one lifecycle state; <paramref name="pastTtl"/> keeps only
+    /// leases whose <c>started_at + ttl_seconds</c> has already elapsed. Ordered oldest-first (the strays
+    /// come first) and paged with the same offset shape as the host/user search.
+    /// </summary>
+    public async Task<AdminPage<AdminLeaseView>> ListLeasesAsync(
+        LeaseStatus? status, bool pastTtl, int limit, int offset, CancellationToken ct = default)
+    {
+        var pageSize = Math.Clamp(limit, 1, MaxLimit);
+        if (offset < 0)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError, "'offset' must be a non-negative integer.", new { field = "offset" });
+        }
+
+        var all = await _leases.ListNonTerminalAsync(ct);
+        var now = _time.GetUtcNow();
+        var filtered = all
+            .Where(l => status is not { } s || l.Status == s)
+            .Where(l => !pastTtl || IsPastTtl(l, now))
+            .Skip(offset)
+            .Take(pageSize + 1)
+            .ToList();
+        var (page, next) = Paginate(filtered, pageSize, offset);
+        return new AdminPage<AdminLeaseView>(page.Select(AdminLeaseView.From).ToList(), next);
+    }
+
+    /// <summary>
+    /// The operator escape hatch (docs/API.md §8, task #57): force-end a stuck lease from ANY non-terminal
+    /// state — the same three-step end path the tunnel reconciliation drivers use (finalize billing → CAS
+    /// transition to <c>ended (admin)</c> → release the wallet hold), plus a best-effort
+    /// <c>lease.release</c> down the tunnel so a live host tears the container down (wisp's TTL reaper
+    /// covers a host with no live tunnel — no need to wait). Idempotent: an already-terminal lease is a
+    /// no-op success (no double hold release), an unknown lease is <c>404</c>. Records a
+    /// <c>lease.admin_end</c> audit row with the before/after status.
+    /// </summary>
+    public async Task<AdminLeaseView> ForceEndLeaseAsync(
+        Guid adminUserId, Guid leaseId, CancellationToken ct = default)
+    {
+        var lease = await _leases.GetByIdAsync(leaseId, ct)
+            ?? throw new ApiException(ApiErrorCode.NotFound, $"No such lease '{leaseId}'.");
+
+        // Idempotent: an already-terminal (ended/failed) lease is a safe no-op replay — the wallet hold
+        // was released the first time around and re-issuing the release keyed to the same hold generation
+        // would move nothing anyway; still, skipping the whole path avoids re-notifying the host and a
+        // duplicate audit row for something that already happened.
+        if (lease.Status is LeaseStatus.Ended or LeaseStatus.Failed)
+        {
+            return AdminLeaseView.From(lease);
+        }
+
+        var now = _time.GetUtcNow();
+        var before = lease.Status;
+
+        // Only an active lease has a billable tail to flush — a suspended lease was already flushed to
+        // last-healthy at suspend time, and pending/provisioning never accrued (docs/TUNNEL.md §8).
+        // FinalizeLeaseAsync applies the same TTL + last-healthy caps the periodic tick and every other
+        // finalize driver use (task #54), so the consumer is charged exactly the healthy seconds up to now
+        // and never past what the lease was entitled to run.
+        if (lease.Status == LeaseStatus.Active)
+        {
+            await _meter.FinalizeLeaseAsync(lease, now, ct);
+        }
+
+        // CAS-guarded transition on the pre-flush status: if the sweep / heartbeat set-diff / a consumer
+        // release won the race the WHERE clause fails, TransitionStateAsync returns null, and we do NOT
+        // re-release the hold below — mirroring the discipline used elsewhere for the end path.
+        var moved = await _leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Admin, endedAt: now,
+            expectedCurrentStatus: lease.Status, ct: ct);
+        if (moved is null)
+        {
+            var latest = await _leases.GetByIdAsync(leaseId, ct);
+            return AdminLeaseView.From(latest ?? lease);
+        }
+
+        // Return the unused hold to the wallet (docs/PAYMENTS.md §4). Keyed per hold generation so
+        // repeated end drivers converge on a single release — the CAS above already gives zero-post
+        // idempotence on the state transition itself.
+        await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+
+        // Best-effort tunnel notify (task #57): if the host has a live tunnel, tear the container down
+        // via lease.release. No live tunnel (host_offline) or a slow host (upstream_timeout) is not a
+        // failure — wisp's local TTL reaper reclaims the container regardless (docs/TUNNEL.md §8), and
+        // an admin already committed the ledger-side end above.
+        await TryReleaseOverTunnelAsync(lease, ct);
+
+        await _audit.RecordAsync(
+            "lease.admin_end",
+            actorUserId: adminUserId,
+            targetType: "lease",
+            targetId: leaseId,
+            meta: new
+            {
+                before = PgEnum.ToLabel(before),
+                after = PgEnum.ToLabel(LeaseStatus.Ended),
+                end_reason = PgEnum.ToSnakeLabel(LeaseEndReason.Admin),
+            },
+            ct);
+
+        _logger.LogWarning(
+            "lease {LeaseId} force-ended (admin) by {AdminUserId} from {Before}; hold released",
+            lease.Id, adminUserId, PgEnum.ToLabel(before));
+
+        return AdminLeaseView.From(moved);
+    }
+
+    /// <summary>
+    /// Fires-and-forgets <c>lease.release</c> down the host's tunnel (task #57). A missing tunnel
+    /// (<c>host_offline</c>), a silent host (<c>upstream_timeout</c>), or any other typed relay failure is
+    /// swallowed here — wisp's local TTL reaper reclaims the container regardless, and an admin has
+    /// already committed the ledger-side end. The exception must not shadow the completed end.
+    /// </summary>
+    private async Task TryReleaseOverTunnelAsync(Lease lease, CancellationToken ct)
+    {
+        try
+        {
+            await _relay.ReleaseAsync(lease.HostId.ToString(), TunnelLeaseId.Format(lease.Id), ct);
+        }
+        catch (ApiException ex)
+        {
+            _logger.LogInformation(
+                "admin end: tunnel notify skipped for lease {LeaseId} on host {HostId} ({Code}: {Message}); " +
+                "wisp TTL reaper will reclaim the container",
+                lease.Id, lease.HostId, ex.Code, ex.Message);
+        }
+    }
+
     /// <summary>The audit trail page (docs/API.md §8, <c>GET /v1/admin/audit</c>).</summary>
     public async Task<IReadOnlyList<AuditLogEntry>> QueryAuditAsync(
         AuditLogQuery query, CancellationToken ct = default) =>
@@ -404,6 +550,12 @@ public sealed class AdminService
 
     /// <summary>The <c>adjustment</c> ledger idempotency key — namespaced under the admin's API idempotency key.</summary>
     public static string AdjustmentIdempotencyKey(string apiKey) => $"adjustment:{apiKey}";
+
+    /// <summary>A lease's TTL has elapsed on Wisper's clock (task #57) — used by the admin listing's
+    /// <c>past_ttl</c> filter. A lease with no <see cref="Lease.StartedAt"/> (never went ready) is not
+    /// past its TTL yet — the clock only runs from meter start.</summary>
+    private static bool IsPastTtl(Lease lease, DateTimeOffset now) =>
+        lease.StartedAt is { } started && started.AddSeconds(lease.TtlSeconds) < now;
 
     /// <summary>Sums the maintained balance across every ledger account of <paramref name="kind"/>.</summary>
     private async Task<long> SumBalanceByKindAsync(LedgerAccountKind kind, CancellationToken ct)
