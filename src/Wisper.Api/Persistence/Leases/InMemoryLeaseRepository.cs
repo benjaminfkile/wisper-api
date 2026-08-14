@@ -37,6 +37,13 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
     public Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default) =>
         Task.FromResult(FindBy(l => l.HostImageId == hostImageId) is not null);
 
+    public Task<IReadOnlyList<Lease>> ListSuspendedOlderThanAsync(
+        DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<Lease>>(
+            Where(l => l.Status == LeaseStatus.Suspended &&
+                       l.SuspendedAt is { } s && s <= suspendedOnOrBefore)
+                .OrderBy(l => l.SuspendedAt!.Value).ToList());
+
     public Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         var stored = lease.Id == Guid.Empty ? lease with { Id = Guid.NewGuid() } : lease;
@@ -62,6 +69,7 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
             LastMeteredAt = lease.LastMeteredAt,
             BillableSeconds = lease.BillableSeconds,
             EndedAt = lease.EndedAt,
+            SuspendedAt = lease.SuspendedAt,
         };
         Upsert(updated);
         return Task.FromResult(updated);
@@ -75,12 +83,28 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
         DateTimeOffset? lastMeteredAt = null,
         long? billableSeconds = null,
         DateTimeOffset? endedAt = null,
+        DateTimeOffset? suspendedAt = null,
+        LeaseStatus? expectedCurrentStatus = null,
         CancellationToken ct = default)
     {
         if (Find(id) is not { } lease)
         {
             return Task.FromResult<Lease?>(null);
         }
+
+        // Conditional-update guard mirrors the SQL side (task #55): the sweep uses this so two concurrent
+        // instances cannot both drive the same suspended → ended transition. A miss returns null (no row).
+        if (expectedCurrentStatus is { } expected && lease.Status != expected)
+        {
+            return Task.FromResult<Lease?>(null);
+        }
+
+        // suspended_at is only meaningful while status = 'suspended' (task #55): a transition to any other
+        // status auto-clears it; a transition into suspended sets it (or keeps the existing value when the
+        // caller passes null — idempotent re-suspend keeps the original moment).
+        var nextSuspendedAt = status == LeaseStatus.Suspended
+            ? suspendedAt ?? lease.SuspendedAt
+            : (DateTimeOffset?)null;
 
         var updated = lease with
         {
@@ -90,6 +114,7 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
             LastMeteredAt = lastMeteredAt ?? lease.LastMeteredAt,
             BillableSeconds = billableSeconds ?? lease.BillableSeconds,
             EndedAt = endedAt ?? lease.EndedAt,
+            SuspendedAt = nextSuspendedAt,
         };
         Upsert(updated);
         return Task.FromResult<Lease?>(updated);

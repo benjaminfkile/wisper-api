@@ -89,6 +89,12 @@ builder.Services.AddSingleton<LeaseReconciliationService>();
 // that was missing, leaving a live agent's host stuck offline and absent from the catalog.
 builder.Services.AddSingleton<IHostPresence, HostPresenceService>();
 builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
+// Durable grace backstop (task #55, docs/TUNNEL.md §8): the in-process grace timer above lives ONLY in
+// memory, so a restart / crash / scale-in with any host inside grace strands its leases in `suspended`
+// forever (wallet hold never released, host + consumer concurrency slots consumed forever). The sweep
+// discovers stale suspended leases via the durable `suspended_at` stamp and ends them as
+// host_disconnect on the same finalize path — CAS-guarded so two instances converge on one transition.
+builder.Services.AddHostedService<SuspensionSweepService>();
 
 // Stripe integration (docs/PAYMENTS.md §1, §8, P6.1): the config-driven Stripe client wrapper + webhook
 // signature verifier (both behind interfaces, keys from the Stripe config section / secrets manager), and

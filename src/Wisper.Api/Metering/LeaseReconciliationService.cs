@@ -76,7 +76,14 @@ public sealed class LeaseReconciliationService
             // Bill the healthy interval up to last-healthy BEFORE suspending: the meter only accrues over
             // an active lease, so once suspended nothing more can bill (docs/TUNNEL.md §8).
             await _meter.FlushLeaseAsync(lease, lastHealthyAt, ct);
-            var moved = await _leases.TransitionStateAsync(lease.Id, LeaseStatus.Suspended, ct: ct);
+            // Stamp suspended_at with the wall-clock instant the suspend transition happens (task #55):
+            // the durable grace sweep gates on `suspended_at < now() - grace`, so it must reflect when we
+            // actually suspended — NOT last-healthy, which can be far in the past when a wisper-api restart
+            // discovers a long-stale suspension. Stamping wall-clock preserves the full grace window on
+            // discovery.
+            var suspendedAt = _time.GetUtcNow();
+            var moved = await _leases.TransitionStateAsync(
+                lease.Id, LeaseStatus.Suspended, suspendedAt: suspendedAt, ct: ct);
             if (moved is not null)
             {
                 newlySuspended++;
@@ -234,6 +241,7 @@ public sealed class LeaseReconciliationService
                 EndReason = null,
                 EndedAt = null,
                 LastMeteredAt = reconnectAt,
+                SuspendedAt = null,
             };
             await _leases.UpdateAsync(updated, ct);
             revived.Add(leaseId);
@@ -247,19 +255,28 @@ public sealed class LeaseReconciliationService
 
     /// <summary>
     /// On every heartbeat (steady-state and post-grace fall-through): set-diff the agent's reported live
-    /// leases (<paramref name="reportedLeaseIds"/>) against the manager's <c>active</c> set for
+    /// leases (<paramref name="reportedLeaseIds"/>) against the manager's <c>active + suspended</c> set for
     /// <paramref name="hostId"/> and heal any drift.
     /// <list type="bullet">
     /// <item><b>Active not reported</b> → silent container death: flush billing to <c>now</c> and end as
     /// <c>container_lost</c>, freeing capacity without a tunnel disconnect.</item>
-    /// <item><b>Reported not active</b> → live contract without a manager lease: revive if it was ended as
+    /// <item><b>Suspended reported</b> (restart case, task #55) → resume: the host says the container is
+    /// still running and the in-memory grace timer was lost (restart / scale-in / heartbeat to a different
+    /// instance). Same set-diff semantics as the within-grace reconnect path — back to <c>active</c> with
+    /// the meter watermark reset to the heartbeat instant so the offline gap is never billed.</item>
+    /// <item><b>Suspended not reported</b> (restart case, task #55) → end as <c>container_lost</c>
+    /// finalized at <see cref="Lease.SuspendedAt"/> (the last durable instant we know billing was paused).
+    /// The billable interval was already flushed to last-healthy at suspend time.</item>
+    /// <item><b>Reported not live</b> → live contract without a manager lease: revive if it was ended as
     /// <c>host_disconnect</c> (the container kept running); flag orphaned otherwise so the host tears it
     /// down.</item>
-    /// <item><b>Equal sets</b> → steady-state fast-path: <b>zero writes</b> — mirrors the
-    /// <see cref="Wisper.Api.Tunnel.HostPresenceService"/> no-change guard.</item>
+    /// <item><b>Equal sets and no suspended present</b> → steady-state fast-path: <b>zero writes</b> —
+    /// mirrors the <see cref="Wisper.Api.Tunnel.HostPresenceService"/> no-change guard.</item>
     /// </list>
-    /// Suspended leases are left untouched; they are managed by the grace-window path.
-    /// Idempotent: repeated heartbeats with the same reported set converge on a single outcome.
+    /// Idempotent: repeated heartbeats with the same reported set converge on a single outcome. This is
+    /// the durable-grace complement (task #55) — the coordinator only routes here when NO in-memory grace
+    /// entry exists on this instance, so acting on suspended leases here does not race the in-process
+    /// timer; if a race can happen across instances, the CAS-guarded end transition serializes it.
     /// </summary>
     public async Task<HeartbeatReconcileOutcome> ReconcileHeartbeatAsync(
         Guid hostId,
@@ -268,15 +285,19 @@ public sealed class LeaseReconciliationService
     {
         var reported = reportedLeaseIds as IReadOnlySet<Guid> ?? new HashSet<Guid>(reportedLeaseIds);
 
-        // Only consider active (not suspended) leases; suspended ones are under grace-window management.
-        var activeLeases = (await _leases.ListActiveByHostAsync(hostId, ct))
-            .Where(l => l.Status == LeaseStatus.Active)
-            .ToList();
+        // Consider both active AND suspended leases (task #55): after a wisper-api restart the in-memory
+        // grace timer is gone but the row is still `suspended`, and a reconnecting agent's first heartbeat
+        // is what tells us whether the container is still running (resume) or gone (container_lost).
+        var liveLeases = await _leases.ListActiveByHostAsync(hostId, ct);
+        var activeLeases = liveLeases.Where(l => l.Status == LeaseStatus.Active).ToList();
+        var suspendedLeases = liveLeases.Where(l => l.Status == LeaseStatus.Suspended).ToList();
 
         var activeIds = new HashSet<Guid>(activeLeases.Select(l => l.Id));
 
-        // Steady-state fast-path: both sets equal → nothing to do, zero writes.
-        if (reported.SetEquals(activeIds))
+        // Steady-state fast-path: reported set matches the active set AND there is nothing suspended to
+        // resolve. When suspended leases exist we always have work — either resuming (reported) or ending
+        // (unreported) — so we cannot short-circuit.
+        if (suspendedLeases.Count == 0 && reported.SetEquals(activeIds))
         {
             return HeartbeatReconcileOutcome.Empty;
         }
@@ -307,12 +328,67 @@ public sealed class LeaseReconciliationService
                 lease.Id, hostId, now);
         }
 
-        // Reported contracts the manager has no active lease for → check for revival or orphan.
+        // Suspended leases (task #55 restart case): the in-memory grace timer is gone but the row is
+        // still suspended. Use the heartbeat's live set as the source of truth — resume the still-present
+        // ones, container_lost the vanished ones.
+        foreach (var lease in suspendedLeases)
+        {
+            if (reported.Contains(lease.Id))
+            {
+                // Resume: identical semantics to the within-grace reconnect path — back to active with the
+                // meter watermark reset to `now` so the suspended gap is never billed (docs/TUNNEL.md §8).
+                // suspended_at is auto-cleared by TransitionStateAsync's CASE guard on any transition to
+                // a non-suspended status. The existing lease_hold carries through: within-grace resume
+                // does not touch lease_holds (task #23), and this path mirrors it.
+                await _leases.TransitionStateAsync(
+                    lease.Id, LeaseStatus.Active, lastMeteredAt: now, ct: ct);
+                revived.Add(lease.Id);
+                _logger.LogInformation(
+                    "lease {LeaseId} resumed on heartbeat for host {HostId} (post-restart, no in-memory grace);" +
+                    " billing restarts at {Now:O}",
+                    lease.Id, hostId, now);
+            }
+            else
+            {
+                // Vanished: end as container_lost, finalized at the durable suspended_at (the last instant
+                // we know billing was already paused). Billing was flushed to last-healthy when the lease
+                // suspended, so there is no tail to accrue here — the same path as grace expiry but with
+                // container_lost (host reconnected, container is definitively gone) rather than
+                // host_disconnect. CAS-guarded so a concurrent sweep on another instance cannot double-end.
+                var endedAt = lease.SuspendedAt ?? now;
+                var moved = await _leases.TransitionStateAsync(
+                    lease.Id,
+                    LeaseStatus.Ended,
+                    endReason: LeaseEndReason.ContainerLost,
+                    endedAt: endedAt,
+                    expectedCurrentStatus: LeaseStatus.Suspended,
+                    ct: ct);
+                if (moved is null)
+                {
+                    continue; // lost the race with a sweep on another instance
+                }
+
+                await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+                containerLost.Add(lease.Id);
+                _logger.LogInformation(
+                    "lease {LeaseId} ended (container_lost) on heartbeat for host {HostId} (post-restart," +
+                    " suspended and not reported); finalized at {EndedAt:O}",
+                    lease.Id, hostId, endedAt);
+            }
+        }
+
+        // Reported contracts the manager has no active or suspended lease for → check for revival or orphan.
+        var liveIds = new HashSet<Guid>(activeIds);
+        foreach (var lease in suspendedLeases)
+        {
+            liveIds.Add(lease.Id);
+        }
+
         foreach (var leaseId in reported)
         {
-            if (activeIds.Contains(leaseId))
+            if (liveIds.Contains(leaseId))
             {
-                continue; // already live in the manager — no action needed
+                continue; // already live in the manager (active pre-heartbeat, or just resumed above)
             }
 
             var lease = await _leases.GetByIdAsync(leaseId, ct);
@@ -323,7 +399,7 @@ public sealed class LeaseReconciliationService
                 continue;
             }
 
-            // Suspended is under grace management; already active is consistent — skip both.
+            // Already active/suspended (a resume just above, or arrived here mid-transition) — consistent.
             if (lease.Status is LeaseStatus.Active or LeaseStatus.Suspended)
             {
                 continue;
@@ -351,6 +427,7 @@ public sealed class LeaseReconciliationService
                 EndReason = null,
                 EndedAt = null,
                 LastMeteredAt = now,
+                SuspendedAt = null,
             };
             await _leases.UpdateAsync(updated, ct);
             revived.Add(leaseId);
@@ -372,6 +449,79 @@ public sealed class LeaseReconciliationService
         await _leases.TransitionStateAsync(
             lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: lastHealthyAt, ct: ct);
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+    }
+
+    /// <summary>
+    /// The durable grace backstop (task #55, docs/TUNNEL.md §8). Finds leases whose <c>suspended_at</c> is
+    /// older than the effective cutoff (grace window + a safety margin) AND whose host is NOT currently
+    /// under an active in-process grace timer on THIS instance, then routes each through the same finalize
+    /// + end(host_disconnect) + release-hold path the in-memory timer uses. This is what turns "grace lived
+    /// only in process memory" into "grace survives a wisper-api restart":
+    /// <list type="bullet">
+    /// <item>Restart / crash / scale-in wipes <see cref="Wisper.Api.Tunnel.TunnelDisconnectCoordinator"/>'s
+    /// timer, but the durable <c>suspended_at</c> stamp lets the next sweep tick discover and reap the
+    /// stranded lease within one interval — no more wallet holds / concurrency slots stuck forever.</item>
+    /// <item>Idempotent and safe under concurrent instances: the <c>suspended → ended</c> transition uses
+    /// the repository's <c>expectedCurrentStatus</c> CAS guard, so exactly one sweep (or the in-memory
+    /// timer, or a heartbeat) wins the state transition; the losers see zero rows updated and skip.</item>
+    /// <item>Leases whose host is currently under an active in-process grace timer on THIS instance are
+    /// skipped — the fast in-memory path is the source of truth while its timer is armed.</item>
+    /// </list>
+    /// Returns how many leases the sweep ended.
+    /// </summary>
+    public async Task<int> SweepStaleSuspendedLeasesAsync(
+        TimeSpan graceWithSafetyMargin,
+        IReadOnlySet<Guid> hostsUnderInProcessGrace,
+        CancellationToken ct = default)
+    {
+        var now = _time.GetUtcNow();
+        var cutoff = now - graceWithSafetyMargin;
+        var candidates = await _leases.ListSuspendedOlderThanAsync(cutoff, ct);
+        if (candidates.Count == 0)
+        {
+            return 0;
+        }
+
+        var ended = 0;
+        foreach (var lease in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Skip a host whose grace timer is armed on THIS instance — the in-memory path is the fast
+            // path (task #55). A host under grace on a DIFFERENT instance falls into this sweep on the
+            // one where the timer was lost; the CAS guard below dedupes if the other instance's timer
+            // actually fires first.
+            if (hostsUnderInProcessGrace.Contains(lease.HostId))
+            {
+                continue;
+            }
+
+            // CAS-guarded transition: two concurrent sweeps (or a sweep and a late-firing in-memory timer)
+            // race on suspended → ended, and only ONE update matches (the loser's WHERE clause fails
+            // because status is no longer 'suspended'). Ledger release is keyed per hold generation, so
+            // a duplicate release call after the winner posts would dedupe at the ledger anyway — the CAS
+            // gives us zero-post idempotence on the state transition too.
+            var moved = await _leases.TransitionStateAsync(
+                lease.Id,
+                LeaseStatus.Ended,
+                endReason: LeaseEndReason.HostDisconnect,
+                endedAt: lease.SuspendedAt ?? now,
+                expectedCurrentStatus: LeaseStatus.Suspended,
+                ct: ct);
+            if (moved is null)
+            {
+                continue; // lost the race (another sweep / timer / heartbeat already transitioned it)
+            }
+
+            await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+            ended++;
+            _logger.LogWarning(
+                "lease {LeaseId} ended (host_disconnect) by durable grace sweep — host {HostId} " +
+                "suspended at {SuspendedAt:O}, past cutoff {Cutoff:O}; hold released",
+                lease.Id, lease.HostId, lease.SuspendedAt, cutoff);
+        }
+
+        return ended;
     }
 
     /// <summary>

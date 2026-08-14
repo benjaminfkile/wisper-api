@@ -94,4 +94,12 @@ public sealed record Lease
 
     /// <summary>End time (UTC); non-null exactly when <see cref="Status"/> is <see cref="LeaseStatus.Ended"/>.</summary>
     public DateTimeOffset? EndedAt { get; init; }
+
+    /// <summary>
+    /// When the lease was moved to <c>suspended</c> (task #55). Non-null while the lease is under grace
+    /// management; cleared on resume (back to <c>active</c>) or revive. Persisted so the durable grace
+    /// sweep can reap leases whose in-memory grace timer was lost across a restart — the sole authoritative
+    /// clock for "how long has this been suspended?" that survives an instance restart.
+    /// </summary>
+    public DateTimeOffset? SuspendedAt { get; init; }
 }

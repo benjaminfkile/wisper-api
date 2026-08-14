@@ -18,7 +18,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         "id, consumer_user_id, host_id, host_image_id, image_ref, network::text AS network, isolation, cpus, " +
         "memory_mb, gpus, ttl_seconds, price_cents_per_min, currency, status::text AS status, " +
         "end_reason::text AS end_reason, wisp_contract_id, hold_txn_id, created_at, started_at, " +
-        "last_metered_at, billable_seconds, ended_at";
+        "last_metered_at, billable_seconds, ended_at, suspended_at";
 
     public LeaseRepository(Db db) : base(db)
     {
@@ -75,18 +75,30 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
             new { hostImageId }, cancellationToken: ct));
     }
 
+    public async Task<IReadOnlyList<Lease>> ListSuspendedOlderThanAsync(
+        DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default)
+    {
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<Row>(new CommandDefinition(
+            $"SELECT {Columns} FROM leases WHERE status = 'suspended' " +
+            "AND suspended_at IS NOT NULL AND suspended_at <= @cutoff " +
+            "ORDER BY suspended_at",
+            new { cutoff = suspendedOnOrBefore }, cancellationToken: ct));
+        return rows.Select(r => r.ToEntity()).ToList();
+    }
+
     public async Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default)
     {
         const string sql = $"""
             INSERT INTO leases (id, consumer_user_id, host_id, host_image_id, image_ref, network, isolation,
                                 cpus, memory_mb, gpus, ttl_seconds, price_cents_per_min, currency, status,
                                 end_reason, wisp_contract_id, hold_txn_id, created_at, started_at,
-                                last_metered_at, billable_seconds, ended_at)
+                                last_metered_at, billable_seconds, ended_at, suspended_at)
             VALUES (COALESCE(@Id, gen_random_uuid()), @ConsumerUserId, @HostId, @HostImageId, @ImageRef,
                     @Network::network_mode, @Isolation, @Cpus, @MemoryMb, @Gpus, @TtlSeconds,
                     @PriceCentsPerMin, @Currency, @Status::lease_status, @EndReason::lease_end_reason,
                     @WispContractId, @HoldTxnId, COALESCE(@CreatedAt, now()), @StartedAt, @LastMeteredAt,
-                    @BillableSeconds, @EndedAt)
+                    @BillableSeconds, @EndedAt, @SuspendedAt)
             RETURNING {Columns}
             """;
 
@@ -106,7 +118,8 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
                    started_at       = @StartedAt,
                    last_metered_at  = @LastMeteredAt,
                    billable_seconds = @BillableSeconds,
-                   ended_at         = @EndedAt
+                   ended_at         = @EndedAt,
+                   suspended_at     = @SuspendedAt
              WHERE id = @Id
             RETURNING {Columns}
             """;
@@ -125,8 +138,18 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         DateTimeOffset? lastMeteredAt = null,
         long? billableSeconds = null,
         DateTimeOffset? endedAt = null,
+        DateTimeOffset? suspendedAt = null,
+        LeaseStatus? expectedCurrentStatus = null,
         CancellationToken ct = default)
     {
+        // suspended_at is only meaningful while status = 'suspended' (task #55): transitions to any other
+        // status (resume back to active, end from suspended, etc.) auto-clear it so an ended row never
+        // carries a stale suspension timestamp. Transitions INTO suspended set it (via @SuspendedAt when
+        // supplied) or leave the existing value (idempotent re-suspend keeps the original moment).
+        //
+        // expectedCurrentStatus is the optional CAS guard the sweep uses so two concurrent sweep instances
+        // cannot both end the same lease: WHERE status = @ExpectedCurrentStatus makes the UPDATE match
+        // zero rows on the loser, converging on exactly one transition. NULL = no guard (existing callers).
         const string sql = $"""
             UPDATE leases
                SET status           = @Status::lease_status,
@@ -134,8 +157,13 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
                    started_at       = COALESCE(@StartedAt, started_at),
                    last_metered_at  = COALESCE(@LastMeteredAt, last_metered_at),
                    billable_seconds = COALESCE(@BillableSeconds, billable_seconds),
-                   ended_at         = COALESCE(@EndedAt, ended_at)
+                   ended_at         = COALESCE(@EndedAt, ended_at),
+                   suspended_at     = CASE WHEN @Status::lease_status = 'suspended'
+                                           THEN COALESCE(@SuspendedAt, suspended_at)
+                                           ELSE NULL END
              WHERE id = @Id
+               AND (@ExpectedCurrentStatus::lease_status IS NULL
+                    OR status = @ExpectedCurrentStatus::lease_status)
             RETURNING {Columns}
             """;
 
@@ -148,6 +176,8 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
             LastMeteredAt = lastMeteredAt,
             BillableSeconds = billableSeconds,
             EndedAt = endedAt,
+            SuspendedAt = suspendedAt,
+            ExpectedCurrentStatus = expectedCurrentStatus is { } es ? PgEnum.ToLabel(es) : null,
         };
 
         await using var conn = await OpenConnectionAsync(ct);
@@ -180,6 +210,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         lease.LastMeteredAt,
         lease.BillableSeconds,
         lease.EndedAt,
+        lease.SuspendedAt,
     };
 
     /// <summary>
@@ -211,6 +242,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
         public DateTimeOffset? LastMeteredAt { get; init; }
         public long BillableSeconds { get; init; }
         public DateTimeOffset? EndedAt { get; init; }
+        public DateTimeOffset? SuspendedAt { get; init; }
 
         public Lease ToEntity() => new()
         {
@@ -236,6 +268,7 @@ public sealed class LeaseRepository : RepositoryBase, ILeaseRepository
             LastMeteredAt = LastMeteredAt,
             BillableSeconds = BillableSeconds,
             EndedAt = EndedAt,
+            SuspendedAt = SuspendedAt,
         };
     }
 }

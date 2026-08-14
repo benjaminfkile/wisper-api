@@ -47,6 +47,15 @@ public interface ILeaseRepository : IRepository
     /// </summary>
     Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default);
 
+    /// <summary>
+    /// Every lease with <c>status = 'suspended'</c> whose <see cref="Lease.SuspendedAt"/> is at or before
+    /// <paramref name="suspendedOnOrBefore"/> — the driving query of the durable grace sweep (task #55).
+    /// Backed by the partial index <c>leases_suspended_at_idx</c>; ordered oldest-first so a batch-limited
+    /// sweep tackles the oldest strays first.
+    /// </summary>
+    Task<IReadOnlyList<Lease>> ListSuspendedOlderThanAsync(
+        DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default);
+
     /// <summary>Inserts a new lease and returns the stored row (with any DB-generated id).</summary>
     Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default);
 
@@ -60,10 +69,14 @@ public interface ILeaseRepository : IRepository
     /// <summary>
     /// The narrow state-machine write: sets <paramref name="status"/> and, when non-null, advances the
     /// timeline fields (<paramref name="endReason"/>, <paramref name="startedAt"/>,
-    /// <paramref name="lastMeteredAt"/>, <paramref name="billableSeconds"/>, <paramref name="endedAt"/>);
-    /// a null argument leaves that column unchanged. Returns the stored row, or <c>null</c> if no such
-    /// lease. This is what <c>pending → provisioning → active ⇄ suspended → ended/failed</c> transitions
-    /// and each metering tick use (docs/DATA_MODEL.md §5, docs/TUNNEL.md §8).
+    /// <paramref name="lastMeteredAt"/>, <paramref name="billableSeconds"/>, <paramref name="endedAt"/>,
+    /// <paramref name="suspendedAt"/>); a null argument leaves that column unchanged. Returns the stored
+    /// row, or <c>null</c> if no such lease OR the optional <paramref name="expectedCurrentStatus"/>
+    /// CAS guard did not match — used by the durable grace sweep (task #55) so two concurrent instances
+    /// converge on exactly one <c>suspended → ended</c> transition per lease. <c>suspended_at</c> is
+    /// auto-cleared on any transition to a non-<c>suspended</c> status (a resumed/ended row never carries
+    /// a stale suspension timestamp). This is what <c>pending → provisioning → active ⇄ suspended → ended/failed</c>
+    /// transitions and each metering tick use (docs/DATA_MODEL.md §5, docs/TUNNEL.md §8).
     /// </summary>
     Task<Lease?> TransitionStateAsync(
         Guid id,
@@ -73,5 +86,7 @@ public interface ILeaseRepository : IRepository
         DateTimeOffset? lastMeteredAt = null,
         long? billableSeconds = null,
         DateTimeOffset? endedAt = null,
+        DateTimeOffset? suspendedAt = null,
+        LeaseStatus? expectedCurrentStatus = null,
         CancellationToken ct = default);
 }
