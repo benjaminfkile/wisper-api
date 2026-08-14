@@ -195,17 +195,25 @@ public sealed class MeteringService
             return null; // the clock has not advanced past the watermark: nothing to bill
         }
 
+        // INVARIANT (task #46, billing integrity): the rate used for every metering tick, revive re-hold,
+        // end-of-lease settlement, and host payout accrual for this lease is the immutable snapshot
+        // `lease.PriceCentsPerMin` stamped on the lease row at create time — NEVER the current host_images
+        // price. A host that reprices an image mid-lease must not be able to change what an open lease is
+        // charged. Do not read `image.PriceCentsPerMin` here (or JOIN host_images) — the snapshot is the
+        // single source of truth (docs/DATA_MODEL.md §5, §6).
+        var priceCentsPerMin = lease.PriceCentsPerMin;
+
         // Cumulative-charge accounting so per-tick integer rounding never drifts: this interval's charge
         // is (total owed at the new watermark) − (total owed so far). Over a full minute that is exactly
         // price_cents_per_min, and the running total can never exceed the up-front hold (⌈ttl/60⌉·price),
         // so the hold is never exhausted mid-run (docs/DATA_MODEL.md §8, §16).
         var newBillableTotal = lease.BillableSeconds + elapsedSeconds;
-        var amountCents = ChargeCentsFor(newBillableTotal, lease.PriceCentsPerMin)
-            - ChargeCentsFor(lease.BillableSeconds, lease.PriceCentsPerMin);
+        var amountCents = ChargeCentsFor(newBillableTotal, priceCentsPerMin)
+            - ChargeCentsFor(lease.BillableSeconds, priceCentsPerMin);
 
         // A sub-cent interval on a priced image bills nothing yet: leave the watermark where it is so the
         // seconds accumulate into the next tick until they are worth at least one cent — no value is lost.
-        if (amountCents <= 0 && lease.PriceCentsPerMin > 0)
+        if (amountCents <= 0 && priceCentsPerMin > 0)
         {
             return null;
         }
