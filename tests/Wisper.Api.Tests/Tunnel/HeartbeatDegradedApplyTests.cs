@@ -189,7 +189,145 @@ public class HeartbeatDegradedApplyTests
         Assert.Equal(1, fx.Logger.ErrorCount);
     }
 
+    // ----- task #65: settle on first heartbeat --------------------------------------------------
+
+    [Fact]
+    public async Task First_healthy_heartbeat_clears_a_stale_degraded_entry_left_by_a_prior_connection()
+    {
+        // AC #223: a stale entry in the shared store — from a superseded/crashed prior connection, or a
+        // disconnect-time clear that lost a race — must be cleared by the FIRST heartbeat of the fresh
+        // (healthy) connection. Without the unconditional first-beat settle the guard would skip the
+        // write on every steady-state healthy beat (fresh IsDegraded=false == reportedDegraded=false)
+        // and the host would stay excluded from placement forever.
+        var fx = Fixture.Create();
+        await fx.Store.SetDegradedAsync(HostId.ToString()); // seed the stale entry
+
+        // Fresh connection — IsDegradedSettled starts false — receives one healthy heartbeat.
+        await HeartbeatDegradedApply.ApplyAsync(
+            fx.Connection, Heartbeat(status: null), fx.Store, fx.Logger, ct: default);
+
+        Assert.False(await fx.Store.IsDegradedAsync(HostId.ToString()));
+        Assert.False(fx.Connection.IsDegraded);
+        Assert.True(fx.Connection.IsDegradedSettled);
+    }
+
+    [Fact]
+    public async Task Supersede_while_degraded_does_not_strand_the_host_after_healthy_reconnect()
+    {
+        // AC #224: a supersede while degraded is the common agent-reconnect path — the prior tunnel's
+        // disconnect handler deliberately skips its ClearDegradedAsync on supersede so the newer
+        // owner's own heartbeats govern the flag. If the new agent comes back HEALTHY, the first
+        // heartbeat of the new connection MUST clear the stale entry. Same shared store across both
+        // connections (as in the shared-Redis production shape).
+        var sharedStore = new InMemoryHostDegradedStore();
+
+        var oldConn = MakeConnection("sess-old");
+        // Old connection reports degraded — this is what a real deployment would look like right
+        // before the supersede: the store carries the host, and the disconnect path leaves it alone.
+        await HeartbeatDegradedApply.ApplyAsync(
+            oldConn, Heartbeat("degraded"), sharedStore, NullLogger.Instance, ct: default);
+        Assert.True(await sharedStore.IsDegradedAsync(HostId.ToString()));
+
+        // New agent reconnects (supersede) — fresh connection, healthy heartbeats. This is the leak.
+        var newConn = MakeConnection("sess-new");
+        var logger = new CountingLogger();
+
+        await HeartbeatDegradedApply.ApplyAsync(
+            newConn, Heartbeat(status: null), sharedStore, logger, ct: default);
+
+        Assert.False(await sharedStore.IsDegradedAsync(HostId.ToString()));
+        Assert.False(newConn.IsDegraded);
+        Assert.True(newConn.IsDegradedSettled);
+    }
+
+    [Fact]
+    public async Task First_healthy_beat_without_any_stale_entry_does_not_log_a_recovery_line()
+    {
+        // First-beat settle writes the store authoritatively (a redundant DEL when nothing is there),
+        // but it must NOT emit the recovery info log line on a non-transition — that line is reserved
+        // for a genuine degraded → healthy transition on this connection. Preserves AC #225.
+        var fx = Fixture.Create();
+
+        await HeartbeatDegradedApply.ApplyAsync(
+            fx.Connection, Heartbeat(status: null), fx.Store, fx.Logger, ct: default);
+
+        Assert.False(await fx.Store.IsDegradedAsync(HostId.ToString()));
+        Assert.Equal(0, fx.Logger.InformationCount);
+        Assert.Equal(0, fx.Logger.WarningCount);
+        Assert.True(fx.Connection.IsDegradedSettled);
+    }
+
+    [Fact]
+    public async Task Repeated_healthy_beats_after_first_settle_touch_the_store_at_most_once()
+    {
+        // Once the first-beat settle has completed, subsequent healthy beats fall through the
+        // healthy-steady-state fast-path with zero store writes and zero log lines (AC #225).
+        var recording = new RecordingDegradedStore();
+        var fx = Fixture.Create(store: recording);
+
+        for (var i = 0; i < 10; i++)
+        {
+            await HeartbeatDegradedApply.ApplyAsync(
+                fx.Connection, Heartbeat(status: null), fx.Store, fx.Logger, ct: default);
+        }
+
+        Assert.Equal(1, recording.ClearCount); // exactly one from the first-beat settle
+        Assert.Equal(0, recording.SetCount);
+        Assert.Equal(0, fx.Logger.InformationCount);
+        Assert.Equal(0, fx.Logger.WarningCount);
+    }
+
+    [Fact]
+    public async Task Every_degraded_beat_writes_the_store_so_a_live_degraded_host_refreshes_its_ttl()
+    {
+        // AC #226 (in-memory proxy): the Redis store gives its per-host key a TTL on every SET, so a
+        // live degraded host that keeps heartbeating must never expire from TTL alone. Modeled here by
+        // asserting the applier calls SetDegradedAsync on EVERY degraded heartbeat, not just on the
+        // transition — the Redis store's SET semantics turn each call into an atomic TTL refresh.
+        var recording = new RecordingDegradedStore();
+        var fx = Fixture.Create(store: recording);
+
+        for (var i = 0; i < 5; i++)
+        {
+            await HeartbeatDegradedApply.ApplyAsync(
+                fx.Connection, Heartbeat("degraded"), fx.Store, fx.Logger, ct: default);
+        }
+
+        Assert.Equal(5, recording.SetCount);
+        Assert.Equal(1, fx.Logger.WarningCount); // still logged once per transition
+        Assert.Equal(0, fx.Logger.InformationCount);
+    }
+
+    [Fact]
+    public async Task First_beat_settle_failure_does_not_latch_and_retries_next_beat()
+    {
+        // If the very first beat's store write throws, the connection MUST NOT be marked "settled" —
+        // otherwise the next healthy beat would fall into the fast-path and never retry, leaving any
+        // stale entry uncleared forever.
+        var flakyStore = new FlakyDegradedStore();
+        var connection = MakeConnection("sess-flaky");
+        var logger = new CountingLogger();
+
+        flakyStore.ThrowOnce = true;
+        await HeartbeatDegradedApply.ApplyAsync(
+            connection, Heartbeat(status: null), flakyStore, logger, ct: default);
+
+        Assert.False(connection.IsDegradedSettled);
+        Assert.Equal(1, logger.ErrorCount);
+
+        // Second beat: store recovers, settle succeeds.
+        await HeartbeatDegradedApply.ApplyAsync(
+            connection, Heartbeat(status: null), flakyStore, logger, ct: default);
+
+        Assert.True(connection.IsDegradedSettled);
+        Assert.Equal(2, flakyStore.ClearCount); // once (threw), once (succeeded)
+    }
+
     // ----- fixture / helpers ---------------------------------------------------------------------
+
+    private static TunnelConnection MakeConnection(string sessionId) => new(
+        new StubWebSocket(), HostId.ToString(), sessionId: sessionId,
+        maxReceiveBytes: 65536, NullLogger.Instance);
 
     private static HostHeartbeat Heartbeat(string? status) => new()
     {
@@ -253,6 +391,72 @@ public class HeartbeatDegradedApplyTests
             throw new InvalidOperationException("shared store down");
         public Task<bool> IsDegradedAsync(string hostId, CancellationToken ct = default) =>
             Task.FromResult(false);
+        public Task<IReadOnlyCollection<string>> SnapshotAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyCollection<string>>(Array.Empty<string>());
+    }
+
+    /// <summary>An <see cref="IHostDegradedStore"/> that counts Set/Clear calls so tests can assert
+    /// the applier hits the store exactly the expected number of times (TTL-refresh proof).</summary>
+    private sealed class RecordingDegradedStore : IHostDegradedStore
+    {
+        private readonly HashSet<string> _members = new(StringComparer.Ordinal);
+        public int SetCount { get; private set; }
+        public int ClearCount { get; private set; }
+
+        public Task SetDegradedAsync(string hostId, CancellationToken ct = default)
+        {
+            SetCount++;
+            _members.Add(hostId);
+            return Task.CompletedTask;
+        }
+
+        public Task ClearDegradedAsync(string hostId, CancellationToken ct = default)
+        {
+            ClearCount++;
+            _members.Remove(hostId);
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> IsDegradedAsync(string hostId, CancellationToken ct = default) =>
+            Task.FromResult(_members.Contains(hostId));
+
+        public Task<IReadOnlyCollection<string>> SnapshotAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyCollection<string>>(_members.ToArray());
+    }
+
+    /// <summary>An <see cref="IHostDegradedStore"/> that throws the next write when <see cref="ThrowOnce"/>
+    /// is set — used to prove the first-beat settle does not latch on failure.</summary>
+    private sealed class FlakyDegradedStore : IHostDegradedStore
+    {
+        public bool ThrowOnce { get; set; }
+        public int SetCount { get; private set; }
+        public int ClearCount { get; private set; }
+
+        public Task SetDegradedAsync(string hostId, CancellationToken ct = default)
+        {
+            SetCount++;
+            if (ThrowOnce)
+            {
+                ThrowOnce = false;
+                throw new InvalidOperationException("shared store hiccup");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task ClearDegradedAsync(string hostId, CancellationToken ct = default)
+        {
+            ClearCount++;
+            if (ThrowOnce)
+            {
+                ThrowOnce = false;
+                throw new InvalidOperationException("shared store hiccup");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> IsDegradedAsync(string hostId, CancellationToken ct = default) =>
+            Task.FromResult(false);
+
         public Task<IReadOnlyCollection<string>> SnapshotAsync(CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyCollection<string>>(Array.Empty<string>());
     }

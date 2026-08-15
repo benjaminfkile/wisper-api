@@ -42,4 +42,15 @@ public sealed class BackplaneOptions
     /// call is bounded the same as a local one.
     /// </summary>
     public int RpcTimeoutMs { get; set; } = 120000;
+
+    /// <summary>
+    /// TTL applied to each Redis degraded entry, refreshed by every degraded heartbeat (task #65).
+    /// Ensures a host whose instance crashed (Redis mode: the disconnect handler never runs) does not
+    /// leave a stuck-degraded entry behind forever, while sized generously enough — many multiples of
+    /// the heartbeat interval — that a live degraded host is refreshed long before this expires, so it
+    /// never flaps healthy from TTL alone. Default 600s (~20× the 30s heartbeat cadence and ~8× the
+    /// 75s default liveness timeout — a live degraded host that gets its tunnel closed on liveness has
+    /// its entry cleared by the disconnect path long before this hits).
+    /// </summary>
+    public int DegradedTtlSeconds { get; set; } = 600;
 }

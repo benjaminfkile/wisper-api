@@ -86,6 +86,19 @@ public class TunnelConnection
     public bool IsDegraded { get; set; }
 
     /// <summary>
+    /// True once <see cref="HeartbeatDegradedApply"/> has reconciled this connection's degraded state
+    /// against the shared store at least once (task #65). The first heartbeat of every connection MUST
+    /// write the store authoritatively — a stale degraded entry left behind by a superseded/crashed
+    /// prior connection (or a disconnect-time clear that lost the race, or threw) would otherwise keep
+    /// a returning HEALTHY agent excluded from placement forever: a fresh connection starts
+    /// <see cref="IsDegraded"/> = false, and the transition-edge fast-path guard skips the store write
+    /// on steady state, so the stale entry would never be cleared. Once true the applier reverts to
+    /// steady-state semantics: writes and logs only on a transition, so a healthy agent that stays
+    /// healthy through many beats never re-touches the store or floods the log.
+    /// </summary>
+    public bool IsDegradedSettled { get; set; }
+
+    /// <summary>
     /// Routes inbound control frames this connection does not own (lease/exec responses) to the
     /// relay. Set by the endpoint after construction; when null the default hook just logs.
     /// Wisper owns the id space, so responses are correlated by the <c>rid</c>/<c>leaseId</c>

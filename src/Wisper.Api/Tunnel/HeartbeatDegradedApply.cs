@@ -12,7 +12,10 @@ namespace Wisper.Api.Tunnel;
 /// admission — excludes it uniformly, on every instance. A subsequent heartbeat with no
 /// <c>status</c> (or any non-<c>degraded</c> value) restores the host to normal placement. Transitions
 /// are logged exactly once (guarded by the per-connection <see cref="TunnelConnection.IsDegraded"/>
-/// bool) so a healthy agent that stays degraded through many beats does not flood the log.
+/// bool) so a healthy agent that stays degraded through many beats does not flood the log. The FIRST
+/// heartbeat of every connection also unconditionally settles the shared store (task #65) so a stale
+/// entry left by a prior superseded/crashed/race-lost connection cannot strand a returning host out of
+/// placement.
 ///
 /// Lease state is intentionally untouched: the containers may still be running fine — the agent just
 /// cannot reach wisp's API — and lease reconciliation is governed solely by the heartbeat lease
@@ -25,9 +28,18 @@ internal static class HeartbeatDegradedApply
 
     /// <summary>
     /// Reconciles <paramref name="connection"/>'s degraded state against this heartbeat's
-    /// <see cref="HostHeartbeat.Status"/> value. Idempotent on unchanged state — writes to the shared
-    /// store (and logs) only on a transition. Fail-safe: any exception is logged and swallowed so a
-    /// degraded-set hiccup can never disturb lease reconciliation or the tunnel.
+    /// <see cref="HostHeartbeat.Status"/> value. The first heartbeat of every connection settles the
+    /// shared store authoritatively (a write regardless of transition — see below); subsequent
+    /// heartbeats are idempotent on unchanged state and write / log only on a transition. Fail-safe:
+    /// any exception is logged and swallowed so a degraded-set hiccup can never disturb lease
+    /// reconciliation or the tunnel.
+    ///
+    /// The unconditional first-beat settle (task #65) closes the "stuck degraded" leak: a stale entry
+    /// left by a superseded, crashed, or race-lost prior connection would otherwise keep a returning
+    /// HEALTHY agent excluded forever, because a fresh <see cref="TunnelConnection"/> starts
+    /// <see cref="TunnelConnection.IsDegraded"/> = false and the transition-edge guard would skip the
+    /// clear on every steady-state healthy beat. After the settle the applier reverts to steady-state
+    /// once-per-transition logging so a healthy host does not flood the log.
     /// </summary>
     public static async Task ApplyAsync(
         TunnelConnection connection,
@@ -37,29 +49,49 @@ internal static class HeartbeatDegradedApply
         CancellationToken ct)
     {
         var reportedDegraded = IsDegradedStatus(heartbeat.Status);
-        if (reportedDegraded == connection.IsDegraded)
+        var isTransition = reportedDegraded != connection.IsDegraded;
+
+        // Healthy steady state on a settled connection is the common case — never touches the store
+        // or logs. A degraded heartbeat always writes: (a) transitions log + set, (b) steady-state
+        // degraded beats refresh the Redis TTL (task #65) so a live degraded host never flaps healthy
+        // from expiration alone. A healthy transition or first-beat settle also writes to clear any
+        // stale entry authoritatively.
+        if (!reportedDegraded && !isTransition && connection.IsDegradedSettled)
         {
-            return; // steady state — the common case — never touches the shared store
+            return;
         }
 
         try
         {
             if (reportedDegraded)
             {
+                // Always write on a degraded beat — the Redis store treats this as SET+EX so the TTL
+                // is refreshed on every heartbeat (task #65). In-memory store is idempotent.
                 await degradedStore.SetDegradedAsync(connection.HostId, ct);
                 connection.IsDegraded = true;
-                logger.LogWarning(
-                    "host {HostId} agent reported degraded (local wisp unreachable) — excluding from placement",
-                    connection.HostId);
+                if (isTransition)
+                {
+                    logger.LogWarning(
+                        "host {HostId} agent reported degraded (local wisp unreachable) — excluding from placement",
+                        connection.HostId);
+                }
             }
             else
             {
                 await degradedStore.ClearDegradedAsync(connection.HostId, ct);
                 connection.IsDegraded = false;
-                logger.LogInformation(
-                    "host {HostId} agent recovered (local wisp reachable again) — restoring placement",
-                    connection.HostId);
+                if (isTransition)
+                {
+                    logger.LogInformation(
+                        "host {HostId} agent recovered (local wisp reachable again) — restoring placement",
+                        connection.HostId);
+                }
             }
+
+            // Only latch the settled flag on a successful store write, so a first-beat failure retries
+            // on the next heartbeat rather than sticking in the fast-path with a possibly-stale entry
+            // still in the store.
+            connection.IsDegradedSettled = true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

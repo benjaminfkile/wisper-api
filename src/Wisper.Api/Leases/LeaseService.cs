@@ -421,13 +421,29 @@ public sealed class LeaseService : ILeaseService
         // seconds up to the stop and never past what the lease was entitled to run.
         await _meter.FinalizeLeaseAsync(lease.Id, now, ct);
 
+        // CAS-guarded on the read-time status (task #65): a concurrent reconciler / admin force-end
+        // could have already ended the lease between our read at ReleaseAsync entry and this write.
+        // Without the guard the COALESCE-based transition would overwrite whichever end_reason the
+        // winning path stamped (host_disconnect, container_lost, admin_terminated…) with "released",
+        // and this path would then double-drive ReleaseHoldAsync. Money movement is protected by
+        // ledger idempotency, but end_reason should reflect the cause that actually won the race.
         var ended = await _leases.TransitionStateAsync(
-            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: now, ct: ct);
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: now,
+            expectedCurrentStatus: lease.Status, ct: ct);
+
+        if (ended is null)
+        {
+            // Another end-driver won the race — surface whatever is now in the DB. The winner has
+            // already released the hold (ReleaseHoldAsync is idempotent by lease id but skipping it
+            // avoids a spurious ledger post attempt).
+            var current = await _leases.GetByIdAsync(lease.Id, ct);
+            return current is null ? ViewOf(lease) : ViewOf(current);
+        }
 
         // Return the unused remainder of the hold to the wallet (docs/PAYMENTS.md §4). Keyed by lease id, so
         // it is a safe no-op if the lease was already finalized (and released) by the reconciler.
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
-        return ViewOf(ended ?? lease);
+        return ViewOf(ended);
     }
 
     /// <summary>

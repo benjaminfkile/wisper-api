@@ -344,8 +344,19 @@ public sealed class LeaseReconciliationService
             // past its TTL before we noticed it silently died is not billable past the TTL, and the
             // heartbeat's `now` may otherwise over-bill the tail past what the lease was entitled to.
             await _meter.FinalizeLeaseAsync(lease, now, ct);
-            await _leases.TransitionStateAsync(
-                lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.ContainerLost, endedAt: now, ct: ct);
+            // CAS-guarded on active (task #65): a concurrent consumer release, admin force-end, or a
+            // parallel heartbeat handler on another instance could have already ended the lease. Without
+            // the guard the COALESCE-based transition would overwrite end_reason and this path would then
+            // double-drive ReleaseHoldAsync. Money movement is protected by ledger idempotency but the
+            // end_reason/timeline should reflect whichever cause won.
+            var ended = await _leases.TransitionStateAsync(
+                lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.ContainerLost, endedAt: now,
+                expectedCurrentStatus: LeaseStatus.Active, ct: ct);
+            if (ended is null)
+            {
+                continue; // lost the race with another end-driver — the winner has released the hold
+            }
+
             await _walletGate.ReleaseHoldAsync(lease.Id, ct);
             containerLost.Add(lease.Id);
             _logger.LogInformation(
