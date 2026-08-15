@@ -30,7 +30,9 @@ public class CatalogServiceTests
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public InMemoryLeaseRepository Leases { get; } = new();
         public InMemoryHostPresenceStore PresenceStore { get; } = new();
-        public CatalogService Service => new(Hosts, Images, Registry, Capabilities, Leases, PresenceStore);
+        public InMemoryHostDegradedStore DegradedStore { get; } = new();
+        public CatalogService Service =>
+            new(Hosts, Images, Registry, Capabilities, Leases, PresenceStore, DegradedStore);
 
         public async Task<Host> AddHostAsync(
             string name, string region, DateTimeOffset createdAt,
@@ -802,6 +804,78 @@ public class CatalogServiceTests
         var h = new Harness();
         var host = await h.AddHostAsync("stale-remote", "us", T0, status: HostStatus.Offline, online: false);
         await h.AddImageAsync(host.Id, "img:1", price: 5);
+
+        var detail = await h.Service.GetHostAsync(host.Id);
+
+        Assert.NotNull(detail);
+        Assert.False(detail!.Online);
+    }
+
+    // ---- Degraded-host exclusion (task #62) --------------------------------------------------------
+
+    [Fact]
+    public async Task List_excludes_a_host_marked_degraded_even_when_the_tunnel_is_live()
+    {
+        // Task #62 AC #211: a degraded heartbeat marks the host degraded (its agent cannot reach its
+        // local wisp) — the catalog must exclude it from new lease placement even though the tunnel
+        // is still up and presence still reports it online.
+        var h = new Harness();
+        var host = await h.AddHostAsync("wisp-down", "us", T0, online: true);
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+        await h.DegradedStore.SetDegradedAsync(host.Id.ToString());
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        Assert.Empty(page.Data);
+    }
+
+    [Fact]
+    public async Task List_reincludes_a_host_after_its_degraded_flag_is_cleared()
+    {
+        // Task #62 AC #212: the next non-degraded heartbeat clears the flag and placement resumes
+        // automatically — no manual admin action, no reconnect required.
+        var h = new Harness();
+        var host = await h.AddHostAsync("recovers", "us", T0, online: true);
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+        await h.DegradedStore.SetDegradedAsync(host.Id.ToString());
+        Assert.Empty((await h.Service.ListAsync(new CatalogQuery())).Data);
+
+        await h.DegradedStore.ClearDegradedAsync(host.Id.ToString());
+
+        var item = Assert.Single((await h.Service.ListAsync(new CatalogQuery())).Data);
+        Assert.Equal(host.Id, item.HostId);
+    }
+
+    [Fact]
+    public async Task List_degraded_flag_is_visible_across_instances_via_the_shared_store()
+    {
+        // Multi-instance safety (AC #214): a host marked degraded by its owning instance ("A") must
+        // be invisible to placement on a different instance ("B"). Simulated by writing to the shared
+        // store while the local registry is empty (this harness stands in for instance B).
+        var h = new Harness();
+        var host = await h.AddHostAsync("remote", "us", T0, online: false); // no local tunnel = instance B
+        await h.PresenceStore.SetOwnerAsync(host.Id.ToString(), "instance-a");
+        h.Capabilities.Set(host.Id, new HostCapabilitySnapshot(
+            Array.Empty<string>(), Array.Empty<NetworkMode>(),
+            MaxTtlSeconds: 3600, MaxCpus: 4, MaxMemoryMb: 8192, MaxPids: 1024));
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+        // Instance A observed the degraded heartbeat and wrote it to the shared store.
+        await h.DegradedStore.SetDegradedAsync(host.Id.ToString());
+
+        var page = await h.Service.ListAsync(new CatalogQuery());
+
+        Assert.Empty(page.Data);
+    }
+
+    [Fact]
+    public async Task Get_host_reports_online_false_for_a_degraded_host()
+    {
+        // On the detail page a degraded host surfaces as online=false — the "book this host" view
+        // must be honest about placement being blocked, mirroring the offline path (AC #211).
+        var h = new Harness();
+        var host = await h.AddHostAsync("wisp-down", "us", T0, online: true);
+        await h.AddImageAsync(host.Id, "img:1", price: 5);
+        await h.DegradedStore.SetDegradedAsync(host.Id.ToString());
 
         var detail = await h.Service.GetHostAsync(host.Id);
 

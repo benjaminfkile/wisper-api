@@ -13,6 +13,7 @@ using Wisper.Api.Persistence.Policy;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Policy;
 using Wisper.Api.Tests.TestSupport;
+using Wisper.Api.Tunnel.Backplane;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -138,7 +139,7 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
                 Leases, usage, Hosts, Ledger, policy, clock, NullLogger<MeteringService>.Instance);
             Service = new LeaseService(
                 Leases, Hosts, Images, new FakeTunnelRelay(), new FakeHostCapabilitySource(),
-                WalletGate, meter, policy, clock);
+                WalletGate, meter, policy, new InMemoryHostDegradedStore(), clock);
         }
 
         public UserRepository Users { get; }

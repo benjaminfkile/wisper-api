@@ -25,6 +25,7 @@ public sealed class CatalogService : ICatalogService
     private readonly IHostCapabilitySource _capabilities;
     private readonly ILeaseRepository _leases;
     private readonly IHostPresenceStore _presenceStore;
+    private readonly IHostDegradedStore _degradedStore;
 
     public CatalogService(
         IHostRepository hosts,
@@ -32,7 +33,8 @@ public sealed class CatalogService : ICatalogService
         IHostRegistry registry,
         IHostCapabilitySource capabilities,
         ILeaseRepository leases,
-        IHostPresenceStore presenceStore)
+        IHostPresenceStore presenceStore,
+        IHostDegradedStore degradedStore)
     {
         _hosts = hosts;
         _images = images;
@@ -40,17 +42,21 @@ public sealed class CatalogService : ICatalogService
         _capabilities = capabilities;
         _leases = leases;
         _presenceStore = presenceStore;
+        _degradedStore = degradedStore;
     }
 
     public async Task<CatalogPage> ListAsync(CatalogQuery query, CancellationToken ct = default)
     {
         // Candidate set = DB-online hosts, re-confirmed against the live tunnel for a stale-DB-row guard.
         // One presence-store snapshot covers all candidates (one Redis round-trip for N hosts); the local
-        // registry is the fast path so a same-instance tunnel costs no I/O at all.
+        // registry is the fast path so a same-instance tunnel costs no I/O at all. The degraded snapshot
+        // (task #62) is a second cheap round-trip that filters out hosts whose agent has reported wisp as
+        // unreachable — they stay live in presence but must not be placed on.
         var candidates = await _hosts.ListOnlineAsync(ct);
         var presenceSnapshot = await PresenceSnapshotAsync(ct);
+        var degradedSnapshot = await DegradedSnapshotAsync(ct);
         var ordered = candidates
-            .Where(h => IsLive(h, presenceSnapshot))
+            .Where(h => IsLive(h, presenceSnapshot) && !IsDegraded(h, degradedSnapshot))
             .Where(h => MatchesGpuClass(h, query.GpuClass))
             .Where(h => After(h, query.Cursor))
             .OrderBy(h => h, HostPageOrder)
@@ -164,11 +170,29 @@ public sealed class CatalogService : ICatalogService
         return _registry.TryGet(id, out _) || presenceSnapshot.Contains(id);
     }
 
-    /// <summary>Single-host async liveness for GetHostAsync: local registry fast path, then presence store.</summary>
+    /// <summary>
+    /// True when the host's agent has self-reported <c>"degraded"</c> — a host in this state has a live
+    /// tunnel but its local wisp is unreachable, so it must be excluded from new lease placement even
+    /// though presence still shows it online (task #62).
+    /// </summary>
+    private static bool IsDegraded(Host host, HashSet<string> degradedSnapshot) =>
+        degradedSnapshot.Contains(host.Id.ToString());
+
+    /// <summary>
+    /// Single-host async liveness for GetHostAsync: local registry fast path, then presence store, then
+    /// the degraded set — a degraded host surfaces as <c>online: false</c> on the detail page so the
+    /// consumer's "book this host" view is honest about placement being blocked (task #62).
+    /// </summary>
     private async Task<bool> IsLiveAsync(Guid hostId, CancellationToken ct)
     {
         var id = hostId.ToString();
-        return _registry.TryGet(id, out _) || await _presenceStore.GetOwnerAsync(id, ct) is not null;
+        var live = _registry.TryGet(id, out _) || await _presenceStore.GetOwnerAsync(id, ct) is not null;
+        if (!live)
+        {
+            return false;
+        }
+
+        return !await _degradedStore.IsDegradedAsync(id, ct);
     }
 
     /// <summary>One presence-store snapshot so ListAsync needs only one round-trip for all candidates.</summary>
@@ -176,6 +200,13 @@ public sealed class CatalogService : ICatalogService
     {
         var snapshot = await _presenceStore.SnapshotAsync(ct);
         return snapshot.Select(p => p.HostId).ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>One degraded-set snapshot so ListAsync needs only one round-trip for all candidates.</summary>
+    private async Task<HashSet<string>> DegradedSnapshotAsync(CancellationToken ct)
+    {
+        var snapshot = await _degradedStore.SnapshotAsync(ct);
+        return snapshot.ToHashSet(StringComparer.Ordinal);
     }
 
     /// <summary>True when <paramref name="host"/> sorts strictly after <paramref name="cursor"/> in page order.</summary>

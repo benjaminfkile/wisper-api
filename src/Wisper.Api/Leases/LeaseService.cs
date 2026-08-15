@@ -7,6 +7,7 @@ using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Policy;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Wisper.Api.Tunnel.Messages;
 
 namespace Wisper.Api.Leases;
@@ -40,6 +41,7 @@ public sealed class LeaseService : ILeaseService
     private readonly ILeaseWalletGate _walletGate;
     private readonly MeteringService _meter;
     private readonly PlatformPolicyService _policy;
+    private readonly IHostDegradedStore _degradedStore;
     private readonly TimeProvider _time;
 
     public LeaseService(
@@ -51,6 +53,7 @@ public sealed class LeaseService : ILeaseService
         ILeaseWalletGate walletGate,
         MeteringService meter,
         PlatformPolicyService policy,
+        IHostDegradedStore degradedStore,
         TimeProvider time)
     {
         _leases = leases;
@@ -61,6 +64,7 @@ public sealed class LeaseService : ILeaseService
         _walletGate = walletGate;
         _meter = meter;
         _policy = policy;
+        _degradedStore = degradedStore;
         _time = time;
     }
 
@@ -118,6 +122,13 @@ public sealed class LeaseService : ILeaseService
         // at_capacity — no hold, no lease.create. wisp stays the authoritative enforcer (its own 409 surfaces as
         // at_capacity too, mapped by the relay); this is the cheap manager-side guard so full hosts do not churn.
         await EnforceHostCapacityAsync(capability, host, ct);
+
+        // Fail fast on a host whose agent has self-reported "degraded" (task #62): the tunnel is up but the
+        // agent cannot reach its local wisp, so every downstream lease.create would fail with a codeless
+        // wisp error. Refuse admission with the same retryable host_offline the relay uses when the tunnel
+        // is genuinely gone — the state is transient (the next healthy heartbeat clears the flag) and the
+        // consumer can retry (or pick a different host from the catalog, which already hides this one).
+        await EnforceHostNotDegradedAsync(host, ct);
 
         // Wallet gate BEFORE any tunnel frame: no compute is provisioned that can't be paid for
         // (docs/DATA_MODEL.md §8, §14, docs/PAYMENTS.md §4). It also enforces the per-user concurrency cap
@@ -264,6 +275,28 @@ public sealed class LeaseService : ILeaseService
             // Marking the row failed is best-effort cleanup too; the original hold exception is the one that
             // matters, so a failure to flip the status here must not shadow it.
         }
+    }
+
+    /// <summary>
+    /// Refuses a create on a host whose agent has self-reported <c>"degraded"</c> in <c>host.heartbeat</c>
+    /// (task #62): the tunnel is up on some instance but the agent cannot reach its local wisp daemon, so
+    /// every downstream <c>lease.create</c> would fail with a codeless wisp error. Rejecting here — BEFORE
+    /// the wallet gate posts a hold and before any tunnel frame — surfaces the retryable
+    /// <c>host_offline</c> (409) the consumer already handles for a gone tunnel, and keeps the hold ledger
+    /// clean. The shared degraded set is authoritative across instances (docs/DESIGN.md §7); a subsequent
+    /// healthy heartbeat clears the flag automatically.
+    /// </summary>
+    private async Task EnforceHostNotDegradedAsync(Domain.Host host, CancellationToken ct)
+    {
+        if (!await _degradedStore.IsDegradedAsync(host.Id.ToString(), ct))
+        {
+            return;
+        }
+
+        throw new ApiException(
+            ApiErrorCode.HostOffline,
+            "The host's agent cannot reach its local wisp daemon and is not accepting new leases.",
+            new { host_id = host.Id });
     }
 
     /// <summary>

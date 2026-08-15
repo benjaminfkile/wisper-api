@@ -49,6 +49,10 @@ public static class TunnelEndpoints
         // distributed). Republishing the heartbeat's fresh snapshot to it is what makes non-owner
         // instances see updated capacity/limits/os without waiting for the next reconnect (task #61).
         var capabilityStore = context.RequestServices.GetRequiredService<IHostCapabilityStore>();
+        // Shared degraded set (task #62): the heartbeat handler writes into it on the owning instance so
+        // catalog liveness / lease admission on every instance uniformly exclude a host whose agent has
+        // reported "degraded" (its local wisp is unreachable).
+        var degradedStore = context.RequestServices.GetRequiredService<IHostDegradedStore>();
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync(new WebSocketAcceptContext
         {
@@ -129,6 +133,12 @@ public static class TunnelEndpoints
                     await HeartbeatCapabilityRefresh.ApplyAsync(
                         conn, cap, capabilityStore, presence, logger, hbCt);
                 }
+
+                // Apply the agent's self-reported health flag (task #62): a "degraded" beat marks the
+                // host degraded in the shared set so every instance's placement path excludes it; a
+                // subsequent beat with no status clears the flag and restores placement. Lease state is
+                // unaffected — the containers keep running; only the agent's wisp API is unreachable.
+                await HeartbeatDegradedApply.ApplyAsync(conn, heartbeat, degradedStore, logger, hbCt);
             },
         };
 
@@ -212,6 +222,26 @@ public static class TunnelEndpoints
                 // CancellationToken.None so the reconciliation is not cut off by the aborted request.
                 var lastHealthy = new DateTimeOffset(connection.LastActivityUtc, TimeSpan.Zero);
                 _ = await coordinator.OnDisconnectedAsync(hostId, lastHealthy, CancellationToken.None);
+
+                // Clear any lingering degraded flag on a genuine disconnect (task #62): the flag is only
+                // meaningful while a tunnel is up on some instance, and a returning agent's first
+                // heartbeat will re-establish the state authoritatively. Skipped on supersede — the newer
+                // owner tunnel is already live and its own heartbeats govern the flag from here on, so an
+                // unconditional clear here would race and briefly re-admit a still-degraded host.
+                if (connection.IsDegraded)
+                {
+                    try
+                    {
+                        await degradedStore.ClearDegradedAsync(hostId, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(
+                            ex,
+                            "agent tunnel: clearing degraded flag on disconnect for host {HostId} failed",
+                            hostId);
+                    }
+                }
             }
         }
     }

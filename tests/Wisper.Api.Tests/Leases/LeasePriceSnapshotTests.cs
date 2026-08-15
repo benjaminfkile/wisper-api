@@ -61,6 +61,7 @@ public class LeasePriceSnapshotTests
         public FakeHostCapabilitySource Capabilities { get; } = new();
         public FakeHostRegistry Registry { get; } = new();
         public InMemoryHostPresenceStore Presence { get; } = new();
+        public InMemoryHostDegradedStore Degraded { get; } = new();
         public FakeAgentTunnelCloser TunnelCloser { get; } = new();
         public FakeUserRoleGranter RoleGranter { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
@@ -101,7 +102,7 @@ public class LeasePriceSnapshotTests
                 RoleGranter, Options.Create(TunnelOpts), Clock, NullLogger<HostService>.Instance);
             LeaseService = new LeaseService(
                 Leases, Hosts, Images, Relay, Capabilities, WalletGate,
-                Meter, Policy, Clock);
+                Meter, Policy, Degraded, Clock);
         }
 
         /// <summary>

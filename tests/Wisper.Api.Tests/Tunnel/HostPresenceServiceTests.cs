@@ -37,7 +37,9 @@ public class HostPresenceServiceTests
 
         // The catalog joins the DB-online subset with the live registry/presence store, so it proves the
         // presence flip is what makes a host visible (docs/API.md §5).
-        public CatalogService Catalog => new(Hosts, Images, Registry, Capabilities, Leases, new InMemoryHostPresenceStore());
+        public CatalogService Catalog => new(
+            Hosts, Images, Registry, Capabilities, Leases,
+            new InMemoryHostPresenceStore(), new InMemoryHostDegradedStore());
 
         public Fixture()
         {

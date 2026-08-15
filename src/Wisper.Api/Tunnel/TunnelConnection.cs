@@ -74,6 +74,18 @@ public class TunnelConnection
     public ConcurrentDictionary<uint, ITunnelStreamSink> Streams { get; } = new();
 
     /// <summary>
+    /// Whether the last <c>host.heartbeat</c> the manager applied for this tunnel reported the agent
+    /// as <c>"degraded"</c> (task #62): the tunnel is up but the agent cannot reach its local wisp
+    /// daemon, so the shared <see cref="Wisper.Api.Tunnel.Backplane.IHostDegradedStore"/> currently
+    /// lists this host and placement excludes it. Used by the heartbeat handler to log the transition
+    /// exactly once (steady state is a no-op) — cross-instance readers consult the store, not this
+    /// field. A fresh connection starts <c>false</c>; the first degraded beat sets it and the first
+    /// non-degraded beat clears it. Not persisted across tunnels: a supersede/reconnect starts clean,
+    /// and the very next heartbeat re-establishes the correct state (and re-emits the log line).
+    /// </summary>
+    public bool IsDegraded { get; set; }
+
+    /// <summary>
     /// Routes inbound control frames this connection does not own (lease/exec responses) to the
     /// relay. Set by the endpoint after construction; when null the default hook just logs.
     /// Wisper owns the id space, so responses are correlated by the <c>rid</c>/<c>leaseId</c>
