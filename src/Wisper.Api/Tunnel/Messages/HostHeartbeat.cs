@@ -29,6 +29,18 @@ public record HostHeartbeat : ControlEnvelope
     /// </summary>
     [JsonPropertyName("capability")]
     public HelloCapability? Capability { get; init; }
+
+    /// <summary>
+    /// The agent's self-reported health at this beat (task #62). Populated as <c>"degraded"</c> when
+    /// the agent cannot reach its local wisp daemon — the tunnel is up but every <c>lease.create</c>
+    /// would fail downstream, so the manager must stop placing new leases on this host until a later
+    /// beat drops the field. Absent (null / empty) means "normal" — the agent is healthy and the host
+    /// is placement-eligible again. Any unknown value is treated as normal (forward-compatible).
+    /// Consumed by the heartbeat handler in <see cref="Wisper.Api.Tunnel.TunnelEndpoints"/>; the
+    /// cross-instance degraded set lives in <see cref="Wisper.Api.Tunnel.Backplane.IHostDegradedStore"/>.
+    /// </summary>
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
 }
 
 /// <summary>A single live lease entry in a <see cref="HostHeartbeat"/>.</summary>

@@ -52,6 +52,10 @@ public static class BackplaneServiceCollectionExtensions
             // Capability store: unused in single-instance mode (registry-backed source is authoritative),
             // but registered so the concrete type is available if needed by tests.
             services.AddSingleton<IHostCapabilityStore, InMemoryHostCapabilityStore>();
+            // Degraded set is always registered (task #62): the heartbeat handler writes into it and the
+            // catalog / lease admission read a snapshot to exclude degraded hosts. Stays empty (and cheap)
+            // in single-instance mode until an agent reports "degraded" — no Redis I/O in the healthy path.
+            services.AddSingleton<IHostDegradedStore, InMemoryHostDegradedStore>();
             // IHostCapabilitySource: local registry only — single-instance, no backplane I/O.
             services.AddSingleton<RegistryHostCapabilitySource>();
             services.AddSingleton<IHostCapabilitySource>(sp =>
@@ -91,6 +95,11 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IShellTicketStore>(sp => new RedisShellTicketStore(
                 sp.GetRequiredService<IConnectionMultiplexer>(),
                 sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
+            // Degraded set: same Redis, one key (`{prefix}:degraded`) shared across every instance so a
+            // host marked degraded by its owning instance is invisible to placement on every other one.
+            services.AddSingleton<IHostDegradedStore>(sp => new RedisHostDegradedStore(
+                sp.GetRequiredService<IConnectionMultiplexer>(),
+                sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
         }
         else
         {
@@ -100,6 +109,7 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IHostCapabilityStore, InMemoryHostCapabilityStore>();
             // Loopback mode is single-process: all "instances" share one DI container, so in-memory is fine.
             services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
+            services.AddSingleton<IHostDegradedStore, InMemoryHostDegradedStore>();
         }
 
         // Local capability source backed by the physical (local) registry — used both as the fast path

@@ -10,6 +10,7 @@ using Wisper.Api.Persistence.Policy;
 using Wisper.Api.Policy;
 using Wisper.Api.Tests.TestSupport;
 using Wisper.Api.Tunnel;
+using Wisper.Api.Tunnel.Backplane;
 using Xunit;
 using Host = Wisper.Api.Domain.Host;
 
@@ -62,7 +63,9 @@ public class LeaseServiceTests
 
         public LeaseService Service() =>
             new(Leases, Hosts, Images, Relay, Capabilities, WalletGate,
-                Meter(), new PlatformPolicyService(Policies, Clock), Clock);
+                Meter(), new PlatformPolicyService(Policies, Clock), DegradedStore, Clock);
+
+        public InMemoryHostDegradedStore DegradedStore { get; } = new();
 
         public MeteringService Meter() =>
             new(Leases, Usage, Hosts, Ledger, new PlatformPolicyService(Policies, Clock),
@@ -734,6 +737,83 @@ public class LeaseServiceTests
         var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
 
         Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+    }
+
+    // ---- Degraded-host admission (task #62) --------------------------------------------------------
+
+    [Fact]
+    public async Task Create_fails_fast_with_host_offline_when_the_host_is_marked_degraded()
+    {
+        // Task #62: an agent whose local wisp is unreachable reports "degraded"; the shared store
+        // carries the flag, so admission MUST refuse the create with the retryable host_offline (409)
+        // before any tunnel frame is sent — no relay call, no wallet hold, no lease row.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        await fx.DegradedStore.SetDegradedAsync(fx.Host!.Id.ToString());
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+
+        Assert.Equal(ApiErrorCode.HostOffline, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+        Assert.Empty(await fx.Leases.ListByConsumerAsync(fx.ConsumerId));
+    }
+
+    [Fact]
+    public async Task Create_admits_again_after_the_degraded_flag_is_cleared()
+    {
+        // AC #212 at the admission layer: the very next healthy heartbeat clears the flag, and the
+        // subsequent create is admitted with no other change.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        await fx.DegradedStore.SetDegradedAsync(fx.Host!.Id.ToString());
+        await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+
+        await fx.DegradedStore.ClearDegradedAsync(fx.Host.Id.ToString());
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+        Assert.Single(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Degraded_admission_reject_does_not_touch_existing_active_leases()
+    {
+        // The docs are explicit (docs/TUNNEL.md §5): degraded MUST NOT end/suspend existing leases —
+        // the containers may still be running fine, the agent just cannot reach wisp's API. Prove it:
+        // seed an active lease on the host owned by the SAME consumer (so ListByConsumerAsync can
+        // read it back), mark the host degraded, then confirm a new create is rejected while the
+        // pre-existing lease stays exactly as it was.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        var priorLease = await fx.Leases.CreateAsync(new Lease
+        {
+            Id = Guid.NewGuid(),
+            ConsumerUserId = fx.ConsumerId,
+            HostId = fx.Host!.Id,
+            HostImageId = fx.Image!.Id,
+            ImageRef = fx.Image.ImageRef,
+            Network = NetworkMode.Open,
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 5,
+            Currency = "usd",
+            Status = LeaseStatus.Active,
+            WispContractId = "existing-active",
+            CreatedAt = T0,
+            StartedAt = T0,
+            LastMeteredAt = T0,
+        });
+
+        await fx.DegradedStore.SetDegradedAsync(fx.Host.Id.ToString());
+        await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
+
+        var after = await fx.Leases.GetByIdAsync(priorLease.Id);
+        Assert.NotNull(after);
+        Assert.Equal(LeaseStatus.Active, after!.Status);
+        Assert.Equal(priorLease.EndedAt, after.EndedAt);
+        Assert.Equal(priorLease.EndReason, after.EndReason);
     }
 
     [Fact]
