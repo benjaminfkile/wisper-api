@@ -74,8 +74,14 @@ public sealed class LeaseReconciliationService
             }
 
             // Bill the healthy interval up to last-healthy BEFORE suspending: the meter only accrues over
-            // an active lease, so once suspended nothing more can bill (docs/TUNNEL.md §8).
-            await _meter.FlushLeaseAsync(lease, lastHealthyAt, ct);
+            // an active lease, so once suspended nothing more can bill (docs/TUNNEL.md §8). Route through
+            // the shared TTL + last-healthy cap (task #60): a host that keeps reporting a lease past its
+            // TTL leaves the lease active (the periodic tick caps accrual but the heartbeat set-diff only
+            // ends UNreported leases); when the tunnel then drops, `lastHealthyAt` can be past
+            // `started_at + ttl`, and a raw uncapped flush would over-bill the post-TTL tail — draining
+            // other leases' held cents from the shared lease_holds account without tripping the
+            // non-negative guard.
+            await _meter.FinalizeLeaseAsync(lease, lastHealthyAt, ct);
             // Stamp suspended_at with the wall-clock instant the suspend transition happens (task #55):
             // the durable grace sweep gates on `suspended_at < now() - grace`, so it must reflect when we
             // actually suspended — NOT last-healthy, which can be far in the past when a wisper-api restart
@@ -123,18 +129,37 @@ public sealed class LeaseReconciliationService
         var now = _time.GetUtcNow();
         var resumed = new List<Guid>();
         var containerLost = new List<Guid>();
+        // The revive fallback (below) may add a lease to an orphaned bucket if it cannot be revived
+        // (denied, ended for another reason, gone). ReconcileOutcome does not surface that bucket, so we
+        // just log — the container is either torn down by the sweep-that-won's release path or by wisp's
+        // TTL reaper.
+        var orphanedScratch = new List<Guid>();
         foreach (var lease in suspended)
         {
             if (reported.Contains(lease.Id))
             {
                 // Resume: restart the meter at `now` so the paused gap [last-healthy, now] is not billed
                 // (billing "restarts", it does not back-fill the outage). Same lease id, unchanged usage.
-                await _leases.TransitionStateAsync(
-                    lease.Id, LeaseStatus.Active, lastMeteredAt: now, ct: ct);
-                resumed.Add(lease.Id);
-                _logger.LogInformation(
-                    "lease {LeaseId} resumed on host {HostId} reconnect; billing restarts at {Now:O}",
-                    lease.Id, hostId, now);
+                // CAS-guarded on suspended (task #60): a sweep on another instance can end this lease as
+                // host_disconnect between the read above and this write; blindly flipping the (now-ended)
+                // row back to active would leave the sweep's COALESCE-preserved ended_at/end_reason on an
+                // active row AND — because the sweep already released the hold — leave the lease active
+                // with no wallet earmark. On CAS miss we re-read and route through the revive path (which
+                // re-places a hold) instead of resuming, keeping the invariant "active ⇒ hold present".
+                var outcome = await TryResumeSuspendedLeaseAsync(lease, now, orphanedScratch, ct);
+                if (outcome is ResumeSuspendedOutcome.Resumed or ResumeSuspendedOutcome.Revived)
+                {
+                    resumed.Add(lease.Id);
+                    _logger.LogInformation(
+                        "lease {LeaseId} {Verb} on host {HostId} reconnect; billing restarts at {Now:O}",
+                        lease.Id, outcome == ResumeSuspendedOutcome.Revived ? "revived" : "resumed", hostId, now);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "lease {LeaseId} not resumed on host {HostId} reconnect (race with sweep or " +
+                        "revival denied: {Outcome})", lease.Id, hostId, outcome);
+                }
             }
             else
             {
@@ -340,13 +365,30 @@ public sealed class LeaseReconciliationService
                 // suspended_at is auto-cleared by TransitionStateAsync's CASE guard on any transition to
                 // a non-suspended status. The existing lease_hold carries through: within-grace resume
                 // does not touch lease_holds (task #23), and this path mirrors it.
-                await _leases.TransitionStateAsync(
-                    lease.Id, LeaseStatus.Active, lastMeteredAt: now, ct: ct);
-                revived.Add(lease.Id);
-                _logger.LogInformation(
-                    "lease {LeaseId} resumed on heartbeat for host {HostId} (post-restart, no in-memory grace);" +
-                    " billing restarts at {Now:O}",
-                    lease.Id, hostId, now);
+                //
+                // CAS-guarded on suspended (task #60): the durable sweep on another instance hunts exactly
+                // the rows a post-restart heartbeat wants to resume, so this alignment is not exotic — a
+                // race that ended the lease as host_disconnect (and released the hold) between our read
+                // and write would, without the CAS, resurrect it to active with no wallet earmark. On CAS
+                // miss we re-read and route through the ended→active revive path (which re-places the
+                // hold) instead.
+                var outcome = await TryResumeSuspendedLeaseAsync(lease, now, orphaned, ct);
+                switch (outcome)
+                {
+                    case ResumeSuspendedOutcome.Resumed:
+                    case ResumeSuspendedOutcome.Revived:
+                        revived.Add(lease.Id);
+                        _logger.LogInformation(
+                            "lease {LeaseId} {Verb} on heartbeat for host {HostId} (post-restart, no in-memory grace);" +
+                            " billing restarts at {Now:O}",
+                            lease.Id, outcome == ResumeSuspendedOutcome.Revived ? "revived" : "resumed", hostId, now);
+                        break;
+                    default:
+                        _logger.LogWarning(
+                            "lease {LeaseId} not resumed on heartbeat for host {HostId} (race with sweep or " +
+                            "revival denied: {Outcome})", lease.Id, hostId, outcome);
+                        break;
+                }
             }
             else
             {
@@ -509,9 +551,91 @@ public sealed class LeaseReconciliationService
         // end it, then return the unused hold remainder to the wallet (docs/PAYMENTS.md §4). Release is
         // keyed per hold generation (lease id + current hold_txn_id), so a repeated grace/reconnect flap
         // converges on a single hold_release for this generation.
-        await _leases.TransitionStateAsync(
-            lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: lastHealthyAt, ct: ct);
+        //
+        // CAS-guarded on suspended (task #60, consistency retrofit): the same suspended-lease row a durable
+        // sweep on another instance is hunting can also arrive here (in-memory grace timer, host reconnect
+        // set-diff container-lost). Without the CAS, two winners each post a ReleaseHold — the ledger
+        // idempotency key dedupes so no double-release actually lands, but the double-drive still burns
+        // cycles and muddies the log. The CAS makes zero-post idempotence explicit at the state-transition
+        // layer, matching the sweep and heartbeat container-lost paths.
+        var moved = await _leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: lastHealthyAt,
+            expectedCurrentStatus: LeaseStatus.Suspended, ct: ct);
+        if (moved is null)
+        {
+            return; // lost the race with a sweep / heartbeat container-lost on another instance
+        }
+
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
+    }
+
+    /// <summary>
+    /// The CAS-guarded suspended → active resume shared by the within-grace reconnect
+    /// (<see cref="ReconcileHostAsync"/>) and the post-restart heartbeat resume
+    /// (<see cref="ReconcileHeartbeatAsync"/>). Both sites read the lease as <c>suspended</c>, but the
+    /// durable grace sweep on another instance hunts exactly those rows — it can CAS-end a lease as
+    /// <c>host_disconnect</c> and release the hold between the read and the write. Blindly flipping the
+    /// (now-ended) row back to <c>active</c> would leave <c>ended_at</c>/<c>end_reason</c> stamped on an
+    /// active row (COALESCE preserves them) AND — because the sweep already released the hold — leave
+    /// the lease active with no wallet earmark (task #60). The CAS on <c>expectedCurrentStatus =
+    /// Suspended</c> serializes the race; on a miss we re-read and route through the ended→active revive
+    /// path (which re-places a fresh wallet hold via <see cref="TryRevivePaidLeaseAsync"/>) instead of
+    /// resuming, keeping the invariant "active ⇒ hold present". Adds to <paramref name="orphaned"/>
+    /// exactly when the revive fallback cannot bring the lease back (denied, wrong host / vanished, or
+    /// ended for another reason).
+    /// </summary>
+    private async Task<ResumeSuspendedOutcome> TryResumeSuspendedLeaseAsync(
+        Lease lease, DateTimeOffset resumeAt, List<Guid> orphaned, CancellationToken ct)
+    {
+        var moved = await _leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Active, lastMeteredAt: resumeAt,
+            expectedCurrentStatus: LeaseStatus.Suspended, ct: ct);
+        if (moved is not null)
+        {
+            return ResumeSuspendedOutcome.Resumed;
+        }
+
+        // CAS miss: re-read to see who won and route accordingly.
+        var latest = await _leases.GetByIdAsync(lease.Id, ct);
+        if (latest is null || latest.HostId != lease.HostId)
+        {
+            orphaned.Add(lease.Id);
+            return ResumeSuspendedOutcome.Vanished;
+        }
+
+        // Another driver put the lease back into a live state — nothing more to do here.
+        if (latest.Status is LeaseStatus.Active or LeaseStatus.Suspended)
+        {
+            return ResumeSuspendedOutcome.AlreadyLive;
+        }
+
+        // The sweep won and ended the lease. Only host_disconnect is revivable — for any other end reason
+        // (released, container_lost, etc.) the lease was purposefully ended and must not be resurrected.
+        if (latest.Status != LeaseStatus.Ended || latest.EndReason != LeaseEndReason.HostDisconnect)
+        {
+            orphaned.Add(lease.Id);
+            return ResumeSuspendedOutcome.EndedOther;
+        }
+
+        // Sweep released the hold at end time; re-place a fresh one BEFORE the ended→active transition
+        // (task #23 semantics) or end (payment_failed) if the wallet is short. TryRevivePaidLeaseAsync
+        // appends to `orphaned` on denial itself.
+        if (!await TryRevivePaidLeaseAsync(latest, resumeAt, orphaned, ct))
+        {
+            return ResumeSuspendedOutcome.RevivalDenied;
+        }
+
+        var revival = await GetForRevivalAsync(lease.Id, ct);
+        var updated = revival with
+        {
+            Status = LeaseStatus.Active,
+            EndReason = null,
+            EndedAt = null,
+            LastMeteredAt = resumeAt,
+            SuspendedAt = null,
+        };
+        await _leases.UpdateAsync(updated, ct);
+        return ResumeSuspendedOutcome.Revived;
     }
 
     /// <summary>
@@ -678,6 +802,35 @@ public enum AgentLeaseEndOutcome
 
     /// <summary>Unknown lease id, or the frame's host id did not match the lease's host — no-op.</summary>
     NotFound,
+}
+
+/// <summary>
+/// The outcome of a CAS-guarded suspended → active resume (task #60). The suspended read + CAS-guarded
+/// transition may lose the race to a durable sweep (or other end driver) that ended the lease and
+/// released its hold; the re-read decides which follow-up path applies. Distinguishes the "clean CAS
+/// success" case from the "sweep won → had to revive with a fresh hold" case so callers can log the
+/// verb correctly (resume vs revive), and the terminal misses (already re-live / vanished / ended for
+/// another reason / revival denied) so no unbacked-active lease ever slips through.
+/// </summary>
+internal enum ResumeSuspendedOutcome
+{
+    /// <summary>CAS succeeded: suspended → active with the same lease id and existing hold.</summary>
+    Resumed,
+
+    /// <summary>CAS lost to a sweep; re-placed the hold and revived ended → active.</summary>
+    Revived,
+
+    /// <summary>Another driver already put the lease back into a live state — no action needed.</summary>
+    AlreadyLive,
+
+    /// <summary>Lease is gone or belongs to a different host now — flagged as orphaned.</summary>
+    Vanished,
+
+    /// <summary>Lease was ended for a non-<c>host_disconnect</c> reason — cannot revive; orphaned.</summary>
+    EndedOther,
+
+    /// <summary>Sweep won and the revival hold was refused (payment_failed); orphaned.</summary>
+    RevivalDenied,
 }
 
 /// <summary>

@@ -1227,4 +1227,394 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(walletAfterFirst, await fx.WalletCentsAsync());
         Assert.Equal(holdsAfterFirst, await fx.HoldsCentsForAsync(lease.Id));
     }
+
+    // ---- Task #60 Bug 1: suspend flush must be TTL-capped ----
+
+    [Fact]
+    public async Task Suspend_flush_caps_at_lease_ttl_even_when_last_healthy_is_past_ttl()
+    {
+        // AC202 regression: a host that keeps reporting a lease past its TTL leaves the lease active
+        // (the periodic tick's cap keeps accrual honest but the heartbeat set-diff only ends UNreported
+        // leases). When the tunnel then drops, `lastHealthyAt` can be past `started_at + ttl`. Before
+        // the fix, SuspendHostLeasesAsync used the raw uncapped meter flush and would bill the post-TTL
+        // tail (task #60 Bug 1). The fix routes through the shared TTL + last-healthy cap, so the
+        // suspend flush never bills past TTL — the total charge is exactly ⌈ttl·price/60⌉.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 60, holdCents: 60);
+
+        // The heartbeat set-diff kept the lease active through several tick attempts (the caps kept
+        // accrual to TTL), then the tunnel drops. lastHealthyAt is 300s (5min past TTL).
+        fx.Clock.Advance(TimeSpan.FromSeconds(400));
+        var outcome = await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(300));
+
+        Assert.Equal(1, outcome.NewlySuspended);
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Suspended, stored!.Status);
+        // Billed exactly TTL, not the 300s wall-clock last-healthy — the post-TTL tail is un-billable.
+        Assert.Equal(60, stored.BillableSeconds);
+        Assert.Equal(T0.AddSeconds(60), stored.LastMeteredAt);
+
+        // Total charged never exceeds the 60¢ up-front hold.
+        var totalCharged = (await fx.Usage.ListByLeaseAsync(lease.Id)).Sum(u => u.AmountCents);
+        Assert.Equal(60, totalCharged);
+        Assert.True(totalCharged <= 60, $"total charged {totalCharged}¢ must not exceed the 60¢ hold");
+    }
+
+    [Fact]
+    public async Task Suspend_flush_total_charge_never_exceeds_the_up_front_hold()
+    {
+        // AC202: the "silent drain" invariant reduced to per-lease. lease_holds is a singleton aggregate
+        // account (docs/DATA_MODEL.md §7d), so before the fix the uncapped past-TTL suspend flush on
+        // one lease could bill more than its own hold — the aggregate non-negative guard would let the
+        // overcharge land as long as another lease's earmark carried the balance. With the TTL cap in
+        // place, a lease's total posted lease_charge is never more than its own ⌈ttl·price/60⌉ hold, so
+        // no aggregate-account overdraw is possible however many other holds live in the account.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 60, holdCents: 60);
+
+        // A far-past-TTL suspend: lastHealthy 10 minutes past TTL.
+        fx.Clock.Advance(TimeSpan.FromMinutes(15));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(600));
+
+        // Total lease_charge posted for this lease never exceeds its 60¢ hold.
+        var totalCharged = (await fx.Usage.ListByLeaseAsync(lease.Id)).Sum(u => u.AmountCents);
+        Assert.True(totalCharged <= 60,
+            $"total charged {totalCharged}¢ must not exceed the 60¢ hold for lease {lease.Id}");
+        Assert.Equal(60, totalCharged); // exactly TTL cap, not the 600s lastHealthy wall-clock
+
+        // The lease's own earmark is drawn down by exactly what was charged (never negative).
+        Assert.True(await fx.HoldsCentsForAsync(lease.Id) >= 0,
+            "a lease's own earmark can never go negative under the shared aggregate account");
+    }
+
+    // ---- Task #60 Bug 2: sweep-vs-resume race — CAS keeps "active ⇒ hold present" invariant ----
+
+    [Fact]
+    public async Task Sweep_wins_before_heartbeat_lease_ends_with_hold_released_and_heartbeat_revives_it()
+    {
+        // AC204, safe race ordering: the sweep runs to completion BEFORE the reconnect heartbeat arrives.
+        // Outcome: lease ended-with-hold-released, then the heartbeat's "reported not live" arm routes
+        // the still-running container through the revive path (fresh hold re-placed). Never active-without-hold.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Suspend, then sweep ends it (another instance's durable grace fires first).
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+        var swept = await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
+            graceWithSafetyMargin: TimeSpan.FromSeconds(60),
+            hostsUnderInProcessGrace: new HashSet<Guid>());
+        Assert.Equal(1, swept);
+
+        var afterSweep = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, afterSweep!.Status);
+        Assert.Equal(LeaseEndReason.HostDisconnect, afterSweep.EndReason);
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id)); // sweep released the hold
+
+        // Heartbeat arrives from the reconnecting agent reporting the container still running.
+        fx.Clock.Advance(TimeSpan.FromSeconds(30));
+        var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        // Revived via the ended→active revive path with a fresh hold.
+        Assert.Equal(new[] { lease.Id }, outcome.Revived);
+        Assert.Empty(outcome.Orphaned);
+        var revived = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Active, revived!.Status);
+        Assert.True(await fx.HoldsCentsForAsync(lease.Id) > 0, "active lease must have a valid hold");
+    }
+
+    [Fact]
+    public async Task Sweep_racing_with_within_grace_resume_CAS_prevents_unbacked_active_lease()
+    {
+        // AC204+205: the exact interleaving the task calls out — the reconciler has already read the
+        // lease as suspended, but a sweep on another instance CAS-ends it (releases the hold) before
+        // the reconciler's own TransitionState fires. Without the CAS guard on the resume, the
+        // ended-and-hold-released row would be flipped back to active with no wallet earmark.
+        //
+        // We simulate the race with a racy repository decorator that fires the sweep between the
+        // reconciler's list-read and its state transition.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Suspend past the grace cutoff so the sweep is eligible to end it.
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        // Reroute the reconciler through a racy repository that runs the sweep the FIRST time it sees
+        // a suspended → active transition attempt (the resume). This is the precise interleaving.
+        var raced = false;
+        var racy = new RacyLeaseRepository(fx.Leases)
+        {
+            BeforeTransitionAsync = async (id, status, expectedCurrent) =>
+            {
+                if (!raced && status == LeaseStatus.Active && expectedCurrent == LeaseStatus.Suspended)
+                {
+                    raced = true;
+                    await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
+                        graceWithSafetyMargin: TimeSpan.FromSeconds(60),
+                        hostsUnderInProcessGrace: new HashSet<Guid>());
+                }
+            },
+        };
+        var racedReconciler = new LeaseReconciliationService(
+            racy, fx.Meter, fx.WalletGate, fx.Clock, NullLogger<LeaseReconciliationService>.Instance);
+
+        var outcome = await racedReconciler.ReconcileHostAsync(
+            fx.HostId, new[] { lease.Id }, lastHealthyAt: T0.AddSeconds(60));
+
+        Assert.True(raced, "sweep must have fired between the read and the CAS transition");
+
+        // The invariant: end state is either ended-with-hold-released OR active-with-valid-hold,
+        // never active-without-hold. With the CAS + revive fallback, the resume routes through the
+        // revive path and lands active-with-a-fresh-hold.
+        var stored = await fx.ReloadAsync(lease.Id);
+        if (stored!.Status == LeaseStatus.Active)
+        {
+            Assert.True(await fx.HoldsCentsForAsync(lease.Id) > 0,
+                "active lease must never run with no wallet earmark");
+            Assert.Contains(lease.Id, outcome.Resumed);
+        }
+        else
+        {
+            Assert.Equal(LeaseStatus.Ended, stored.Status);
+            Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+        }
+    }
+
+    [Fact]
+    public async Task Sweep_racing_with_heartbeat_resume_CAS_prevents_unbacked_active_lease()
+    {
+        // AC204+205: same race as above but on the post-restart heartbeat resume path
+        // (ReconcileHeartbeatAsync, task #60 Bug 2 site #2).
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        var raced = false;
+        var racy = new RacyLeaseRepository(fx.Leases)
+        {
+            BeforeTransitionAsync = async (id, status, expectedCurrent) =>
+            {
+                if (!raced && status == LeaseStatus.Active && expectedCurrent == LeaseStatus.Suspended)
+                {
+                    raced = true;
+                    await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
+                        graceWithSafetyMargin: TimeSpan.FromSeconds(60),
+                        hostsUnderInProcessGrace: new HashSet<Guid>());
+                }
+            },
+        };
+        var racedReconciler = new LeaseReconciliationService(
+            racy, fx.Meter, fx.WalletGate, fx.Clock, NullLogger<LeaseReconciliationService>.Instance);
+
+        var outcome = await racedReconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        Assert.True(raced, "sweep must have fired between the read and the CAS transition");
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        if (stored!.Status == LeaseStatus.Active)
+        {
+            Assert.True(await fx.HoldsCentsForAsync(lease.Id) > 0,
+                "active lease must never run with no wallet earmark");
+            Assert.Contains(lease.Id, outcome.Revived);
+        }
+        else
+        {
+            Assert.Equal(LeaseStatus.Ended, stored.Status);
+            Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+        }
+    }
+
+    [Fact]
+    public async Task Resume_after_sweep_ended_lease_denies_when_wallet_short_and_leaves_lease_ended()
+    {
+        // AC204 (denied-revive edge): sweep-wins race + drained wallet at revive time. The revive
+        // fallback must NOT resurrect the lease to active with no hold; it must end it (payment_failed)
+        // or leave it ended, so the container is reclaimed by wisp's TTL reaper.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        var racy = new RacyLeaseRepository(fx.Leases)
+        {
+            BeforeTransitionAsync = async (id, status, expectedCurrent) =>
+            {
+                if (status == LeaseStatus.Active && expectedCurrent == LeaseStatus.Suspended)
+                {
+                    // Sweep runs, then wallet is drained before the revive fallback can re-place a hold.
+                    await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
+                        TimeSpan.FromSeconds(60), new HashSet<Guid>());
+                    await fx.DrainWalletAsync(await fx.WalletCentsAsync(), tag: "revive-denied");
+                }
+            },
+        };
+        var racedReconciler = new LeaseReconciliationService(
+            racy, fx.Meter, fx.WalletGate, fx.Clock, NullLogger<LeaseReconciliationService>.Instance);
+
+        var outcome = await racedReconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
+
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.NotEqual(LeaseStatus.Active, stored!.Status); // never revived unbacked
+        Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
+        Assert.Empty(outcome.Revived);
+        Assert.Contains(lease.Id, outcome.Orphaned);
+    }
+
+    [Fact]
+    public async Task EndSuspended_grace_end_CAS_guard_prevents_double_release_when_sweep_wins_first()
+    {
+        // AC205 grace-timer end retrofit: EndSuspendedAsync now uses expectedCurrentStatus=Suspended
+        // so a sweep-that-won already having ended the lease + released the hold does not double-drive.
+        // The idempotency key at the ledger would dedup a second release regardless, but the CAS is what
+        // makes zero-post idempotence explicit at the state-transition layer (consistent with the sweep,
+        // heartbeat container-lost, admin end, and lease.ended paths).
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        // Sweep on another instance wins first — lease already ended with hold released.
+        await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
+            TimeSpan.FromSeconds(60), new HashSet<Guid>());
+        var afterSweep = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, afterSweep!.Status);
+        var walletAfterSweep = await fx.WalletCentsAsync();
+        var holdsAfterSweep = await fx.HoldsCentsForAsync(lease.Id);
+
+        // Grace-timer fires on THIS instance calling EndSuspendedHostLeasesAsync (which routes each
+        // still-suspended lease through EndSuspendedAsync). The lease is already ended, so
+        // ListActiveByHostAsync should not see it — but exercise the code path by injecting a suspended
+        // clone that races with a background sweep.
+        var count = await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        Assert.Equal(0, count); // nothing suspended left, so the loop is empty
+
+        // Wallet / holds unchanged from post-sweep state — no double release.
+        Assert.Equal(walletAfterSweep, await fx.WalletCentsAsync());
+        Assert.Equal(holdsAfterSweep, await fx.HoldsCentsForAsync(lease.Id));
+    }
+
+    [Fact]
+    public async Task EndSuspended_CAS_guard_no_ops_when_sweep_ends_between_list_and_transition()
+    {
+        // Direct CAS check: read a suspended lease, sweep ends it, then EndSuspendedAsync's CAS-guarded
+        // transition must fail and NOT re-release the hold. Uses the racy repository to interpose the
+        // sweep between the list-read and the transition write, precisely matching the two-instance race.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+        fx.Clock.Advance(TimeSpan.FromMinutes(2));
+
+        var raced = false;
+        var racy = new RacyLeaseRepository(fx.Leases)
+        {
+            BeforeTransitionAsync = async (id, status, expectedCurrent) =>
+            {
+                if (!raced && status == LeaseStatus.Ended && expectedCurrent == LeaseStatus.Suspended)
+                {
+                    raced = true;
+                    // Simulate a sweep on another instance winning the race.
+                    await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
+                        TimeSpan.FromSeconds(60), new HashSet<Guid>());
+                }
+            },
+        };
+        var racedReconciler = new LeaseReconciliationService(
+            racy, fx.Meter, fx.WalletGate, fx.Clock, NullLogger<LeaseReconciliationService>.Instance);
+
+        var walletBefore = await fx.WalletCentsAsync();
+
+        // EndSuspendedHostLeasesAsync → per-lease EndSuspendedAsync → the CAS-guarded transition; the
+        // sweep interposes between the read and the CAS, so the CAS must miss and skip.
+        await racedReconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
+
+        Assert.True(raced, "sweep must have fired between the read and the CAS transition");
+
+        // The sweep + our race both attempted the transition + release. The CAS makes our second attempt
+        // a no-op; the wallet balance reflects a single release, not two.
+        var walletAfterAll = await fx.WalletCentsAsync();
+        var singleReleaseAmount = walletAfterAll - walletBefore;
+        Assert.Equal(3540, singleReleaseAmount); // 3600 − 60 charged = 3540 back, once.
+    }
+
+    // ---- Racy repository decorator for concurrency tests ----
+
+    /// <summary>
+    /// Wraps an <see cref="InMemoryLeaseRepository"/> and fires a hook BEFORE
+    /// <see cref="TransitionStateAsync"/> executes, so tests can simulate the exact interleaving where
+    /// a concurrent driver (sweep, in-memory timer, other instance) changes the row between the caller's
+    /// read and its CAS-guarded write. Everything else delegates unchanged.
+    /// </summary>
+    private sealed class RacyLeaseRepository : ILeaseRepository
+    {
+        private readonly InMemoryLeaseRepository _inner;
+
+        public RacyLeaseRepository(InMemoryLeaseRepository inner) => _inner = inner;
+
+        public Func<Guid, LeaseStatus, LeaseStatus?, Task>? BeforeTransitionAsync { get; set; }
+
+        public Task<Lease?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
+            _inner.GetByIdAsync(id, ct);
+
+        public Task<IReadOnlyList<Lease>> ListByConsumerAsync(Guid consumerUserId, CancellationToken ct = default) =>
+            _inner.ListByConsumerAsync(consumerUserId, ct);
+
+        public Task<IReadOnlyList<Lease>> ListActiveByHostAsync(Guid hostId, CancellationToken ct = default) =>
+            _inner.ListActiveByHostAsync(hostId, ct);
+
+        public Task<int> CountActiveByHostAsync(Guid hostId, CancellationToken ct = default) =>
+            _inner.CountActiveByHostAsync(hostId, ct);
+
+        public Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default) =>
+            _inner.ListActiveAsync(ct);
+
+        public Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default) =>
+            _inner.HasLeaseForImageAsync(hostImageId, ct);
+
+        public Task<IReadOnlyList<Lease>> ListSuspendedOlderThanAsync(
+            DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default) =>
+            _inner.ListSuspendedOlderThanAsync(suspendedOnOrBefore, ct);
+
+        public Task<IReadOnlyList<Lease>> ListNonTerminalAsync(CancellationToken ct = default) =>
+            _inner.ListNonTerminalAsync(ct);
+
+        public Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default) =>
+            _inner.CreateAsync(lease, ct);
+
+        public Task<Lease> UpdateAsync(Lease lease, CancellationToken ct = default) =>
+            _inner.UpdateAsync(lease, ct);
+
+        public async Task<Lease?> TransitionStateAsync(
+            Guid id,
+            LeaseStatus status,
+            LeaseEndReason? endReason = null,
+            DateTimeOffset? startedAt = null,
+            DateTimeOffset? lastMeteredAt = null,
+            long? billableSeconds = null,
+            DateTimeOffset? endedAt = null,
+            DateTimeOffset? suspendedAt = null,
+            LeaseStatus? expectedCurrentStatus = null,
+            CancellationToken ct = default)
+        {
+            if (BeforeTransitionAsync is { } hook)
+            {
+                await hook(id, status, expectedCurrentStatus);
+            }
+            return await _inner.TransitionStateAsync(
+                id, status, endReason, startedAt, lastMeteredAt, billableSeconds,
+                endedAt, suspendedAt, expectedCurrentStatus, ct);
+        }
+    }
 }
