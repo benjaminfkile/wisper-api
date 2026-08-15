@@ -225,9 +225,12 @@ public static class TunnelEndpoints
 
                 // Clear any lingering degraded flag on a genuine disconnect (task #62): the flag is only
                 // meaningful while a tunnel is up on some instance, and a returning agent's first
-                // heartbeat will re-establish the state authoritatively. Skipped on supersede — the newer
-                // owner tunnel is already live and its own heartbeats govern the flag from here on, so an
-                // unconditional clear here would race and briefly re-admit a still-degraded host.
+                // heartbeat now re-establishes the state authoritatively (task #65 — every fresh
+                // connection's first beat settles the store regardless of transition-edge state).
+                // Skipped on supersede — the newer owner tunnel is already live and its own heartbeats
+                // govern the flag from here on, so an unconditional clear here would race and briefly
+                // re-admit a still-degraded host; the task-#65 settle on the newer tunnel's first beat
+                // is what closes the supersede-while-degraded leak safely.
                 if (connection.IsDegraded)
                 {
                     try

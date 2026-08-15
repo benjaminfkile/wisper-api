@@ -1549,6 +1549,54 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(3540, singleReleaseAmount); // 3600 − 60 charged = 3540 back, once.
     }
 
+    [Fact]
+    public async Task ReconcileHeartbeat_container_lost_CAS_guard_no_ops_when_another_driver_ends_first()
+    {
+        // Task #65 CAS retrofit: the heartbeat container_lost path (active-unreported) previously
+        // called TransitionStateAsync without an expectedCurrentStatus, so a concurrent consumer
+        // release / admin force-end / other-instance heartbeat could double-drive ReleaseHoldAsync and
+        // overwrite end_reason. With the CAS on Active, the loser's write returns null and we skip the
+        // hold release.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+
+        var raced = false;
+        var racy = new RacyLeaseRepository(fx.Leases)
+        {
+            BeforeTransitionAsync = async (id, status, expectedCurrent) =>
+            {
+                if (!raced && status == LeaseStatus.Ended && expectedCurrent == LeaseStatus.Active)
+                {
+                    raced = true;
+                    // A concurrent consumer release wins: ends the lease as "released" and returns the
+                    // hold to the wallet.
+                    await fx.Leases.TransitionStateAsync(
+                        lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released,
+                        endedAt: fx.Clock.GetUtcNow(), expectedCurrentStatus: LeaseStatus.Active);
+                    await fx.WalletGate.ReleaseHoldAsync(lease.Id);
+                }
+            },
+        };
+        var racedReconciler = new LeaseReconciliationService(
+            racy, fx.Meter, fx.WalletGate, fx.Clock, NullLogger<LeaseReconciliationService>.Instance);
+
+        var walletBefore = await fx.WalletCentsAsync();
+        var outcome = await racedReconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
+
+        Assert.True(raced, "concurrent end must have fired between the read and the CAS transition");
+
+        // The winner's end_reason survives — our container_lost CAS misses and we skip its release.
+        var stored = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(LeaseStatus.Ended, stored!.Status);
+        Assert.Equal(LeaseEndReason.Released, stored.EndReason);
+        Assert.DoesNotContain(lease.Id, outcome.ContainerLost); // loser did not report the end
+
+        // Wallet reflects exactly one release, not two — the CAS makes the second attempt a no-op.
+        var walletAfter = await fx.WalletCentsAsync();
+        Assert.Equal(3540, walletAfter - walletBefore); // 3600 hold − 60 charged = 3540, once.
+    }
+
     // ---- Racy repository decorator for concurrency tests ----
 
     /// <summary>
