@@ -19,34 +19,16 @@ public record HostHeartbeat : ControlEnvelope
     public HostLoad? Load { get; init; }
 
     /// <summary>
-    /// The host's advertised capability, if the heartbeat carries it (task #417). The <c>hello</c> is the
-    /// primary source; a heartbeat that re-advertises lets a host update its offered isolation without a
-    /// reconnect. Null when the heartbeat carries no capability (the common case).
+    /// The host's advertised capability, if the heartbeat carries it. The <c>hello</c> is the primary
+    /// source; a heartbeat that re-advertises lets a host refresh its offered isolation, GPU, and
+    /// contract-capacity ceiling mid-session without reconnecting (tasks #417, #521, #61). Reuses the
+    /// exact <see cref="HelloCapability"/> shape so parsing / snapshot projection is shared between
+    /// hello and heartbeat — no fields are silently dropped. Null when the heartbeat carries no
+    /// capability (the common case, and when the agent's local wisp is unreachable so it deliberately
+    /// omits the block): "no update — keep last known".
     /// </summary>
     [JsonPropertyName("capability")]
-    public HeartbeatCapability? Capability { get; init; }
-}
-
-/// <summary>
-/// The optional capability block on a <see cref="HostHeartbeat"/> (task #417) — currently the advertised
-/// isolation levels and default, so a host can refresh them mid-session. Mirrors the snake_case wire
-/// fields the <c>hello.capability</c> uses.
-/// </summary>
-public record HeartbeatCapability
-{
-    [JsonPropertyName("isolation_levels")]
-    public IReadOnlyList<string> IsolationLevels { get; init; } = Array.Empty<string>();
-
-    [JsonPropertyName("default_isolation")]
-    public string? DefaultIsolation { get; init; }
-
-    /// <summary>
-    /// The host's advertised GPU (snake_case wire block <c>gpu</c>, task #521), so a host can refresh its
-    /// offered classes/count mid-session the same way it refreshes isolation. Null when the heartbeat carries
-    /// no GPU block (the common case, and every older agent).
-    /// </summary>
-    [JsonPropertyName("gpu")]
-    public HelloGpu? Gpu { get; init; }
+    public HelloCapability? Capability { get; init; }
 }
 
 /// <summary>A single live lease entry in a <see cref="HostHeartbeat"/>.</summary>

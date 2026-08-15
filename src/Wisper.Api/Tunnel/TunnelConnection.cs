@@ -60,8 +60,11 @@ public class TunnelConnection
     /// The wisp capability this host advertised in its handshake <c>hello</c> (images/limits/networks,
     /// docs/TUNNEL.md §5). Set by the endpoint after the hello is read; the host API validates a priced
     /// allow-list against this live snapshot (docs/API.md §6). Null until the hello has been consumed.
+    /// A <c>host.heartbeat</c> that re-advertises the full capability block replaces this reference so
+    /// mid-session refresh (contract ceiling / GPU / limits) is picked up without a reconnect (task #61);
+    /// reference assignment is atomic in .NET so lock-free reads see either the old or the new snapshot.
     /// </summary>
-    public Messages.HelloCapability? Capability { get; init; }
+    public Messages.HelloCapability? Capability { get; set; }
 
     /// <summary>
     /// The open byte streams multiplexed over this connection, keyed by <c>sid</c> (docs/TUNNEL.md

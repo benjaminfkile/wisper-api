@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Leases;
+using Wisper.Api.Tunnel.Backplane;
 using Wisper.Api.Tunnel.Messages;
 
 namespace Wisper.Api.Tunnel;
@@ -44,6 +45,10 @@ public static class TunnelEndpoints
         var relay = context.RequestServices.GetRequiredService<ITunnelRelay>();
         var coordinator = context.RequestServices.GetRequiredService<TunnelDisconnectCoordinator>();
         var presence = context.RequestServices.GetRequiredService<IHostPresence>();
+        // The shared capability store is always registered (in-memory in single-instance mode, Redis in
+        // distributed). Republishing the heartbeat's fresh snapshot to it is what makes non-owner
+        // instances see updated capacity/limits/os without waiting for the next reconnect (task #61).
+        var capabilityStore = context.RequestServices.GetRequiredService<IHostCapabilityStore>();
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync(new WebSocketAcceptContext
         {
@@ -112,31 +117,17 @@ public static class TunnelEndpoints
 
             // Route each heartbeat's live lease list into the disconnect coordinator so a reconnect
             // reconciles the suspended set via set-diff (docs/TUNNEL.md §8). A heartbeat that re-advertises
-            // capability also refreshes the host's persisted isolation levels (task #417) — fail-safe: a
-            // refresh hiccup must never disturb lease reconciliation or the tunnel.
+            // capability also refreshes the host's live capability snapshot (task #61) and its persisted
+            // isolation/GPU (tasks #417, #521); an omitted capability means "no update — keep last known"
+            // (the agent deliberately omits it when its local wisp is unreachable). The refresh helper is
+            // fail-safe on its own — a hiccup there never disturbs lease reconciliation or the tunnel.
             HeartbeatRouter = async (conn, heartbeat, hbCt) =>
             {
                 await coordinator.OnHeartbeatAsync(conn.HostId, ParseLiveLeaseIds(heartbeat), hbCt);
                 if (heartbeat.Capability is { } cap)
                 {
-                    try
-                    {
-                        await presence.RefreshAdvertisedIsolationAsync(
-                            conn.HostId, cap.IsolationLevels, cap.DefaultIsolation, hbCt);
-
-                        // A heartbeat that re-advertises its gpu block refreshes the persisted GPU the same
-                        // way (task #521); a heartbeat with no gpu block leaves it as-is.
-                        if (cap.Gpu is { } gpu)
-                        {
-                            await presence.RefreshAdvertisedGpuAsync(
-                                conn.HostId, gpu.DeviceClasses, gpu.Devices.Count, hbCt);
-                        }
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        logger.LogError(
-                            ex, "agent tunnel: refreshing host {HostId} capability from heartbeat failed", conn.HostId);
-                    }
+                    await HeartbeatCapabilityRefresh.ApplyAsync(
+                        conn, cap, capabilityStore, presence, logger, hbCt);
                 }
             },
         };
