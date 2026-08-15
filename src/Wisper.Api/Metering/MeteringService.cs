@@ -93,11 +93,15 @@ public sealed class MeteringService
     }
 
     /// <summary>
-    /// Loads the lease by id and flushes its accrued interval up to <paramref name="asOf"/> — the on-end
-    /// path (flush the final, possibly sub-tick, interval before the lease transitions to <c>ended</c>).
-    /// Returns <c>null</c> when there is no such lease or nothing billable to flush.
+    /// Loads the lease by id and flushes its accrued interval up to <paramref name="asOf"/> — the raw
+    /// uncapped primitive underneath the on-end path. <b>Internal</b>: production drivers MUST route
+    /// through <see cref="FinalizeLeaseAsync(Guid, DateTimeOffset, CancellationToken)"/> so the shared
+    /// TTL + last-healthy cap always applies (task #60 — a single source of truth is the whole point of
+    /// <see cref="ComputeCappedWatermark"/>; a raw uncapped flush from a suspend/end driver could bill
+    /// past <c>started_at + ttl</c> and drain other leases' held cents through the shared
+    /// <c>lease_holds</c> aggregate account). Exposed to the unit suite only.
     /// </summary>
-    public async Task<MeteringFlushResult?> FlushLeaseByIdAsync(
+    internal async Task<MeteringFlushResult?> FlushLeaseByIdAsync(
         Guid leaseId, DateTimeOffset asOf, CancellationToken ct = default)
     {
         var lease = await _leases.GetByIdAsync(leaseId, ct);
@@ -167,14 +171,23 @@ public sealed class MeteringService
     }
 
     /// <summary>
-    /// Flushes the accrued metering interval for a single active lease up to <paramref name="asOf"/>:
-    /// accrues the healthy seconds since the watermark, posts the <c>lease_charge</c> (fee-split from
-    /// the active policy), writes the <c>lease_usage</c> row, and advances the watermark. Idempotent on
+    /// The raw uncapped flush primitive: accrues the healthy seconds since the watermark up to
+    /// <paramref name="asOf"/>, posts the <c>lease_charge</c> (fee-split from the active policy), writes
+    /// the <c>lease_usage</c> row, and advances the watermark. Idempotent on
     /// <c>(lease_id, period_start)</c> — a replay after a crash between the charge and the watermark write
     /// moves no new money and preserves the cumulative-charge invariant. Returns the flush result, or
     /// <c>null</c> when nothing was billable.
+    /// <para>
+    /// <b>Internal</b>: production callers MUST NOT invoke this directly — the whole reason
+    /// <see cref="ComputeCappedWatermark"/> is the single source of truth for the "as-of" watermark
+    /// (task #54, task #60) is that every tick, on-end finalize, and disconnect-suspend flush shares
+    /// exactly the same TTL + last-healthy cap. Reach for
+    /// <see cref="RunTickAsync"/> or <see cref="FinalizeLeaseAsync(Lease, DateTimeOffset, CancellationToken)"/>
+    /// instead — they compute the cap and call through. Exposed to the unit suite so the flush
+    /// primitive itself (idempotency, sub-cent deferral, zero-price accrual) can be exercised.
+    /// </para>
     /// </summary>
-    public async Task<MeteringFlushResult?> FlushLeaseAsync(
+    internal async Task<MeteringFlushResult?> FlushLeaseAsync(
         Lease lease, DateTimeOffset asOf, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(lease);
