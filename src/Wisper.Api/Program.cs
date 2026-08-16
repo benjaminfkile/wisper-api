@@ -88,7 +88,18 @@ builder.Services.AddSingleton<LeaseReconciliationService>();
 // tunnel loss (grace expiry / no-lease close, driven by the coordinator) flips it back offline — the wiring
 // that was missing, leaving a live agent's host stuck offline and absent from the catalog.
 builder.Services.AddSingleton<IHostPresence, HostPresenceService>();
-builder.Services.AddSingleton<TunnelDisconnectCoordinator>();
+// The coordinator resolves ITunnelRelay lazily via a factory to break the DI cycle with TunnelRelay
+// (task #73): TunnelRelay optionally depends on the coordinator itself (task #56 lease.ended routing),
+// so a direct constructor injection would recurse. Passing the factory defers resolution until the
+// coordinator actually needs the relay (an orphan teardown), by which point the graph is fully built.
+builder.Services.AddSingleton<TunnelDisconnectCoordinator>(sp => new TunnelDisconnectCoordinator(
+    sp.GetRequiredService<LeaseReconciliationService>(),
+    sp.GetRequiredService<IOptionsMonitor<TunnelOptions>>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<TunnelDisconnectCoordinator>>(),
+    delay: null,
+    presence: sp.GetRequiredService<IHostPresence>(),
+    tunnelRelayFactory: () => sp.GetRequiredService<ITunnelRelay>()));
 // Durable grace backstop (task #55, docs/TUNNEL.md §8): the in-process grace timer above lives ONLY in
 // memory, so a restart / crash / scale-in with any host inside grace strands its leases in `suspended`
 // forever (wallet hold never released, host + consumer concurrency slots consumed forever). The sweep

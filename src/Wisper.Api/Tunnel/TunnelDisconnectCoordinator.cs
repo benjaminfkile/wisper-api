@@ -2,6 +2,8 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Wisper.Api.Domain;
+using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Metering;
 
 namespace Wisper.Api.Tunnel;
@@ -31,6 +33,11 @@ public sealed class TunnelDisconnectCoordinator
     private readonly ILogger<TunnelDisconnectCoordinator> _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly IHostPresence? _presence;
+    // Resolved lazily on first orphan teardown: constructor-injecting ITunnelRelay would form a DI cycle
+    // (TunnelRelay itself takes an optional TunnelDisconnectCoordinator so it can route lease.ended frames
+    // back through reconciliation — task #56). The factory is invoked only when there is an orphan to
+    // tear down, so tests that never trigger a teardown pass null.
+    private readonly Func<ITunnelRelay>? _tunnelRelayFactory;
     private readonly ConcurrentDictionary<Guid, GraceEntry> _grace = new();
 
     // Hosts that reconnected AFTER their grace window already expired: their leases were ended as
@@ -45,7 +52,8 @@ public sealed class TunnelDisconnectCoordinator
         TimeProvider time,
         ILogger<TunnelDisconnectCoordinator> logger,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        IHostPresence? presence = null)
+        IHostPresence? presence = null,
+        Func<ITunnelRelay>? tunnelRelayFactory = null)
     {
         _reconciler = reconciler;
         _options = options;
@@ -53,6 +61,7 @@ public sealed class TunnelDisconnectCoordinator
         _logger = logger;
         _delay = delay ?? ((span, ct) => Task.Delay(span, time, ct));
         _presence = presence;
+        _tunnelRelayFactory = tunnelRelayFactory;
     }
 
     private sealed class GraceEntry
@@ -218,8 +227,30 @@ public sealed class TunnelDisconnectCoordinator
     /// (reported set == active set). A no-op for a non-Guid host id.</item>
     /// </list>
     /// </summary>
-    public async Task OnHeartbeatAsync(
-        string hostId, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default)
+    public Task OnHeartbeatAsync(
+        string hostId, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default) =>
+        OnHeartbeatInternalAsync(connection: null, hostId, liveLeaseIds, ct);
+
+    /// <summary>
+    /// Connection-aware overload used by the live agent endpoint: runs the same reconciliation as the
+    /// string-id overload, then — for each reported lease the continuous set-diff flagged as orphaned
+    /// (host-reported but the manager has no revivable state for it) — best-effort relays a
+    /// <c>lease.release</c> back over <paramref name="connection"/> so the container is torn down
+    /// immediately instead of pinning host capacity until wisp's TTL reaper fires (task #73). The
+    /// per-connection <see cref="TunnelConnection.TerminalTeardownRelayed"/> set dedupes so a repeated
+    /// heartbeat that keeps reporting the same orphan does not spam relays or logs; a supersede/
+    /// reconnect starts with an empty set and gets one fresh attempt per lease. Relay failures
+    /// (host_offline, upstream_timeout) are swallowed after logging — wisp's TTL reaper is the backstop.
+    /// </summary>
+    public Task OnHeartbeatAsync(
+        TunnelConnection connection, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default) =>
+        OnHeartbeatInternalAsync(connection, connection.HostId, liveLeaseIds, ct);
+
+    private async Task OnHeartbeatInternalAsync(
+        TunnelConnection? connection,
+        string hostId,
+        IReadOnlyCollection<Guid> liveLeaseIds,
+        CancellationToken ct)
     {
         if (!Guid.TryParse(hostId, out var host))
         {
@@ -271,9 +302,10 @@ public sealed class TunnelDisconnectCoordinator
         // Set-diff the reported set against the manager's active set and heal any drift: silently-dead
         // containers are ended (container_lost), live contracts without a manager lease are revived or
         // orphaned. Zero writes in the common case (reported set == active set).
+        HeartbeatReconcileOutcome? heartbeat = null;
         try
         {
-            var heartbeat = await _reconciler.ReconcileHeartbeatAsync(host, liveLeaseIds, ct);
+            heartbeat = await _reconciler.ReconcileHeartbeatAsync(host, liveLeaseIds, ct);
             if (heartbeat.HasChanges)
             {
                 _logger.LogInformation(
@@ -284,6 +316,72 @@ public sealed class TunnelDisconnectCoordinator
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "heartbeat: continuous reconciliation for host {HostId} failed", host);
+        }
+
+        // Best-effort teardown of orphans (task #73): a host-reported lease the reconciler classified as
+        // "no revivable manager state" is a container running on the host that we can never bill or reason
+        // about — telling wisp to release it now frees the pinned capacity slot immediately instead of
+        // waiting up to a full lease TTL for the local reaper. Only fires when we have a live tunnel
+        // (connection + relay both wired); the string-id overload used by unit fixtures skips this. The
+        // per-connection dedupe (TerminalTeardownRelayed) keeps a stable orphan from re-emitting a relay
+        // or a log line on every heartbeat, mirroring the transition-edge discipline in
+        // HeartbeatDegradedApply (task #65).
+        if (heartbeat is not null
+            && connection is not null
+            && _tunnelRelayFactory is not null
+            && heartbeat.Orphaned.Count > 0)
+        {
+            await RelayOrphanTeardownsAsync(connection, hostId, heartbeat.Orphaned, ct);
+        }
+    }
+
+    private async Task RelayOrphanTeardownsAsync(
+        TunnelConnection connection,
+        string hostId,
+        IReadOnlyList<Guid> orphaned,
+        CancellationToken ct)
+    {
+        var relay = _tunnelRelayFactory!();
+        foreach (var leaseId in orphaned)
+        {
+            // Dedupe first: an orphan the host keeps reporting must NOT trigger a relay (or log line) on
+            // every heartbeat. TryAdd returns false on the second+ observation of the same lease id on
+            // this connection lifetime. On failure we still mark it tried — retrying every beat is exactly
+            // the spam the task calls out; the reconnect resets the set for one fresh attempt.
+            if (!connection.TerminalTeardownRelayed.TryAdd(leaseId, 0))
+            {
+                continue;
+            }
+
+            var externalId = TunnelLeaseId.Format(leaseId);
+            try
+            {
+                await relay.ReleaseAsync(hostId, externalId, ct);
+                _logger.LogInformation(
+                    "heartbeat teardown: host {HostId} relayed lease.release for orphan {LeaseId}",
+                    hostId, leaseId);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (ApiException ex)
+            {
+                // host_offline / upstream_timeout — the tunnel is unhealthy right now. The TTL reaper on
+                // wisp remains the backstop, and a superseding reconnect will get a fresh attempt.
+                _logger.LogWarning(
+                    "heartbeat teardown: host {HostId} relay for orphan {LeaseId} failed ({Code}: {Message});" +
+                    " wisp TTL reaper is the backstop",
+                    hostId, leaseId, ex.Code, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "heartbeat teardown: host {HostId} relay for orphan {LeaseId} threw unexpected;" +
+                    " wisp TTL reaper is the backstop",
+                    hostId, leaseId);
+            }
         }
     }
 

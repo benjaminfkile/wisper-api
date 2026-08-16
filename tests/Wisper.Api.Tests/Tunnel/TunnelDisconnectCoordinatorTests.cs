@@ -1,5 +1,7 @@
+using System.Net.WebSockets;
 using Microsoft.Extensions.Logging.Abstractions;
 using Wisper.Api.Domain;
+using Wisper.Api.Infrastructure;
 using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
@@ -58,6 +60,9 @@ public class TunnelDisconnectCoordinatorTests
         public InMemoryPlatformPolicyRepository Policies { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
         public ManualGrace Grace { get; } = new();
+        // Fake relay so the orphan teardown path (task #73) is observable without a live tunnel — the
+        // coordinator resolves the relay lazily via a factory, so this fixture just supplies a fake.
+        public FakeTunnelRelay Relay { get; } = new();
 
         public TunnelDisconnectCoordinator Coordinator { get; }
 
@@ -83,8 +88,18 @@ public class TunnelDisconnectCoordinatorTests
                 Hosts, Images, Users, Clock, NullLogger<HostPresenceService>.Instance);
             Coordinator = new TunnelDisconnectCoordinator(
                 reconciler, options, Clock, NullLogger<TunnelDisconnectCoordinator>.Instance, Grace.Delay,
-                presence);
+                presence, tunnelRelayFactory: () => Relay);
         }
+
+        /// <summary>
+        /// Builds a fresh <see cref="TunnelConnection"/> for this fixture's host so tests can drive the
+        /// connection-based <see cref="TunnelDisconnectCoordinator.OnHeartbeatAsync(TunnelConnection, IReadOnlyCollection{Guid}, CancellationToken)"/>
+        /// overload. The socket is a stub — the coordinator only reads <see cref="TunnelConnection.HostId"/>
+        /// and <see cref="TunnelConnection.TerminalTeardownRelayed"/> from it.
+        /// </summary>
+        public TunnelConnection NewConnection(string? sessionId = null) =>
+            new(new StubWebSocket(), HostKey, sessionId ?? $"sess-{Guid.NewGuid():N}",
+                maxReceiveBytes: 65536, NullLogger.Instance);
 
         public async Task SeedAsync()
         {
@@ -454,6 +469,241 @@ public class TunnelDisconnectCoordinatorTests
         await fx.Coordinator.OnLeaseEndedAsync("dev-host-alpha", lease.Id, LeaseEndReason.Expired);
 
         Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    // ---- Best-effort orphan teardown on continuous heartbeat (task #73) ----
+    //
+    // When a heartbeat reports a lease whose manager-side state is terminal-and-not-revivable (ended for any
+    // reason other than host_disconnect: released / container_lost / expired / admin / payment_failed), the
+    // container is still pinning a host capacity slot until wisp's TTL reaper fires. The coordinator now
+    // best-effort relays lease.release over the tunnel so the container is torn down within one heartbeat
+    // instead of waiting up to a full lease TTL. Relay is per-connection-deduped (mirrors the degraded-
+    // logging discipline in task #65) and swallows tunnel failures (wisp's TTL reaper remains the backstop).
+
+    [Fact]
+    public async Task Heartbeat_reported_released_lease_triggers_exactly_one_lease_release_relay()
+    {
+        // AC263: a released (consumer DELETE while the tunnel was down) lease the host still reports must
+        // get exactly one lease.release relay so the container is torn down immediately.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+
+        // Consumer released the lease while the host was offline; the release ended the DB row but the
+        // host-side teardown was skipped (no live tunnel).
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+
+        var expectedLeaseId = TunnelLeaseId.Format(lease.Id);
+        Assert.Equal(new[] { (fx.HostKey, expectedLeaseId) }, fx.Relay.ReleaseCalls);
+        Assert.True(connection.TerminalTeardownRelayed.ContainsKey(lease.Id));
+    }
+
+    [Theory]
+    [InlineData(LeaseEndReason.Released)]
+    [InlineData(LeaseEndReason.ContainerLost)]
+    [InlineData(LeaseEndReason.Expired)]
+    [InlineData(LeaseEndReason.Admin)]
+    [InlineData(LeaseEndReason.PaymentFailed)]
+    public async Task Heartbeat_reported_terminal_lease_triggers_teardown_for_every_non_hostdisconnect_reason(
+        LeaseEndReason reason)
+    {
+        // AC263: every terminal end reason OTHER than host_disconnect (which is the revivable case) must
+        // trigger a teardown relay — the container is definitively orphaned.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: T0);
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+
+        Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.Equal(fx.HostKey, fx.Relay.ReleaseCalls[0].HostId);
+        Assert.Equal(TunnelLeaseId.Format(lease.Id), fx.Relay.ReleaseCalls[0].LeaseId);
+    }
+
+    [Fact]
+    public async Task Heartbeat_revive_path_does_not_relay_teardown()
+    {
+        // AC264: a reported+ended(host_disconnect) lease is the REVIVE path — the container kept running
+        // through an outage and must come back to active, NOT be torn down. The relay must stay silent.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.HostDisconnect, endedAt: T0);
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+
+        Assert.Empty(fx.Relay.ReleaseCalls);
+        Assert.Empty(connection.TerminalTeardownRelayed);
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Heartbeat_active_and_suspended_paths_do_not_relay_teardown()
+    {
+        // AC264: an active lease that continues to be reported is steady-state — no teardown. A suspended
+        // lease reported live resumes back to active — also no teardown. Neither should touch the relay.
+        var fx = await ReadyAsync();
+        var stillActive = await fx.SeedActiveLeaseAsync();
+        var stillSuspended = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(stillSuspended.Id, LeaseStatus.Suspended);
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(
+            connection, new[] { stillActive.Id, stillSuspended.Id });
+
+        Assert.Empty(fx.Relay.ReleaseCalls);
+        Assert.Empty(connection.TerminalTeardownRelayed);
+    }
+
+    [Fact]
+    public async Task Heartbeat_relay_failure_is_swallowed_and_reconcile_pass_completes()
+    {
+        // AC265: a host_offline / upstream_timeout on the teardown relay must NOT surface upward — the
+        // reconcile pass keeps working and wisp's TTL reaper is the backstop. The lease id is still marked
+        // as attempted so subsequent heartbeats on this connection do not spam retries or logs.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+        fx.Relay.ReleaseError = new ApiException(ApiErrorCode.HostOffline, "tunnel just dropped");
+
+        var connection = fx.NewConnection();
+
+        // Must not throw — the entire heartbeat handler is best-effort.
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+
+        // Exactly one relay attempt was made (and it threw) — the failed lease id is still tracked so
+        // the next heartbeat on this connection does not retry.
+        Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.True(connection.TerminalTeardownRelayed.ContainsKey(lease.Id));
+
+        // Subsequent heartbeat with the same reported set: no additional relay attempt.
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+        Assert.Single(fx.Relay.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task Heartbeat_repeated_beats_do_not_spam_teardown_relays_per_connection()
+    {
+        // AC265: an orphan the host keeps reporting on every heartbeat must trigger exactly ONE relay
+        // per connection lifetime — the dedupe set on TunnelConnection.TerminalTeardownRelayed is what
+        // stops the spam.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        var connection = fx.NewConnection();
+        for (var i = 0; i < 5; i++)
+        {
+            await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+        }
+
+        Assert.Single(fx.Relay.ReleaseCalls);
+    }
+
+    [Fact]
+    public async Task Heartbeat_fresh_connection_gets_one_new_teardown_attempt_per_reconnect()
+    {
+        // A supersede/reconnect must reset the dedupe set: the returning agent (a fresh
+        // TunnelConnection) gets exactly one fresh attempt per orphan lease. This is how a first-attempt
+        // host_offline failure eventually converges — the next connection tries again.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        // First connection tried and (for the sake of the test) failed.
+        fx.Relay.ReleaseError = new ApiException(ApiErrorCode.HostOffline, "flaky");
+        var first = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(first, new[] { lease.Id });
+        Assert.Single(fx.Relay.ReleaseCalls);
+
+        // New connection (the agent reconnected). Relay is healthy this time.
+        fx.Relay.ReleaseError = null;
+        var second = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(second, new[] { lease.Id });
+
+        // Two total attempts — one per connection. The second dedupe set is independent of the first.
+        Assert.Equal(2, fx.Relay.ReleaseCalls.Count);
+        Assert.True(second.TerminalTeardownRelayed.ContainsKey(lease.Id));
+    }
+
+    [Fact]
+    public async Task Heartbeat_teardown_relay_does_not_touch_the_ledger()
+    {
+        // AC266: the teardown path is host-side hygiene only — the lease is already finalized/ended.
+        // No metering, no hold-release, no wallet writes. We assert this by snapshotting the ledger
+        // balances before and after the teardown-triggering heartbeat.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        // Finalize the lease as released to reach the terminal-orphan branch.
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        var storedBefore = await fx.ReloadAsync(lease.Id);
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
+
+        // Relay fired but the lease row is byte-for-byte unchanged (no billing, no state churn).
+        Assert.Single(fx.Relay.ReleaseCalls);
+        var storedAfter = await fx.ReloadAsync(lease.Id);
+        Assert.Equal(storedBefore, storedAfter);
+    }
+
+    [Fact]
+    public async Task Heartbeat_reported_unknown_lease_id_triggers_teardown_relay()
+    {
+        // A reported lease id that has no manager-side record at all still gets a teardown attempt —
+        // the container is running on the host, so telling wisp to release it is the correct move
+        // regardless of whether the manager ever knew about it (delete-404 is treated as success).
+        var fx = await ReadyAsync();
+        var unknownId = Guid.NewGuid();
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { unknownId });
+
+        Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.Equal(TunnelLeaseId.Format(unknownId), fx.Relay.ReleaseCalls[0].LeaseId);
+    }
+
+    [Fact]
+    public async Task Heartbeat_orphan_teardown_skipped_on_the_string_id_overload()
+    {
+        // The string-id overload used by unit fixtures does not have a connection to dedupe against, so
+        // it must NOT drive the teardown relay. Preserves the "reconciler is pure" surface for tests
+        // that only care about state transitions.
+        var fx = await ReadyAsync();
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+
+        await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
+
+        Assert.Empty(fx.Relay.ReleaseCalls);
+    }
+
+    /// <summary>A do-nothing <see cref="WebSocket"/> — the coordinator never touches it.</summary>
+    private sealed class StubWebSocket : WebSocket
+    {
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override WebSocketState State => WebSocketState.Open;
+        public override string? SubProtocol => null;
+        public override void Abort() { }
+        public override Task CloseAsync(WebSocketCloseStatus s, string? d, CancellationToken ct) => Task.CompletedTask;
+        public override Task CloseOutputAsync(WebSocketCloseStatus s, string? d, CancellationToken ct) => Task.CompletedTask;
+        public override void Dispose() { }
+        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> b, CancellationToken ct) =>
+            throw new NotSupportedException();
+        public override Task SendAsync(ArraySegment<byte> b, WebSocketMessageType t, bool e, CancellationToken ct) =>
+            Task.CompletedTask;
     }
 
     [Fact]
