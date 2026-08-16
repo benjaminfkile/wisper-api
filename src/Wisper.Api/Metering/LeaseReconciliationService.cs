@@ -293,8 +293,13 @@ public sealed class LeaseReconciliationService
     /// finalized at <see cref="Lease.SuspendedAt"/> (the last durable instant we know billing was paused).
     /// The billable interval was already flushed to last-healthy at suspend time.</item>
     /// <item><b>Reported not live</b> → live contract without a manager lease: revive if it was ended as
-    /// <c>host_disconnect</c> (the container kept running); flag orphaned otherwise so the host tears it
-    /// down.</item>
+    /// <c>host_disconnect</c> (the container kept running); otherwise split by manager state — a reported
+    /// id with an actual <b>terminal row</b> (ended for a non-revivable reason, or ended payment_failed
+    /// by the revive-hold denial) is <c>TerminalOrphaned</c> and the caller may safely relay
+    /// <c>lease.release</c>; a reported id with <b>no manager row at all</b> is <c>UnknownReported</c> and
+    /// must NOT be torn down — the row may be mid-create (LeaseService provisions the container on the
+    /// host BEFORE inserting the lease row, so a heartbeat landing in that window reports the fresh
+    /// lease id before we can see it; wisp's TTL reaper is the backstop for true garbage) (task #75).</item>
     /// <item><b>Equal sets and no suspended present</b> → steady-state fast-path: <b>zero writes</b> —
     /// mirrors the <see cref="Wisper.Api.Tunnel.HostPresenceService"/> no-change guard.</item>
     /// </list>
@@ -330,7 +335,14 @@ public sealed class LeaseReconciliationService
         var now = _time.GetUtcNow();
         var containerLost = new List<Guid>();
         var revived = new List<Guid>();
-        var orphaned = new List<Guid>();
+        // Two separate orphan buckets (task #75): TerminalOrphaned is safe to relay lease.release for
+        // (row exists in a non-revivable terminal state); UnknownReported must be skipped by the caller —
+        // the reported id has no row at all, which may be a mid-create race (LeaseService inserts the
+        // lease row AFTER provisioning the container on the host). The CAS-lost revive paths below (which
+        // also call TryResumeSuspendedLeaseAsync and TryRevivePaidLeaseAsync) target rows we already read
+        // as suspended/ended, so their fallback orphans go into the terminal bucket.
+        var terminalOrphaned = new List<Guid>();
+        var unknownReported = new List<Guid>();
 
         // Active leases the host no longer reports → silent container death.
         foreach (var lease in activeLeases)
@@ -383,7 +395,7 @@ public sealed class LeaseReconciliationService
                 // and write would, without the CAS, resurrect it to active with no wallet earmark. On CAS
                 // miss we re-read and route through the ended→active revive path (which re-places the
                 // hold) instead.
-                var outcome = await TryResumeSuspendedLeaseAsync(lease, now, orphaned, ct);
+                var outcome = await TryResumeSuspendedLeaseAsync(lease, now, terminalOrphaned, ct);
                 switch (outcome)
                 {
                     case ResumeSuspendedOutcome.Resumed:
@@ -448,7 +460,15 @@ public sealed class LeaseReconciliationService
 
             if (lease is null || lease.HostId != hostId)
             {
-                orphaned.Add(leaseId);
+                // No manager row (or the row belongs to a different host) — do NOT tear down (task #75).
+                // LeaseService.CreateAsync provisions the container over the tunnel BEFORE inserting the
+                // lease row, so a heartbeat landing in that window reports the fresh lease id while
+                // GetByIdAsync still returns null. Classifying it as terminal orphan (as before task #75)
+                // caused the coordinator to relay lease.release and tear the container down mid-create.
+                // Anything genuinely garbage falls through to wisp's local TTL reaper; the next
+                // heartbeat's set-diff, once the row is inserted, converges either to a happy active
+                // lease or to a container_lost — no need to guess here.
+                unknownReported.Add(leaseId);
                 continue;
             }
 
@@ -460,7 +480,7 @@ public sealed class LeaseReconciliationService
 
             if (lease.Status != LeaseStatus.Ended || lease.EndReason != LeaseEndReason.HostDisconnect)
             {
-                orphaned.Add(leaseId);
+                terminalOrphaned.Add(leaseId);
                 continue;
             }
 
@@ -468,7 +488,7 @@ public sealed class LeaseReconciliationService
             // semantics as RevivePostGraceAsync — billing restarts at now, offline gap never billed. Same
             // re-hold gate: a paid lease must have a wallet hold covering its remaining time before it
             // returns to active (task #23), or it is ended (payment_failed) instead.
-            if (!await TryRevivePaidLeaseAsync(lease, now, orphaned, ct))
+            if (!await TryRevivePaidLeaseAsync(lease, now, terminalOrphaned, ct))
             {
                 continue;
             }
@@ -489,7 +509,7 @@ public sealed class LeaseReconciliationService
                 leaseId, hostId, now);
         }
 
-        return new HeartbeatReconcileOutcome(containerLost, revived, orphaned);
+        return new HeartbeatReconcileOutcome(containerLost, revived, terminalOrphaned, unknownReported);
     }
 
     /// <summary>
@@ -847,17 +867,24 @@ internal enum ResumeSuspendedOutcome
 /// <summary>
 /// The result of <see cref="LeaseReconciliationService.ReconcileHeartbeatAsync"/>: lease ids ended as
 /// <c>container_lost</c> (active but not reported), lease ids revived back to <c>active</c> (reported but
-/// ended as <c>host_disconnect</c>), and lease ids orphaned (reported but not reviviable).
+/// ended as <c>host_disconnect</c>), and — split by manager state (task #75) — the reported-but-not-live
+/// ids the caller may safely tear down (<see cref="TerminalOrphaned"/>: an actual terminal row exists) vs
+/// the ids the caller MUST NOT tear down (<see cref="UnknownReported"/>: no manager row at all, which
+/// includes the mid-create window where LeaseService has provisioned the container over the tunnel but
+/// has not yet inserted the lease row).
 /// </summary>
 public sealed record HeartbeatReconcileOutcome(
     IReadOnlyList<Guid> ContainerLost,
     IReadOnlyList<Guid> Revived,
-    IReadOnlyList<Guid> Orphaned)
+    IReadOnlyList<Guid> TerminalOrphaned,
+    IReadOnlyList<Guid> UnknownReported)
 {
     /// <summary>Whether any drift was found and healed (false in the steady-state no-op path).</summary>
-    public bool HasChanges => ContainerLost.Count > 0 || Revived.Count > 0 || Orphaned.Count > 0;
+    public bool HasChanges =>
+        ContainerLost.Count > 0 || Revived.Count > 0 ||
+        TerminalOrphaned.Count > 0 || UnknownReported.Count > 0;
 
     /// <summary>The singleton empty outcome returned by the steady-state fast-path (zero writes).</summary>
     public static readonly HeartbeatReconcileOutcome Empty =
-        new(Array.Empty<Guid>(), Array.Empty<Guid>(), Array.Empty<Guid>());
+        new(Array.Empty<Guid>(), Array.Empty<Guid>(), Array.Empty<Guid>(), Array.Empty<Guid>());
 }

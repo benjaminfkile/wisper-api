@@ -233,14 +233,18 @@ public sealed class TunnelDisconnectCoordinator
 
     /// <summary>
     /// Connection-aware overload used by the live agent endpoint: runs the same reconciliation as the
-    /// string-id overload, then — for each reported lease the continuous set-diff flagged as orphaned
-    /// (host-reported but the manager has no revivable state for it) — best-effort relays a
-    /// <c>lease.release</c> back over <paramref name="connection"/> so the container is torn down
-    /// immediately instead of pinning host capacity until wisp's TTL reaper fires (task #73). The
-    /// per-connection <see cref="TunnelConnection.TerminalTeardownRelayed"/> set dedupes so a repeated
-    /// heartbeat that keeps reporting the same orphan does not spam relays or logs; a supersede/
-    /// reconnect starts with an empty set and gets one fresh attempt per lease. Relay failures
-    /// (host_offline, upstream_timeout) are swallowed after logging — wisp's TTL reaper is the backstop.
+    /// string-id overload, then — for each reported lease the continuous set-diff flagged as
+    /// <see cref="HeartbeatReconcileOutcome.TerminalOrphaned"/> (host-reported and the manager has an
+    /// actual terminal row that cannot be revived) — best-effort relays a <c>lease.release</c> back over
+    /// <paramref name="connection"/> so the container is torn down immediately instead of pinning host
+    /// capacity until wisp's TTL reaper fires (task #73). Reported ids the reconciler flagged as
+    /// <see cref="HeartbeatReconcileOutcome.UnknownReported"/> (no manager row at all — possibly a
+    /// mid-create where the row has not yet been inserted, task #75) are deliberately NOT torn down;
+    /// wisp's TTL reaper is the backstop for any true garbage. The per-connection
+    /// <see cref="TunnelConnection.TerminalTeardownRelayed"/> set dedupes so a repeated heartbeat that
+    /// keeps reporting the same orphan does not spam relays or logs; a supersede/reconnect starts with
+    /// an empty set and gets one fresh attempt per lease. Relay failures (host_offline,
+    /// upstream_timeout) are swallowed after logging — wisp's TTL reaper is the backstop.
     /// </summary>
     public Task OnHeartbeatAsync(
         TunnelConnection connection, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default) =>
@@ -309,8 +313,10 @@ public sealed class TunnelDisconnectCoordinator
             if (heartbeat.HasChanges)
             {
                 _logger.LogInformation(
-                    "host {HostId} heartbeat reconciled: {Lost} container_lost, {Revived} revived, {Orphaned} orphaned",
-                    host, heartbeat.ContainerLost.Count, heartbeat.Revived.Count, heartbeat.Orphaned.Count);
+                    "host {HostId} heartbeat reconciled: {Lost} container_lost, {Revived} revived," +
+                    " {TerminalOrphaned} terminal_orphaned, {UnknownReported} unknown_reported",
+                    host, heartbeat.ContainerLost.Count, heartbeat.Revived.Count,
+                    heartbeat.TerminalOrphaned.Count, heartbeat.UnknownReported.Count);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -319,19 +325,25 @@ public sealed class TunnelDisconnectCoordinator
         }
 
         // Best-effort teardown of orphans (task #73): a host-reported lease the reconciler classified as
-        // "no revivable manager state" is a container running on the host that we can never bill or reason
-        // about — telling wisp to release it now frees the pinned capacity slot immediately instead of
-        // waiting up to a full lease TTL for the local reaper. Only fires when we have a live tunnel
-        // (connection + relay both wired); the string-id overload used by unit fixtures skips this. The
-        // per-connection dedupe (TerminalTeardownRelayed) keeps a stable orphan from re-emitting a relay
-        // or a log line on every heartbeat, mirroring the transition-edge discipline in
-        // HeartbeatDegradedApply (task #65).
+        // TerminalOrphaned is a container running on the host that we can never bill or reason about —
+        // telling wisp to release it now frees the pinned capacity slot immediately instead of waiting
+        // up to a full lease TTL for the local reaper. Only fires when we have a live tunnel
+        // (connection + relay both wired); the string-id overload used by unit fixtures skips this. We
+        // deliberately do NOT relay for the UnknownReported bucket: those ids have no manager row at
+        // all, and LeaseService.CreateAsync provisions the container over the tunnel BEFORE inserting
+        // the lease row, so a heartbeat landing in that window reports the fresh lease id while
+        // GetByIdAsync still returns null (task #75). Before task #75, both buckets were relayed and
+        // that mid-create window killed the container in-flight — wisp's TTL reaper remains the backstop
+        // for any true garbage id, and the next heartbeat's set-diff (once the row is inserted)
+        // converges either to a happy active lease or to a container_lost. The per-connection dedupe
+        // (TerminalTeardownRelayed) keeps a stable orphan from re-emitting a relay or a log line on
+        // every heartbeat, mirroring the transition-edge discipline in HeartbeatDegradedApply (task #65).
         if (heartbeat is not null
             && connection is not null
             && _tunnelRelayFactory is not null
-            && heartbeat.Orphaned.Count > 0)
+            && heartbeat.TerminalOrphaned.Count > 0)
         {
-            await RelayOrphanTeardownsAsync(connection, hostId, heartbeat.Orphaned, ct);
+            await RelayOrphanTeardownsAsync(connection, hostId, heartbeat.TerminalOrphaned, ct);
         }
     }
 
