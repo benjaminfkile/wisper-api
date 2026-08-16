@@ -658,19 +658,90 @@ public class TunnelDisconnectCoordinatorTests
     }
 
     [Fact]
-    public async Task Heartbeat_reported_unknown_lease_id_triggers_teardown_relay()
+    public async Task Heartbeat_reported_unknown_lease_id_is_NOT_torn_down()
     {
-        // A reported lease id that has no manager-side record at all still gets a teardown attempt —
-        // the container is running on the host, so telling wisp to release it is the correct move
-        // regardless of whether the manager ever knew about it (delete-404 is treated as success).
+        // Task #75: a reported lease id with NO manager row at all must NOT trigger a teardown relay.
+        // LeaseService.CreateAsync provisions the container over the tunnel BEFORE inserting the lease
+        // row, so a heartbeat landing in that window reports the fresh id while the manager still returns
+        // null for GetByIdAsync. The pre-#75 code (which relayed lease.release for the entire orphan
+        // bucket) killed the container mid-create. Wisp's TTL reaper is the backstop for any true
+        // garbage id, and the next heartbeat (once the row is inserted) resolves to either active or
+        // container_lost via the normal set-diff.
         var fx = await ReadyAsync();
         var unknownId = Guid.NewGuid();
 
         var connection = fx.NewConnection();
         await fx.Coordinator.OnHeartbeatAsync(connection, new[] { unknownId });
 
+        Assert.Empty(fx.Relay.ReleaseCalls);
+        Assert.Empty(connection.TerminalTeardownRelayed);
+    }
+
+    [Fact]
+    public async Task Heartbeat_between_provision_and_row_insert_does_not_kill_mid_create()
+    {
+        // Task #75 mid-create scenario: simulate the exact race the review identified. The consumer's
+        // CreateLease has just returned from _relay.CreateLeaseAsync (the container is provisioned on
+        // the host) but the lease row is not yet inserted; a host.heartbeat lands in that millisecond
+        // window and reports the fresh lease id. Under the pre-#75 teardown code the reconciler saw
+        // GetByIdAsync return null, classified the id as an orphan, and relayed lease.release — killing
+        // the create in-flight. The fixed code must classify the id as UnknownReported (skip teardown)
+        // so the create completes normally and the next heartbeat sees the newly-persisted active row.
+        var fx = await ReadyAsync();
+        var midCreateLeaseId = Guid.NewGuid(); // the id the relay just minted on the host
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { midCreateLeaseId });
+
+        // No teardown relay fired: the container stays alive and the create can finish inserting the row.
+        Assert.Empty(fx.Relay.ReleaseCalls);
+        Assert.Empty(connection.TerminalTeardownRelayed);
+
+        // Simulate the create finishing: the row gets inserted after the mid-create heartbeat lands.
+        // The next heartbeat with the same reported id must now be plain steady-state (no teardown).
+        await fx.Leases.CreateAsync(new Lease
+        {
+            Id = midCreateLeaseId,
+            ConsumerUserId = Guid.NewGuid(),
+            HostId = fx.HostId,
+            HostImageId = Guid.NewGuid(),
+            ImageRef = "reg/wisp-base:latest",
+            Network = NetworkMode.Open,
+            TtlSeconds = 3600,
+            PriceCentsPerMin = 0,
+            Currency = "usd",
+            Status = LeaseStatus.Active,
+            CreatedAt = T0,
+            StartedAt = T0,
+            LastMeteredAt = T0,
+            BillableSeconds = 0,
+        });
+
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { midCreateLeaseId });
+
+        Assert.Empty(fx.Relay.ReleaseCalls);
+        Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(midCreateLeaseId))!.Status);
+    }
+
+    [Fact]
+    public async Task Heartbeat_mixed_terminal_and_unknown_only_relays_the_terminal_row()
+    {
+        // Task #75: when a heartbeat reports both a terminal-row orphan (safe to tear down) and an
+        // unknown id (mid-create or garbage), only the terminal row is relayed. The unknown id is a
+        // no-op for the teardown path; wisp's TTL reaper is the backstop for real garbage.
+        var fx = await ReadyAsync();
+        var terminal = await fx.SeedActiveLeaseAsync();
+        await fx.Leases.TransitionStateAsync(
+            terminal.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Released, endedAt: T0);
+        var unknown = Guid.NewGuid();
+
+        var connection = fx.NewConnection();
+        await fx.Coordinator.OnHeartbeatAsync(connection, new[] { terminal.Id, unknown });
+
         Assert.Single(fx.Relay.ReleaseCalls);
-        Assert.Equal(TunnelLeaseId.Format(unknownId), fx.Relay.ReleaseCalls[0].LeaseId);
+        Assert.Equal(TunnelLeaseId.Format(terminal.Id), fx.Relay.ReleaseCalls[0].LeaseId);
+        Assert.True(connection.TerminalTeardownRelayed.ContainsKey(terminal.Id));
+        Assert.False(connection.TerminalTeardownRelayed.ContainsKey(unknown));
     }
 
     [Fact]

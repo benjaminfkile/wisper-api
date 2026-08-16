@@ -492,7 +492,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Equal(new[] { lease.Id }, outcome.ContainerLost);
         Assert.Empty(outcome.Revived);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
 
         var stored = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
@@ -552,7 +553,8 @@ public class LeaseReconciliationServiceTests
         Assert.False(outcome.HasChanges);
         Assert.Empty(outcome.ContainerLost);
         Assert.Empty(outcome.Revived);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
         Assert.Same(HeartbeatReconcileOutcome.Empty, outcome); // singleton fast-path
 
         // Record must be byte-for-byte identical — no write occurred.
@@ -592,7 +594,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Equal(new[] { lease.Id }, outcome.Revived);
         Assert.Empty(outcome.ContainerLost);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
 
         var revived = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Active, revived!.Status);
@@ -603,9 +606,10 @@ public class LeaseReconciliationServiceTests
     }
 
     [Fact]
-    public async Task ReconcileHeartbeat_orphans_reported_lease_ended_for_other_reason()
+    public async Task ReconcileHeartbeat_terminal_orphans_reported_lease_ended_for_other_reason()
     {
-        // A reported lease that was ended for a non-host_disconnect reason cannot be revived — orphan it.
+        // A reported lease that was ended for a non-host_disconnect reason cannot be revived — flag it
+        // as TerminalOrphaned (the row exists in a terminal state) so the caller may relay lease.release.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
         await fx.Leases.TransitionStateAsync(
@@ -615,7 +619,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Empty(outcome.ContainerLost);
         Assert.Empty(outcome.Revived);
-        Assert.Equal(new[] { lease.Id }, outcome.Orphaned);
+        Assert.Equal(new[] { lease.Id }, outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
 
         // Lease stays ended with original reason — we must not touch purposefully-ended leases.
         var stored = await fx.ReloadAsync(lease.Id);
@@ -624,8 +629,12 @@ public class LeaseReconciliationServiceTests
     }
 
     [Fact]
-    public async Task ReconcileHeartbeat_orphans_unknown_reported_lease_id()
+    public async Task ReconcileHeartbeat_reports_unknown_reported_lease_id_without_flagging_it_terminal()
     {
+        // Task #75: a reported lease id with NO manager row at all is UnknownReported (skip teardown),
+        // NOT TerminalOrphaned. LeaseService.CreateAsync provisions the container over the tunnel BEFORE
+        // inserting the lease row, so a heartbeat landing in that mid-create window would classify the
+        // fresh id as terminal-orphan under the pre-#75 code and tear the container down in-flight.
         var fx = await ReadyAsync();
         var unknownId = Guid.NewGuid();
 
@@ -633,7 +642,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Empty(outcome.ContainerLost);
         Assert.Empty(outcome.Revived);
-        Assert.Equal(new[] { unknownId }, outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Equal(new[] { unknownId }, outcome.UnknownReported);
     }
 
     [Fact]
@@ -660,7 +670,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Equal(new[] { dying.Id }, outcome.ContainerLost);
         Assert.Equal(new[] { revivable.Id }, outcome.Revived);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
 
         Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(dying.Id))!.Status);
         Assert.Equal(LeaseEndReason.ContainerLost, (await fx.ReloadAsync(dying.Id))!.EndReason);
@@ -730,7 +741,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Equal(new[] { lease.Id }, outcome.Revived);
         Assert.Empty(outcome.ContainerLost);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
 
         var resumed = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Active, resumed!.Status);
@@ -759,7 +771,8 @@ public class LeaseReconciliationServiceTests
 
         Assert.Equal(new[] { lease.Id }, outcome.ContainerLost);
         Assert.Empty(outcome.Revived);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
 
         var ended = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, ended!.Status);
@@ -1319,7 +1332,8 @@ public class LeaseReconciliationServiceTests
 
         // Revived via the ended→active revive path with a fresh hold.
         Assert.Equal(new[] { lease.Id }, outcome.Revived);
-        Assert.Empty(outcome.Orphaned);
+        Assert.Empty(outcome.TerminalOrphaned);
+        Assert.Empty(outcome.UnknownReported);
         var revived = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Active, revived!.Status);
         Assert.True(await fx.HoldsCentsForAsync(lease.Id) > 0, "active lease must have a valid hold");
@@ -1466,7 +1480,9 @@ public class LeaseReconciliationServiceTests
         Assert.NotEqual(LeaseStatus.Active, stored!.Status); // never revived unbacked
         Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
         Assert.Empty(outcome.Revived);
-        Assert.Contains(lease.Id, outcome.Orphaned);
+        // The revive-denial path transitions the row to payment_failed and reports it under
+        // TerminalOrphaned (the row exists in a terminal state — safe to relay lease.release).
+        Assert.Contains(lease.Id, outcome.TerminalOrphaned);
     }
 
     [Fact]
