@@ -99,6 +99,19 @@ public class TunnelConnection
     public bool IsDegradedSettled { get; set; }
 
     /// <summary>
+    /// Per-connection dedupe set for orphan teardown relays (task #73): the heartbeat reconciler flags
+    /// a host-reported lease whose manager-side state is terminal-and-not-revivable (ended for any
+    /// reason other than <c>host_disconnect</c>, or unknown to the manager entirely) as orphaned; the
+    /// coordinator best-effort relays a <c>lease.release</c> so the container is torn down immediately
+    /// instead of lingering until wisp's TTL reaper. Membership here means "already tried this
+    /// connection" — subsequent heartbeats that keep reporting the same id skip the relay AND the log
+    /// line, mirroring the transition-edge logging discipline in <see cref="HeartbeatDegradedApply"/>.
+    /// The set is per-connection so a supersede/reconnect naturally resets it and the next connection
+    /// gets one fresh attempt per lease. Used as a set — the byte value is always <c>0</c>.
+    /// </summary>
+    public ConcurrentDictionary<Guid, byte> TerminalTeardownRelayed { get; } = new();
+
+    /// <summary>
     /// Routes inbound control frames this connection does not own (lease/exec responses) to the
     /// relay. Set by the endpoint after construction; when null the default hook just logs.
     /// Wisper owns the id space, so responses are correlated by the <c>rid</c>/<c>leaseId</c>

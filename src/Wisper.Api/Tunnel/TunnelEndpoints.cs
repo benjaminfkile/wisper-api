@@ -127,7 +127,9 @@ public static class TunnelEndpoints
             // fail-safe on its own — a hiccup there never disturbs lease reconciliation or the tunnel.
             HeartbeatRouter = async (conn, heartbeat, hbCt) =>
             {
-                await coordinator.OnHeartbeatAsync(conn.HostId, ParseLiveLeaseIds(heartbeat), hbCt);
+                // Route with the connection, so the coordinator can best-effort tear down orphan
+                // containers over this tunnel (task #73) and dedupe those teardowns per connection.
+                await coordinator.OnHeartbeatAsync(conn, ParseLiveLeaseIds(heartbeat), hbCt);
                 if (heartbeat.Capability is { } cap)
                 {
                     await HeartbeatCapabilityRefresh.ApplyAsync(
