@@ -70,7 +70,7 @@ The host runs two processes:
 
 The agent's job is small and mechanical:
 1. Open the outbound WebSocket to Wisper, authenticate with the host token.
-2. On connect, **advertise capability**: the wisp `GET /images` document (allow-list, default, limits, `os`, the effective `isolation_levels`/`default_isolation`, and the `gpu` block — devices with opaque class strings, per-lease `max_gpus`, `TUNNEL.md` §5) so Wisper knows what this host can offer. (Prices are set in Wisper, not by wisp — see §12.)
+2. On connect, **advertise capability**: the wisp `GET /images` document (allow-list, default, limits, `os`, the effective `isolation_levels`/`default_isolation`, the `gpu` block with opaque device class strings and per-lease `max_gpus`, and the `capacity` block with the `max_contracts` ceiling, `TUNNEL.md` §5) so Wisper knows what this host can offer. (Prices are set in Wisper, not by wisp, see §12.)
 3. Receive tunnel frames and translate them to local wisp API calls (`POST /contracts`, `exec`, shell WS, `DELETE`), streaming results/bytes back up the tunnel with the same stream id.
 4. Send periodic **heartbeat** (current leases, load) and keep the socket alive with **ping/pong** (§6).
 
@@ -93,25 +93,28 @@ One persistent WebSocket per host, carrying **many multiplexed logical streams**
 Every frame is JSON (control) or binary (shell/stream bytes) tagged with a small header:
 
 ```
-{ "t": "<frame type>", "sid": "<stream id>", "cid": "<correlation id>", ... }
+{ "t": "<frame type>", "rid": <request id>, "sid": <stream id>, ... }
 ```
 
-- `sid` (stream id) multiplexes concurrent operations over the one socket (e.g. two shells + a stream on the same lease).
-- `cid` correlates a request with its response.
-- Binary frames (shell keystrokes/output, streamed exec chunks) carry `sid` in a compact prefix so raw PTY bytes aren't JSON-wrapped.
+- `sid` (stream id, uint32) multiplexes concurrent operations over the one socket (e.g. two shells + a stream on the same lease).
+- `rid` (request id, uint32) correlates a request with its response; both are allocated by Wisper and omitted when zero.
+- Binary frames (shell keystrokes/output, streamed exec chunks) carry `sid` in a compact 6-byte prefix so raw PTY bytes aren't JSON-wrapped.
 
-Representative frame types:
+Frame types as shipped (`TUNNEL.md` §5 is authoritative):
 
 | Direction | Type | Meaning |
 |---|---|---|
-| W→H | `lease.create` | boot a contract: `{image, network, isolation, resources (cpus/memory_mb/pids/gpus), ttl_seconds, userdata, env}` |
-| H→W | `lease.ready` / `lease.failed` | contract provisioned (or not); carries the wisp `contract_id` |
-| W→H | `exec` | run a command (sync or `stream:true`) on a lease's stream `sid` |
-| H→W | `exec.chunk` / `exec.exit` | streamed output / exit code for `sid` |
-| W↔H | `shell.open` / `shell.data` / `shell.close` | interactive PTY over `sid` (binary `shell.data`) |
-| W→H | `lease.release` | destroy the contract |
-| H→W | `lease.ended` | contract released/expired locally |
-| H→W | `host.heartbeat` | live leases + load |
+| H→W / W→H | `hello` / `hello.ack` | handshake: capability advert, session id, operational params |
+| W→H | `lease.create` | boot a contract: `{leaseId, image, network, isolation, resources (cpus/memory_mb/pids/gpus), ttl_seconds, userdata, env}` |
+| H→W | `lease.accepted` / `lease.ready` / `lease.failed` | contract created (carries the wisp `contract_id`), then ready (or failed) |
+| W→H | `exec.run` | run a command synchronously; answered by `exec.result` |
+| W→H | `exec.open` | run a command with streamed output on `sid`; answered by `exec.opened`, then binary frames and `exec.exit` |
+| W→H | `shell.open` / `shell.resize` | interactive PTY over `sid` (answered by `shell.opened`; bytes flow as binary frames) |
+| both | `stream.credit` / `stream.close` / `stream.closed` | per-stream flow control and teardown |
+| W→H | `lease.release` | destroy the contract; answered by `lease.released` |
+| H→W | `lease.ended` | contract expired/failed/gone locally |
+| H→W | `host.heartbeat` | live leases, load, optional capability refresh and `status` |
+| both | `error` | typed failure for a request or stream |
 | both | (ws ping/pong) | keepalive + liveness |
 
 The consumer-facing side of each of these is a normal REST/WS call to Wisper; Wisper is a **relay** that maps a consumer request to a tunnel frame on the right host and streams the reply back.
@@ -126,6 +129,19 @@ A tunnel WebSocket is **pinned to one Wisper instance** (the TCP socket lives on
 So Redis is the **routing backplane** that lets any instance drive any host's tunnel. It also holds ephemeral presence (which hosts are online, on which instance) and short-lived lease routing. **Not required until >1 instance runs**, but the manager is built to use it from day one so autoscaling is transparent. (Uses a managed Redis; a dedicated cluster later for prod isolation.)
 
 The **same** hand-rolled `StackExchange.Redis` pub/sub mechanism routes **both** agent tunnels and consumer connections — a consumer WS pinned to instance B and a host tunnel pinned to instance A are bridged through Redis identically. This is exactly the piece SignalR's backplane would have provided; since we need it for the agent side regardless (SignalR can't help there), we build it once and use it everywhere (§6).
+
+**As built.** The backplane is switched on per environment with `Tunnel:Backplane:Enabled` (default off: single instance, in-memory registry/relay, no Redis). With it on, `Tunnel:Backplane:RedisConfiguration` names the StackExchange.Redis connection; blank falls back to an in-process loopback fabric (one process pretending to be several, for tests). `Tunnel:Backplane:InstanceId` is this instance's stable id (random `wisper-<hex>` when blank), `ChannelPrefix` (default `wisper`) prefixes every key/channel, `RpcTimeoutMs` (default 120000) bounds a routed call, and `DegradedTtlSeconds` (default 600) is the TTL on degraded entries. Everything Redis-resident, under the prefix:
+
+| Key / channel | Type | Holds |
+|---|---|---|
+| `{prefix}:presence` | hash `hostId → instanceId` | which instance owns each live tunnel; written on register, cleared on unregister only if still owned (Lua compare-and-clear) |
+| `{prefix}:capability` | hash `hostId → JSON` | the host's live capability snapshot (images, networks, limits, os, `max_gpus`, gpu classes, `max_contracts`); written on register and on every heartbeat that re-advertises, cleared when no instance owns the host |
+| `{prefix}:degraded:{hostId}` | string with TTL | the host's agent reported `degraded`; refreshed by every degraded heartbeat, deleted on recovery or disconnect, expires after `DegradedTtlSeconds` if the owning instance dies |
+| `{prefix}:ticket:{tkt_…}` | string with 30 s TTL | a shell ticket bound to `(user, lease)`, redeemed atomically with `GETDEL` |
+| `{prefix}:rpc:req:{instanceId}` / `{prefix}:rpc:rep:{instanceId}` | pub/sub | routed relay requests to the owning instance and their correlated replies |
+| `{prefix}:stream:{correlationId}:down` / `:up` | pub/sub | a bridged shell/exec byte stream (base64 data, credit, resize, close, exit) between the consumer-facing and tunnel-owning instances |
+
+Lease state, holds, idempotency records and everything else durable live in Postgres, never in Redis. The relay always tries the local registry first; only a host whose tunnel lives elsewhere costs a presence lookup and an RPC hop.
 
 ### Cross-request state rule
 
@@ -181,19 +197,21 @@ GET  /admin/audit                audit log
 
 ## 9. Data model (Postgres)
 
-*(Sketch — `DATA_MODEL.md` and the migrations are authoritative. Notable deltas from this sketch as shipped: `users` has no `kind` column — roles come from Cognito groups/api-key scopes — and the Connect columns are `connect_account_id` + a `connect_status` enum; `usage_records` shipped as **`lease_usage`** with `period_start/period_end/billable_seconds/charge_txn_id` and no Stripe usage-record linkage — charging is internal-ledger, §11; `hosts` also carries `isolation_levels`/`default_isolation` and `gpu_classes`/`gpu_count`; `host_images` also `max_pids`/`min_isolation` plus the sized-offer profile `cpus`/`memory_mb`/`gpus` (task #569, `gpus` renamed from the former `max_gpus` ceiling); `leases` also `isolation` and `gpus`. Money truth lives in the **double-entry ledger** — `ledger_accounts`/`ledger_transactions`/`ledger_entries` — plus `api_keys`, `stripe_events`, `idempotency_keys`, and versioned `platform_policy`, all absent from this sketch.)*
+*(Sketch; `DATA_MODEL.md` and the migrations are authoritative. Notable deltas from this sketch as shipped: `users` has no `kind` column (roles come from Cognito groups/api-key scopes) and the Connect columns are `connect_account_id` + a `connect_status` enum; `usage_records` shipped as **`lease_usage`** with `period_start/period_end/billable_seconds/charge_txn_id` and no Stripe usage-record linkage (charging is internal-ledger, §11); `hosts` also carries `agent_token_prefix`, `isolation_levels`/`default_isolation` and `gpu_classes`/`gpu_count`; `host_images` also `max_pids` plus the sized-offer profile `cpus`/`memory_mb`/`gpus` (task #569, `gpus` renamed from the former `max_gpus` ceiling); the isolation floor `min_isolation` lives on `platform_policy`, not on `host_images`; `leases` also `isolation`, the stamped `cpus`/`memory_mb`/`gpus`, `hold_txn_id`, the metering watermark `last_metered_at`/`billable_seconds`, and `suspended_at`. Money truth lives in the **double-entry ledger** (`ledger_accounts`/`ledger_transactions`/`ledger_entries`) plus `api_keys`, `stripe_events`, `idempotency_keys`, `payouts`, `audit_log`, and versioned `platform_policy`, all absent from this sketch.)*
 
 ```
 users            id, cognito_sub, email, roles-via-groups,
                  stripe_customer_id, connect_account_id, connect_status, status, created_at
 hosts            id, owner_user_id, name, label/region, status(online|offline|suspended),
-                 agent_token_hash, wisp_version, isolation_levels[], default_isolation,
+                 agent_token_hash, agent_token_prefix, isolation_levels[], default_isolation,
                  gpu_classes[], gpu_count, last_seen_at, created_at
 host_images      id, host_id, image_ref, price_cents_per_min, networks[], max_ttl_seconds,
-                 max_cpus, max_memory_mb, max_pids, cpus, memory_mb, gpus, min_isolation, enabled
-leases           id, consumer_user_id, host_id, image_ref, network, resources_json, gpus,
-                 isolation, ttl_seconds, price_cents_per_min, status(pending|active|ended|failed),
-                 wisp_contract_id, created_at, started_at, ended_at, end_reason
+                 max_cpus, max_memory_mb, max_pids, cpus, memory_mb, gpus, enabled
+leases           id, consumer_user_id, host_id, host_image_id, image_ref, network, isolation,
+                 cpus, memory_mb, gpus, ttl_seconds, price_cents_per_min, hold_txn_id,
+                 status(pending|provisioning|active|suspended|ended|failed), end_reason,
+                 wisp_contract_id, created_at, started_at, last_metered_at, billable_seconds,
+                 suspended_at, ended_at
 lease_usage      id, lease_id, period_start/end, billable_seconds, amount_cents,
                  platform_fee_cents, host_payout_cents, charge_txn_id
 ledger_*         accounts / transactions / entries — the double-entry money truth (DATA_MODEL.md §7)
@@ -201,19 +219,19 @@ payouts          id, host_user_id, period, amount_cents, currency, stripe_transf
 audit_log        id, actor_user_id, action, target, meta_json, created_at
 ```
 
-Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory routing), never the consumer. The consumer authenticates to Wisper; Wisper authenticates to the host tunnel. This preserves the billing chokepoint (§2).
+Key rule: **the wisp per-contract token never leaves the host's agent**; Wisper stores only the opaque `wisp_contract_id` and addresses the container by its own `lease_<hex>` id over the tunnel. The consumer authenticates to Wisper; Wisper authenticates to the host tunnel. This preserves the billing chokepoint (§2).
 
 ## 10. Auth & roles
 
-- **Consumers** — Cognito user pool (signup/login), JWT on every consumer call. `stripe_customer_id` created on first lease.
-- **Hosts** — a host account (Cognito) *plus* a per-host **agent token** (opaque, hashed at rest, revocable) that the wisp agent presents on the `WS /agent` handshake (via `?token=` or a `bearer.<token>` subprotocol, mirroring wisp). Token identifies + authorizes the tunnel; rotating it forces the agent to re-auth.
+- **Consumers:** Cognito user pool (signup/login), JWT on every consumer call. `stripe_customer_id` is created on the first top-up (or saved-method setup), not on the first lease.
+- **Hosts:** a host account (Cognito) *plus* a per-host **agent token** (`wht_live_<64-hex>`, SHA-256 hashed at rest, revocable) that the wisp agent presents as an `Authorization: Bearer` header on the `WS /agent` handshake (`TUNNEL.md` §3; there is no `?token=` query or subprotocol form). Token identifies + authorizes the tunnel; rotating it forces the agent to re-auth.
 - **Admin** — Cognito `admin` group; gates `/admin/*`. Ben is the first admin.
 - **Roles are additive.** A single account can hold `consumer` and `host` at once (and `admin` too); there are not separate consumer/host accounts. A consumer "becomes a host" by completing host onboarding, which just adds the `host` group + capabilities to the same user. Roles map to Cognito **groups** (`consumer`, `host`, `admin`); the API authorizes per-group. Reuses the dev/prod Cognito pool pattern already in the fleet. Because the `host` group lands on Cognito but not on the token already in the caller's hand, the API also derives `host` from **DB host-ownership**: a JWT caller who owns ≥1 host is treated as holding `host` by the host gate (and by `GET /v1/me`), so becoming a host is effective on the current token with no re-login (`API.md` §2, §184). Additive and JWT-only — an API key authorizes purely by its explicit scopes, never by ownership.
 - **Machine API keys** — a consumer may also drive `/v1` with a long-lived `wck_live_…` key (hashed at rest, revocable, shown once) that authenticates as its owner but carries its **own scopes** rather than Cognito groups; a dev config-map (`Auth:ApiKeys`, empty/fail-closed in prod) mirrors the host-token bootstrap (`API.md` §2).
 
 ## 11. Metering & billing
 
-- **The meter starts** when Wisper receives `lease.ready` (Wisper stamps the time) and accrues only over intervals bracketed by **healthy tunnel liveness** — so a disconnect **pauses** billing rather than billing blind (`TUNNEL.md` §8). It **stops** at the first of: consumer `DELETE`, wisp TTL expiry (`lease.ended`), or a tunnel loss that **exceeds the grace window** (finalized at the last healthy time). Billing is on **wall-clock lease-minutes**, rounded per the pricing rule (per-minute, 1-minute minimum).
+- **The meter starts** when Wisper receives `lease.ready` (Wisper stamps the time) and accrues only over intervals bracketed by **healthy tunnel liveness**, so a disconnect **pauses** billing rather than billing blind (`TUNNEL.md` §8). It **stops** at the first of: consumer `DELETE`, wisp TTL expiry (`lease.ended`), the lease's own `started_at + ttl_seconds` (accrual is capped there even if the host keeps reporting the container), a container reported gone on a heartbeat, an admin force-end, or a tunnel loss that **exceeds the grace window** (finalized at the last healthy time). Billing is on **healthy lease-seconds on Wisper's clock**: prices are quoted per minute, the hold is sized per whole minute (`⌈ttl/60⌉ × price`), and the charge is `⌊billable_seconds × price / 60⌋` integer cents accrued per flush (no 1-minute minimum; a sub-cent interval rolls into the next tick).
 - **Wisper is the only clock that counts.** Host-reported times are advisory; disputes resolve in Wisper's favor. This is why the relay must be mandatory.
 - **Charging (DECIDED: prepaid wallet, internal ledger — not Stripe metered billing):** the consumer pre-funds a wallet (Stripe top-up); `POST /leases` places a `⌈ttl/60⌉ × price` **hold** out of the wallet (`402` if it can't cover it — no compute is provisioned that can't be paid for), each metered tick posts a `lease_charge` out of the hold, and the unused remainder releases at lease end. Stripe never touches the per-lease path; the double-entry ledger is the money truth (`PAYMENTS.md` §4, `DATA_MODEL.md` §7-8).
 - **Paying hosts (Stripe Connect):** each billed minute splits into `platform_fee_cents` (Wisper's cut) + `host_payout_cents`; host payouts are **Stripe Connect transfers** to the host's connected account on a payout schedule. Connect also handles host KYC/tax.
@@ -222,8 +240,8 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 ## 12. Pricing model
 
 - **Each host sets its own price** — `host_images.price_cents_per_min` per image (a host may price `wisp-base` differently from a warm `wisp-node` image). Hosts edit pricing on the admin/host site; changes apply to *new* leases only (a running lease keeps its `leases.price_cents_per_min` snapshot).
-- **Platform fee** is admin-configured (a % or flat per-minute cut), taken from each billed minute before host payout.
-- Consumers always see the effective price (host price shown; platform fee folded into the displayed rate) **before** confirming a lease.
+- **Platform fee** is admin-configured as `platform_policy.fee_bps` (a percentage in basis points; there is no flat per-minute variant), taken out of each `lease_charge` before host payout: the consumer pays the host's quoted `price_cents_per_min`, and the fee is the platform's share of that.
+- Consumers always see the price they will pay (the host's `price_cents_per_min`, which already includes the platform's share) **before** confirming a lease; the fee is never added on top.
 - Wisp's `GET /images` provides the *allow-list + limits*; Wisper overlays the *price* (wisp never knows about money — principle §1).
 - **GPUs are priced into the offer, not metered separately** (task #522, sized offers in #569): an offer's `host_images.gpus` is the exact whole-device count a lease against it provisions (`resources.gpus`, exclusive devices, over-ask rejected rather than clamped), renamed from the former `max_gpus` ceiling, and a host prices a GPU-bearing offer accordingly — there is no per-resource rate table. Device classes are opaque strings surfaced for catalog filtering (`min_gpus`/`gpu_class`); wisp allocates and enforces.
 
@@ -233,9 +251,9 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 
 **Consumer lease lifecycle:**
 1. Browse `/hosts`, pick host H + image + ttl; see the per-minute price.
-2. `POST /leases` — Wisper checks payment/balance, creates a `pending` lease, sends `lease.create` down H's tunnel.
-3. Agent calls local wisp `POST /contracts`; wisp pulls the image if needed and boots it; agent returns `lease.ready` with `contract_id`.
-4. Wisper marks the lease `active`, **starts the meter**, returns lease info to the consumer.
+2. `POST /leases`: Wisper checks capacity, degraded state and the wallet balance, then sends `lease.create` down H's tunnel (nothing is persisted yet).
+3. Agent calls local wisp `POST /contracts`; wisp pulls the image if needed and boots it; agent returns `lease.accepted` with `contract_id`, then `lease.ready`.
+4. Wisper inserts the lease as `active`, **starts the meter**, posts the wallet hold, and returns the `201` to the consumer (`API.md` §5).
 5. Consumer drives it: `WS /leases/:id/shell` (xterm) and `POST /exec` relay through Wisper → tunnel → wisp → container; output streams back.
 6. Consumer `DELETE`s (or TTL expires, or host drops) → Wisper **stops the meter**, sends `lease.release`, finalizes `lease_usage`, and posts the closing ledger transactions (final `lease_charge` + `hold_release`, §11). Container is destroyed by wisp; nothing persists.
 
@@ -243,7 +261,8 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 
 ## 14. Failure modes & edge cases
 
-- **Tunnel drops mid-lease** → leases go `suspended` and **billing pauses**; a **grace window** (default 90s) lets the agent reconnect and **resume** the same lease (billing restarts), or, if it expires, the lease ends at last-healthy time (`TUNNEL.md` §8). Wisp's local reaper destroys the container on TTL regardless, so no orphaned paid compute. Reconciliation on reconnect is an idempotent set-diff.
+- **Tunnel drops mid-lease** → leases go `suspended` and **billing pauses**; a **grace window** (default 90s) lets the agent reconnect and **resume** the same lease (billing restarts), or, if it expires, the lease ends at last-healthy time (`TUNNEL.md` §8). A lease whose container survived a longer outage is **revived** on the next heartbeat (re-held first). Wisp's local reaper destroys the container on TTL regardless, so no orphaned paid compute. Reconciliation on reconnect and on every heartbeat is an idempotent set-diff, and a durable `suspended_at` sweep makes the grace window survive a manager restart.
+- **Manager restarts mid-grace** → the in-process grace timer is lost, but the `suspended_at` stamp plus the 30 s sweep on every instance ends the stranded leases (`host_disconnect`) once grace plus a safety margin has elapsed, releasing their holds and capacity (`TUNNEL.md` §8).
 - **Agent reconnects to a different instance** → Redis presence updated; in-flight consumer streams for that lease are torn down (consumer must reopen). Acceptable for v0.
 - **Consumer disconnects but lease runs** → lease keeps running and **billing continues** until TTL/release (it's a held lease, like wisp). Surface running cost prominently so consumers don't leak money.
 - **Host lies about lifecycle** → irrelevant to billing (Wisper's clock); worst case the host wastes its own resources.
@@ -262,7 +281,7 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 
 ## 16. Dev / prod & deployment
 
-- Two manager deployments, one per environment (**prod** and **dev**), each a container behind the API gateway / load balancer at its own host.
+- Two manager deployments, one per environment (**prod** and **dev**), each a container behind the API gateway / load balancer at its own host. As of now only the **dev** deployment exists: `.github/workflows/deploy.yaml` runs the tests, builds a multi-arch image tagged with the short git SHA (plus a branch tag), and deploys it through the gateway's management API on pushes to the `dev` branch only (pushes that touch only `*.md` files do not deploy); `main` is wired but not enabled until a prod service exists.
 - Separate **Cognito pools** (`wisper-prod`, `wisper-dev`) and separate **Postgres databases** per environment (dedicated instances later).
 - **Vercel** hosts two **Next.js (App Router) + MUI** apps, each with dev/prod (no Vite; client-heavy Next — a "pure web interface"):
   1. **Unified app** — one site for **consumers and hosts**. Roles are additive (§10): a signed-in user sees consumer features (browse, lease, drive, billing) and, once they onboard as a host, host features (register a wisp host, set image pricing, view earnings) — same account, both at once.
@@ -274,17 +293,22 @@ Key rule: **Wisper holds the wisp per-contract token** (in `leases` / in-memory 
 
 The manager is deliberately **cloud-agnostic** — it can run on any platform that can inject environment variables, and "supporting a cloud" is a deploy definition, not code:
 
-- **Pure env-var configuration (12-factor).** Stock ASP.NET Core config: `appsettings.json` → `appsettings.{Environment}.json` → environment variables, last wins. The checked-in `appsettings.json` contains **no secrets** (the connection string is an empty placeholder). Everything sensitive arrives at process start as env vars: `ConnectionStrings__Wisper`, the `Stripe` section (API key, webhook signing secret), `Auth__Issuer`, `Auth__UserPoolId` / `Auth__Region` (the Cognito pool the runtime adds the `host` group to on first host action, `API.md` §184 — the pool must have the `consumer`/`host`/`admin` groups and the runtime needs `cognito-idp:AdminAddUserToGroup`; unset falls back to a no-op group write), `Tunnel__HostTokens` / `Auth__ApiKeys` bootstrap maps, the Redis backplane connection.
+- **Pure env-var configuration (12-factor).** Stock ASP.NET Core config: `appsettings.json` → `appsettings.{Environment}.json` → environment variables, last wins. The checked-in `appsettings.json` contains **no secrets** (the connection string is an empty placeholder). Everything sensitive arrives at process start as env vars. The full set of keys the code binds (env form uses `__` for `:`):
+  - `ConnectionStrings:Wisper` (unset = in-memory mode, below); `Persistence:RunMigrationsAtStartup` (default true).
+  - `Auth:Issuer` (fail-closed when unset), `Auth:JwksUri` (default `{issuer}/.well-known/jwks.json`), `Auth:Audience` (list; empty = audience not validated), `Auth:ClockSkewSeconds` (60), `Auth:JwksCacheMinutes` (60), `Auth:UserPoolId` + `Auth:Region` (the Cognito pool the runtime adds the `host` group to on first host action, `API.md` §2; the pool must have the `consumer`/`host`/`admin` groups and the runtime needs `cognito-idp:AdminAddUserToGroup`; either unset falls back to a no-op group write), `Auth:ApiKeys` (dev bootstrap map, `API.md` §2).
+  - `Stripe:SecretKey`, `Stripe:WebhookSigningSecret`, `Stripe:WebhookToleranceSeconds` (300), `Stripe:ConnectRefreshUrl`, `Stripe:ConnectReturnUrl` (both required for Connect onboarding).
+  - `Tunnel:ManagerWebSocketUrl` (the `manager_ws` handed to hosts, default `wss://localhost/agent`), `Tunnel:PingIntervalMs` (30000), `Tunnel:MaxFrameBytes` (32768), `Tunnel:InitialWindowBytes` (262144), `Tunnel:GraceSeconds` (90), `Tunnel:LivenessTimeoutMs` (0 = 2.5 × ping), `Tunnel:RelayRequestTimeoutMs` (120000), `Tunnel:HostReadinessTimeoutMs` (2000), `Tunnel:EnableDevEndpoints`, `Tunnel:HostTokens` (dev bootstrap map, Development only), and the `Tunnel:Backplane:*` keys from §7.
+  - `Metering:Enabled` (true) and `Metering:TickSeconds` (60); `Payouts:Enabled` (true), `Payouts:PayoutMinCents` (100), `Payouts:IntervalHours` (24).
 - **No cloud SDKs in the app.** There is no Secrets Manager / Key Vault / Parameter Store client and none is planned *in the app*. The platform's injector does that work: on AWS, an ECS task definition (or equivalent) maps `secrets` → `valueFrom` Secrets Manager/SSM entries to these env var names; on Azure, Container Apps / App Service maps Key Vault references to the same names. Same image, same names, different injector — swapping clouds changes zero application code. Those deploy definitions name real infrastructure and therefore live **outside this public repo**.
 - **Identity is standard OIDC, one claim shy of provider-neutral.** Token validation is issuer-configured (`Auth:Issuer`, JWKS from `Auth:JwksUri`, defaulting to `{issuer}/.well-known/jwks.json`, fail-closed when unset) — any OIDC IdP (Cognito, Entra ID, Keycloak, Auth0) passes it unchanged. The one Cognito-specific coupling is **role mapping**, which reads the `cognito:groups` claim; running on a different IdP means making the groups-claim name (and value mapping) configurable alongside the issuer. The **API-key auth path is fully IdP-free** already. Host agents and Stripe are provider-independent by construction (outbound WebSockets; plain HTTPS).
 - **Portable dependencies.** Postgres and Redis are commodity managed services on every cloud; the Redis backplane is only required multi-instance (`Tunnel:Backplane` is the per-environment deploy switch — §7 describes the mechanism, this flag turns it on).
-- **Deploy-time hazards to hold the line on:** `Tunnel:EnableDevEndpoints` maps **unauthenticated** `/dev/leases` surfaces and is on by default only in Development — production config must never set it. Health: `GET /healthz` and `GET /api/health` (same handler, gateway convention) return 503 when unhealthy — point the platform's health checks there.
+- **Deploy-time hazards to hold the line on:** `Tunnel:EnableDevEndpoints` maps the **unauthenticated** `/dev/leases…` surfaces. It is set only in `appsettings.Development.json`, and the mapping is additionally gated in code on the hosting environment being `Development`, so a deployed (Production) container never exposes them even if the flag leaks into a secret; likewise `Tunnel:HostTokens` is ignored outside Development. Health: `GET /healthz` and `GET /api/health` (same handler, gateway convention) return 503 when unhealthy; point the platform's health checks there.
 
 ### In-memory persistence mode (DB-less dev boot)
 
 - **Trigger:** when `ConnectionStrings:Wisper` is unset/empty, the manager boots in **in-memory persistence mode** — it registers the in-memory doubles for *every* repository (users, hosts, host images, api keys, leases, lease usage, ledger, stripe events, payouts, idempotency, platform policy, audit) instead of the Postgres repositories. With a connection string present, the Postgres path is used and production behaviour is **unchanged**.
-- **Loud & unambiguous:** exactly one startup line is logged — `persistence: in-memory (no connection string) — state resets on restart` (at **warning** level, so an accidental production boot with no connection string is unmissable) — and the health report's `database` entry reads `in-memory` rather than pretending a database is healthy. Migrations are a no-op.
-- **What works:** the `/v1` request path runs in-process with no Postgres — with two exceptions: the **metering flush loop and the payout runner do not start** in this mode (both gate on a configured database), so leases run and hold but usage/ledger charges never accrue. A single config API key (`Auth:ApiKeys`) with `consumer`+`host` scopes drives the full self-hosted flow end-to-end: `POST /v1/hosts` (issues a real `wht_live_` agent token the DB-backed validator resolves against the in-memory store) → `PUT /v1/hosts/:id/images` (0-cent pricing allowed for self-hosted operators) → `GET /v1/catalog` (once the agent tunnel is live) → `POST /v1/leases` (with `env`, placing a 0-cent hold). The config key grant carries an optional `Email` so it can bootstrap the operator's account (`users.email` is NOT NULL) with no Cognito.
+- **Loud & unambiguous:** exactly one startup warning line is logged (`persistence: in-memory (no connection string) ... state resets on restart`, so an accidental production boot with no connection string is unmissable), and the health report's `database` entry reads `in-memory` rather than pretending a database is healthy. Migrations are a no-op.
+- **What works:** the `/v1` request path runs in-process with no Postgres, with three exceptions: the **metering flush loop, the durable suspension sweep and the payout runner do not start** in this mode (all gate on a configured database), so leases run and hold but usage/ledger charges never accrue and a stranded suspension is only resolved by the in-process grace timer or a heartbeat. A config API key (`Auth:ApiKeys`) with `consumer`+`host` scopes drives the self-hosted flow: `POST /v1/hosts` (issues a real `wht_live_` agent token the DB-backed validator resolves against the in-memory store) → `PUT /v1/hosts/:id/images` (0-cent pricing allowed for self-hosted operators) → `GET /v1/catalog` (once the agent tunnel is live) → `POST /v1/leases` (with `env`, placing no hold at 0 cents). The config key's `UserId` must match the `cognito_sub` of an **existing, active** `users` row or the key is rejected `401` (`API.md` §2); the optional `Email` only seeds the email claim. Because the in-memory store starts empty and no unauthenticated path creates a user, this row has to be created out of band (the integration tests seed it directly through the repository).
 - **What resets:** *all state* lives in process memory and is gone on every restart — hosts, leases, wallet/ledger balances, everything.
 - **Never for production.** It exists for local dev and self-hosted single-operator experimentation only; there is no durability, no cross-instance sharing, and no backups.
 
@@ -292,7 +316,7 @@ The manager is deliberately **cloud-agnostic** — it can run on any platform th
 
 - ~~**Marketplace now vs first-party-first**~~ **DECIDED: marketplace now.** Build the *full* two-sided marketplace up front — third-party host onboarding, **Stripe Connect payouts, and KYC** are all in scope from the start, not deferred. Rollout is a **soft launch**: everything is built and hardened in the **dev** environment first and only *advertised publicly* once the kinks are worked out. Scope ≠ launch timing — the code is complete; the marketing waits.
 - ~~**Prepaid wallet vs postpaid metered billing?**~~ **DECIDED & SHIPPED: prepaid wallet** — `⌈ttl/60⌉·price` hold at `POST /v1/leases`, per-tick ledger charge, remainder released at end (§11, `PAYMENTS.md` §4). Auto-recharge remains the deferred layer-on.
-- **Billing granularity/minimum:** per-minute with a 1-minute minimum, or per-second? Rounding rule affects host payouts.
+- ~~**Billing granularity/minimum**~~ **DECIDED AS BUILT:** per-minute price, per-second accrual, integer-floor cents per flush (`⌊seconds × price / 60⌋`, no 1-minute minimum), with the hold sized per whole minute (§11, `DATA_MODEL.md` §14, §16). Host payouts follow the same floor (fee floored so `fee + host = amount`).
 - ~~**Manager language**~~ **DECIDED:** manager is **C# / ASP.NET Core (Kestrel)** — the fleet already runs .NET (`3gixhub`), and its multi-core async concurrency + throughput suit a connection-heavy byte-relay better than Node's single-threaded loop. Transport is **raw WebSockets end-to-end (no SignalR)** with a **`StackExchange.Redis`** backplane (§6, §7). The **agent** is Go (lives with wisp).
 - ~~**Agent packaging**~~ **DECIDED:** a **separate `wisp-agent` Go binary** in its own repo (keeps wisp marketplace-blind; the agent is just another wisp client).
 - **Reconnect stream continuity:** tear down consumer streams on host reconnect (v0) vs seamless resume (later).

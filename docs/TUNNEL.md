@@ -54,15 +54,16 @@ agent                                   Wisper
   │   gpu?}}                                   │
   │─────────────────────────────────────────▶│  register host, mark online,
   │◀─────────────────────────────────────────│  {t:"hello.ack", proto, sessionId,
-  │                                           │   pingIntervalMs, maxFrameBytes}
+  │                                           │   pingIntervalMs, maxFrameBytes,
+  │                                           │   initialWindowBytes, graceSeconds}
   │   ══ steady state: leases, streams, ══    │
   │   ══ heartbeat (15s), ping/pong (30s) ══  │
 ```
 
-1. **Dial + auth.** The agent opens `wss://<wisper-host>/agent` and sends the **host agent token** as an `Authorization: Bearer` header (a native WS client can set headers — unlike a browser). Bad/missing/revoked token → Wisper closes with a **4401** close code before any frames.
-2. **`hello` / `hello.ack`.** The agent advertises its capability — the wisp `GET /images` document (`images[]`, `default`, `limits`, `os`, the effective `isolation_levels` / `default_isolation`, and the optional `gpu` block — task #521) plus versions. Wisper replies with the negotiated protocol version, a `sessionId`, and operational params (`pingIntervalMs`, `maxFrameBytes`). Prices live in Wisper, never here (`DESIGN.md` §1, §12).
-3. **Steady state.** Multiplexed lease ops + byte streams + `host.heartbeat` + ping/pong.
-3a. **Presence.** Once registered and `hello.ack` is sent, Wisper flips the host `online` **if** it clears the earning gate — the owner is Connect-enabled, or every enabled `host_image` is priced at `0` cents/min (`PAYMENTS.md` §5). A Connect-incomplete host with a priced image, or an admin-suspended host, stays `offline` (the agent is still connected and may test). This is the wiring that makes a live agent's host appear in the consumer catalog.
+1. **Dial + auth.** The agent opens `wss://<wisper-host>/agent` and sends the **host agent token** as an `Authorization: Bearer` header (a native WS client can set headers, unlike a browser). The socket is accepted first and the token checked after the upgrade: bad/missing/revoked token → Wisper closes with a **4401** close code before any frames. The token is resolved by a constant-time SHA-256 hashed lookup against `hosts.agent_token_hash` (Postgres, or the in-memory store on a DB-less boot); a token the store does not know falls through to the `Tunnel:HostTokens` config allow-list (raw token → host id), which is honoured **only in the `Development` environment** and fails closed everywhere else. A non-WebSocket request to `/agent` is a plain `400`.
+2. **`hello` / `hello.ack`.** The agent advertises its capability (the wisp `GET /images` document: `images[]`, `default`, `limits`, `os`, the effective `isolation_levels` / `default_isolation`, and the optional `gpu` and `capacity` blocks, tasks #521/#571) plus versions. The first frame must be a text `hello` of at most 64 KiB, else **4409**. Wisper replies with the protocol version, a `sessionId` (`sess_<hex>`), and operational params (`pingIntervalMs`, `maxFrameBytes`, `initialWindowBytes`, `graceSeconds`). Prices live in Wisper, never here (`DESIGN.md` §1, §12). Registration supersedes any prior tunnel for the same host (§16); a reconnect within grace also cancels the pending grace timer (§8). Note that `agentVersion`/`wispVersion` and the top-level `capacity` are read but **not persisted** to the `hosts` row today (`DATA_MODEL.md` §4).
+3. **Steady state.** Multiplexed lease ops + byte streams + `host.heartbeat` + ping/pong. A relay call that arrives while a freshly connected agent is still completing this handshake waits up to `Tunnel:HostReadinessTimeoutMs` (default 2000 ms) for readiness before failing `host_offline`.
+3a. **Presence.** Once registered and `hello.ack` is sent, Wisper persists the advertised `isolation_levels`/`default_isolation` and (when a `gpu` block is present) `gpu_classes`/`gpu_count` regardless of the gate, then flips the host `online` **if** it clears the earning gate: the owner is Connect-enabled, or every enabled `host_image` is priced at `0` cents/min (`PAYMENTS.md` §5). A Connect-incomplete host with a priced image, or an admin-suspended host, stays `offline` (the agent is still connected and may test). `hosts.last_seen_at` is stamped at this flip (and at the offline flip, §8), not on every heartbeat. This is the wiring that makes a live agent's host appear in the consumer catalog.
 4. **Close.** Graceful (WebSocket close frame with a code) or dead (missed pongs → §7). On a durable close Wisper marks the host `offline` and applies the disconnect policy (§8). A momentary blip resolved by a reconnect within grace, or a supersede (a new tunnel replacing the old for the same host), keeps the host `online` throughout.
 
 ### Close codes
@@ -78,7 +79,7 @@ agent                                   Wisper
 
 ## 4. Protocol versioning
 
-`hello.proto` is an integer (starts at `1`). Wisper answers with the highest version it and the agent both support in `hello.ack.proto`; if there is no overlap it closes **4409**. New frame types are additive; a receiver **ignores unknown control `t` values** — today they are silently dropped with a debug log (no `error{code:"unsupported"}` reply is implemented), and malformed control JSON is likewise dropped with a warning. This lets agent and manager roll independently.
+`hello.proto` is an integer (starts at `1`). Today Wisper speaks exactly version `1`: a `hello.proto` that is not `1` is closed **4409** (no negotiation is implemented yet; `hello.ack.proto` always echoes `1`). The same `1` is the `ver` byte of every binary frame. New frame types are additive; a receiver **ignores unknown control `t` values**: today they are silently dropped with a debug log (no `error{code:"unsupported"}` reply is implemented), and malformed control JSON is likewise dropped with a warning. This lets agent and manager roll independently.
 
 ## 5. Control frame catalog
 
@@ -101,10 +102,10 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 | W→A | `lease.create` | `rid, leaseId, image, network, isolation, resources{cpus,memory_mb,pids,gpus}, ttl_seconds, userdata?, env?` | Wisper has already authorized + billing-gated. `isolation` is the resolved ordered level (`shared`<`sandboxed`<`vm`, defaults `shared`); the agent forwards it to wisp, which re-validates as the real security boundary. `resources.gpus` (task #522) is the count of whole exclusive GPUs, forwarded verbatim — wisp allocates and enforces. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
 | A→W | `lease.accepted` | `rid, leaseId, wispContractId, status:"provisioning"` | agent called wisp `POST /contracts` |
 | A→W | `lease.ready` | `leaseId` | wisp reached `ready`; **Wisper starts the meter here** |
-| A→W | `lease.failed` | `rid, leaseId, error` | provisioning/pull failed; nothing billed |
-| W→A | `lease.release` | `rid, leaseId` | consumer released / TTL / admin |
+| A→W | `lease.failed` | `rid, leaseId, code?, error` | provisioning/pull failed; nothing billed. Optional `code` is mapped like an `error` frame's code (§12): `at_capacity` surfaces as `409 at_capacity`, anything else (or none) as `502 lease_failed`. Fails whichever awaiter is outstanding (the `rid` one before `lease.accepted`, the `leaseId` one after) |
+| W→A | `lease.release` | `rid, leaseId` | consumer released / admin force-end / failed-create teardown / orphan teardown (§8) |
 | A→W | `lease.released` | `rid, leaseId` | agent called wisp `DELETE`; container gone |
-| A→W | `lease.ended` | `leaseId, reason:"expired"\|"failed"\|"gone"` | **unsolicited** — wisp's local reaper/TTL ended it |
+| A→W | `lease.ended` | `leaseId, reason:"expired"\|"failed"\|"gone"` | **unsolicited**: wisp's local reaper/TTL ended it. Wisper ends the lease on receipt (§8): `expired` maps to `end_reason = expired`, any other value to `container_lost`; an already-terminal lease is a no-op. A create still awaiting `lease.ready` for that id fails `502 lease_failed` |
 
 ### Exec (sync — no byte stream)
 
@@ -157,9 +158,16 @@ Tunnel loss must be handled without either **billing a consumer through a blind 
 
 **On grace expiry (no reconnect):** end all that host's suspended leases (`end_reason = host_disconnect`), finalize billing at last-healthy time, mark the host `offline` (so the catalog drops it), stamping last-seen at last-healthy. wisp's TTL guarantees the abandoned containers are reaped regardless. A tunnel that closes with **no leases to protect** has nothing to wait for, so the host is marked `offline` immediately rather than arming an empty grace window. Marking `offline` never clears an admin **suspension** — a suspended host stays suspended.
 
-**On reconnect after grace expiry (post-grace path):** an operator restart or a prolonged outage may push the reconnect past the grace window, so the manager has already ended the leases as `host_disconnect`. However, the **containers are still running on the host** (wispd/agent stops, not the containers). If the agent's first `host.heartbeat` after reconnect reports live contracts that map to those `host_disconnect`-ended leases, Wisper **revives** them — back to `active`, meter watermark reset to the reconnect instant so the offline gap is never billed, same lease id. This prevents a permanent desync where the catalog advertises free capacity while the host is actually full, which would cause a new create to be green-lit by the manager guard but rejected by wisp with `at_capacity`. Contracts the agent reports that have no revivable lease (not found, ended for another reason, or TTL already expired) are orphaned; wisp's TTL reaper reclaims those containers regardless.
+**On reconnect after grace expiry (post-grace path):** an operator restart or a prolonged outage may push the reconnect past the grace window, so the manager has already ended the leases as `host_disconnect`. However, the **containers are still running on the host** (wispd/agent stops, not the containers). If the agent's first `host.heartbeat` after reconnect reports live contracts that map to those `host_disconnect`-ended leases, Wisper **revives** them: back to `active`, `end_reason`/`ended_at` cleared, meter watermark reset to the reconnect instant so the offline gap is never billed, same lease id. A paid lease is re-held for its remaining time first (`PAYMENTS.md` §4); if the wallet cannot cover the revival hold the lease is ended `payment_failed` instead. This prevents a permanent desync where the catalog advertises free capacity while the host is actually full, which would cause a new create to be green-lit by the manager guard but rejected by wisp with `at_capacity`. Contracts the agent reports that have no revivable lease (not found, ended for another reason, or TTL already expired) are orphaned; wisp's TTL reaper reclaims those containers regardless.
 
-Reconciliation is an idempotent set-diff run on every reconnect, so repeated flaps converge correctly.
+**Durable grace (restart-safe).** The in-process grace timer lives only in memory, so a manager restart, crash or scale-in with a host inside grace would strand its leases in `suspended` forever. Two backstops close that gap:
+- `leases.suspended_at` is stamped (wall-clock) on every suspend and cleared on resume/revive/end (`DATA_MODEL.md` §5). A **suspension sweep** runs on every instance every 30 s (only when a database is configured and `Metering:Enabled`, the same gates as the meter) and ends, as `host_disconnect` finalized at `suspended_at`, every lease still `suspended` for longer than `graceSeconds` + a 30 s safety margin whose host has no armed in-process timer on that instance. Every `suspended → ended` transition is a CAS on `status = 'suspended'`, so two instances (or a sweep racing a late timer or a heartbeat) converge on exactly one end and one hold release.
+- **Continuous heartbeat reconciliation.** Every `host.heartbeat` that is not the first beat inside a grace window is set-diffed against the manager's `active + suspended` set for the host: an `active` lease the host no longer reports is ended `container_lost` (billing finalized at the beat, TTL-capped) and its hold released; a `suspended` lease (a stranded post-restart row) that the host reports is resumed, and one it no longer reports is ended `container_lost` at its `suspended_at`; a reported id whose lease was ended `host_disconnect` is revived (same rules as above); a reported id whose lease is terminal for any other reason is a **terminal orphan** and Wisper best-effort relays a `lease.release` for it, once per connection (so a stable orphan does not spam relays or logs); a reported id with **no manager row at all** is left alone, because a create inserts the row only after `lease.ready` and a beat can land in that window (wisp's TTL reaper is the backstop). The steady-state case (reported set equals the active set, nothing suspended) does zero writes.
+- **Resume vs revive.** A resume (`suspended → active`) keeps the existing hold; every resume is CAS-guarded on `suspended`, and if the sweep won the race in between, the lease is instead revived through the ended→active path with a fresh hold, so an `active` paid lease always has a hold behind it.
+
+**Other end drivers.** A consumer `DELETE` (`released`), an unsolicited `lease.ended` (`expired`/`container_lost`), and an admin force-end (`admin`, `API.md` §8) all take the same three steps: finalize billing (TTL- and last-healthy-capped), CAS transition to `ended` on the status that was read, release the hold. A concurrent driver that loses the CAS does nothing further, so `end_reason` reflects whichever cause won.
+
+Reconciliation is an idempotent set-diff run on every reconnect and every heartbeat, so repeated flaps converge correctly.
 
 ## 9. Flow control & backpressure
 
@@ -168,7 +176,7 @@ Many streams share one socket, so a single fast producer (a container spewing st
 **Layer 1 — per-stream credit/window (application flow control).** Every byte stream (`sid`) has an independent send window, exactly as HTTP/2 and yamux/smux do:
 - On open the receiver grants an initial window (`initialWindowBytes`, default 256 KiB, announced in `hello.ack`).
 - A sender may have at most `window` unacknowledged bytes in flight on a given `sid`; when the window hits 0 it **stops sending on that sid** — and, being a bridge, propagates that stall inward (a shell stops reading the PTY; an exec stops reading the wisp SSE stream), which backpressures the container itself.
-- As the receiver drains bytes downstream (writes them to the consumer's WebSocket, or to container stdin), it replenishes with a `stream.credit{sid, bytes}` control frame.
+- As the receiver drains bytes downstream (writes them to the consumer's WebSocket, or to container stdin), it replenishes with a `stream.credit{sid, bytes}` control frame. Wisper batches its credits: it emits one `stream.credit` once at least half the initial window (128 KiB by default) has been drained since the last grant.
 - This bounds per-stream memory to one window and guarantees no single `sid` can starve the shared socket — independent of, and finer-grained than, TCP.
 
 **Layer 2 — TCP backpressure (transport safety net).** The socket is still self-throttling underneath: if a peer stops reading, the other's writes block, propagating to the container. Layer 1 makes throttling *fair across streams*; Layer 2 is the floor that protects the process even if credit accounting is momentarily behind.
@@ -193,19 +201,21 @@ Because the agent only speaks wisp's public API, **wisp needs no changes** for t
 
 ## 11. Consumer API ⇄ tunnel mapping
 
-The consumer never touches the tunnel; Wisper relays (routing across instances via the Redis backplane, `DESIGN.md` §7; cross-request state rule: `DESIGN.md` §7 — cross-request state rule):
+The consumer never touches the tunnel; Wisper relays (routing across instances via the Redis backplane, `DESIGN.md` §7, which also lists the Redis keys and channels; cross-request state rule: `DESIGN.md` §7):
 
 | Consumer call (Wisper) | Tunnel |
 |---|---|
-| `POST /leases` (after auth + wallet gate) | `lease.create` → wait `lease.ready` |
+| `POST /leases` (after auth + admission + wallet gate) | `lease.create` → wait `lease.accepted` then `lease.ready` |
 | `POST /leases/:id/exec` | `exec.run` → `exec.result` |
 | `POST /leases/:id/exec?stream=1` (SSE) | `exec.open` → stream binary frames back as SSE |
 | `WS /leases/:id/shell` (xterm) | `shell.open` → bridge the consumer WS ⇄ `sid` binary frames |
-| `DELETE /leases/:id` | `lease.release` |
+| `DELETE /leases/:id` | `lease.release` → wait `lease.released` (a host with no live tunnel is treated as already released; the lease is ended locally) |
+| `POST /v1/admin/leases/:id/end` | best-effort `lease.release` after the ledger-side end |
+| failed create (hold could not post) | `lease.release` teardown of the just-provisioned contract |
 
 ## 12. Errors & timeouts
 
-- Every `rid` request has a Wisper-side **deadline** (e.g. `lease.create` 120s to cover image pull, `exec.run` per-command). On timeout Wisper fails the consumer call and may send `stream.close`/`lease.release` to clean up the host.
+- Every `rid` request has one Wisper-side **deadline**, `Tunnel:RelayRequestTimeoutMs` (default 120 s, sized to cover an image pull), applied to `lease.create` (both the `lease.accepted` and the `lease.ready` waits), `exec.run`, `lease.release`, `shell.open` and `exec.open`. On timeout Wisper fails the consumer call with `upstream_timeout` (504); no cleanup frame is sent automatically. A request routed to another instance over the backplane is bounded by `Tunnel:Backplane:RpcTimeoutMs` (default 120 s) the same way. A tunnel that closes mid-request fails every pending waiter with `host_offline`.
 - `error{rid,code,message}` carries typed failures. Wisper maps agent-reported codes to consumer errors: `not_ready` (lease not `ready`) → `lease_not_ready` (409), `unknown_lease` → `not_found` (404), and `at_capacity` → `at_capacity` (409) are recognized and mapped to their consumer equivalents; **any other code** (e.g. a wisp non-2xx) collapses to `lease_failed` (502). There is no distinct `unsupported`/`wisp_error`/`overflow`/`internal` handling. The `at_capacity` mapping is the authoritative backstop for per-host admission (task #571): the manager fast-fails a `lease.create` against a host at its advertised `capability.capacity.max_contracts` (§5), but wisp remains the enforcer — if it rejects a create in the admit→provision race it reports `at_capacity`, which surfaces to the consumer as the same `409 at_capacity` (and the failed-create teardown still runs).
 - Malformed control frames (bad JSON) are dropped with a warning; unknown binary `sid`s / flow violations tear the stream down (§9). No `error` reply is emitted for malformed input today.
 
@@ -233,14 +243,14 @@ consumer            Wisper                         agent            wisp / conta
   │ (ping/pong 30s, heartbeat 15s throughout)        │                 │
   │ DELETE /leases ─▶│ rid=9 ─ lease.release ──────▶ │ DELETE ────────▶│ destroy
   │                  │ ◀─ lease.released(rid=9) ──── │ ◀── 200 ────────│
-  │ ◀── 200 ──────── │  ▶ STOP METER, finalize usage → Stripe          │
+  │ ◀── 200 ──────── │  ▶ STOP METER, finalize usage → ledger (hold release) │
 ```
 
 ## 15. Frame reference (quick)
 
 - Control = **WS text**, JSON `{t, rid?, sid?, ...}`.
 - Data = **WS binary**, `[ver:1][ch:1][sid:4][payload]`, ≤ 32 KiB payload.
-- Liveness = **WS ping/pong** every 30s; dead after 2 misses.
+- Liveness = **WS ping** every 30 s (`pingIntervalMs`) plus an application inactivity window of 2.5 × ping (about 75 s, `Tunnel:LivenessTimeoutMs` to override); no frame of any kind within the window closes the tunnel 4408 (§7).
 - Wisper allocates all `rid`/`sid`; agent echoes them.
 
 ## 16. Deliberate scope boundaries
