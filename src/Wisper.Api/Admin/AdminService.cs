@@ -563,6 +563,55 @@ public sealed class AdminService
         return new LedgerAccountForensicsResponse(LedgerAccountView.From(account), view);
     }
 
+    /// <summary>
+    /// The admin ledger-account listing (docs/API.md §8, <c>GET /v1/admin/ledger/accounts</c>, task #194):
+    /// a page of accounts optionally narrowed by <paramref name="kind"/> / <paramref name="ownerUserId"/>,
+    /// with each row's owning user email joined when present. This is what lets an operator find the two
+    /// account ids <c>POST /v1/admin/adjustments</c> needs (the <c>platform_revenue</c> singleton and a
+    /// user's wallet) without opening the database. Same offset paging shape as the host/user search.
+    /// </summary>
+    public async Task<AdminPage<LedgerAccountListView>> ListLedgerAccountsAsync(
+        LedgerAccountKind? kind,
+        Guid? ownerUserId,
+        int limit,
+        int offset,
+        CancellationToken ct = default)
+    {
+        var pageSize = Math.Clamp(limit, 1, MaxLimit);
+        if (offset < 0)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError, "'offset' must be a non-negative integer.", new { field = "offset" });
+        }
+
+        // Over-fetch one to learn whether another page exists without a second count query.
+        var rows = await _ledger.SearchAccountsAsync(kind, ownerUserId, Currency, pageSize + 1, offset, ct);
+
+        // Fold the owning user's email into each per-user account row (platform singletons have none);
+        // one lookup per distinct owner keeps the join O(unique owners) instead of O(page size).
+        var owners = rows
+            .Select(r => r.OwnerUserId)
+            .OfType<Guid>()
+            .Distinct()
+            .ToList();
+        var emails = new Dictionary<Guid, string>();
+        foreach (var owner in owners)
+        {
+            var user = await _users.GetByIdAsync(owner, ct);
+            if (user is not null)
+            {
+                emails[owner] = user.Email;
+            }
+        }
+
+        var (page, next) = Paginate(rows, pageSize, offset);
+        var view = page
+            .Select(a => LedgerAccountListView.From(
+                a, a.OwnerUserId is { } id && emails.TryGetValue(id, out var email) ? email : null))
+            .ToList();
+        return new AdminPage<LedgerAccountListView>(view, next);
+    }
+
     /// <summary>The <c>adjustment</c> ledger idempotency key — namespaced under the admin's API idempotency key.</summary>
     public static string AdjustmentIdempotencyKey(string apiKey) => $"adjustment:{apiKey}";
 

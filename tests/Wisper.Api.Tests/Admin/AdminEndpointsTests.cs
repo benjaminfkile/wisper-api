@@ -377,6 +377,90 @@ public class AdminEndpointsTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Ledger_account_listing_filters_by_kind_and_joins_owner_email()
+    {
+        // Task #194: an operator must be able to find the platform_revenue singleton AND a user wallet
+        // (the two account ids POST /v1/admin/adjustments needs) over the wire without opening the DB.
+        var fx = new Fixture();
+        var alice = await fx.SeedUserAsync("alice@example.com");
+        await fx.FundWalletAsync(alice, 500, "pi_topup");
+        var ledger = new LedgerService(fx.Ledger);
+        var revenue = await ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformRevenue, null);
+        var aliceWallet = await ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, alice);
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var byKind = await client
+            .GetFromJsonAsync<LedgerAccountPageDto>("/v1/admin/ledger/accounts?kind=platform_revenue");
+        var revenueRow = Assert.Single(byKind!.Data);
+        Assert.Equal(revenue.Id, revenueRow.Id);
+        Assert.Equal("platform_revenue", revenueRow.Kind);
+        Assert.Null(revenueRow.OwnerUserId);
+        Assert.Null(revenueRow.OwnerEmail);
+
+        var byOwner = await client
+            .GetFromJsonAsync<LedgerAccountPageDto>($"/v1/admin/ledger/accounts?owner_user_id={alice}");
+        var walletRow = Assert.Single(byOwner!.Data);
+        Assert.Equal(aliceWallet.Id, walletRow.Id);
+        Assert.Equal("user_wallet", walletRow.Kind);
+        Assert.Equal(alice, walletRow.OwnerUserId);
+        Assert.Equal("alice@example.com", walletRow.OwnerEmail);
+        Assert.Equal(500, walletRow.BalanceCents);
+    }
+
+    [Fact]
+    public async Task Ledger_account_listing_paginates_with_limit_and_offset()
+    {
+        // Paging shape must match the other admin lists: next_offset carries the caller forward, null
+        // marks the last page.
+        var fx = new Fixture();
+        var ledger = new LedgerService(fx.Ledger);
+        for (var i = 0; i < 3; i++)
+        {
+            var user = await fx.SeedUserAsync($"c{i}@example.com");
+            _ = await ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user);
+        }
+
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var page1 = await client
+            .GetFromJsonAsync<LedgerAccountPageDto>("/v1/admin/ledger/accounts?kind=user_wallet&limit=2&offset=0");
+        Assert.Equal(2, page1!.Data.Count);
+        Assert.Equal(2, page1.NextOffset);
+
+        var page2 = await client
+            .GetFromJsonAsync<LedgerAccountPageDto>("/v1/admin/ledger/accounts?kind=user_wallet&limit=2&offset=2");
+        Assert.Single(page2!.Data);
+        Assert.Null(page2.NextOffset);
+    }
+
+    [Fact]
+    public async Task Ledger_account_listing_rejects_an_unknown_kind_as_validation_error()
+    {
+        // A typo must surface as 400 validation_error, not a silent empty page.
+        var fx = new Fixture();
+        using var factory = fx.Build();
+
+        var response = await Authed(factory).GetAsync("/v1/admin/ledger/accounts?kind=not_a_kind");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Ledger_account_listing_requires_the_admin_role()
+    {
+        // The route lives under the admin group; a non-admin caller is 403 like every other admin read.
+        var fx = new Fixture();
+        fx.Validator.Principal = WisperPrincipal.Create("host-sub", "h@example.com", new[] { "host" });
+        using var factory = fx.Build();
+
+        var response = await Authed(factory).GetAsync("/v1/admin/ledger/accounts");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     private sealed record LeaseListDto([property: JsonPropertyName("data")] IReadOnlyList<LeaseDto> Data);
 
     private sealed record LeaseDto(
@@ -448,4 +532,16 @@ public class AdminEndpointsTests
         [property: JsonPropertyName("balance_cents")] long BalanceCents);
 
     private sealed record EntryDto([property: JsonPropertyName("id")] long Id);
+
+    private sealed record LedgerAccountPageDto(
+        [property: JsonPropertyName("data")] IReadOnlyList<LedgerAccountRowDto> Data,
+        [property: JsonPropertyName("next_offset")] int? NextOffset);
+
+    private sealed record LedgerAccountRowDto(
+        [property: JsonPropertyName("id")] Guid Id,
+        [property: JsonPropertyName("kind")] string Kind,
+        [property: JsonPropertyName("owner_user_id")] Guid? OwnerUserId,
+        [property: JsonPropertyName("owner_email")] string? OwnerEmail,
+        [property: JsonPropertyName("currency")] string Currency,
+        [property: JsonPropertyName("balance_cents")] long BalanceCents);
 }

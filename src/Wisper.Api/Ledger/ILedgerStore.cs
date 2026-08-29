@@ -54,6 +54,22 @@ public interface ILedgerStore : IRepository
     Task<IReadOnlyList<LedgerAccount>> ListAccountsByKindAsync(
         LedgerAccountKind kind, string currency = "usd", CancellationToken ct = default);
 
+    /// <summary>
+    /// A page of ledger accounts (docs/API.md §8, <c>GET /v1/admin/ledger/accounts</c>), narrowed by
+    /// optional <paramref name="kind"/> and <paramref name="ownerUserId"/> filters (both null lists every
+    /// account in <paramref name="currency"/>), ordered by <c>created_at</c> then id ascending so paging
+    /// is stable, and paged with <paramref name="limit"/>/<paramref name="offset"/>. The admin listing
+    /// uses this so an operator can find the platform singletons (owner NULL) or a user's wallet without
+    /// SQL: the two account ids <c>POST /v1/admin/adjustments</c> needs.
+    /// </summary>
+    Task<IReadOnlyList<LedgerAccount>> SearchAccountsAsync(
+        LedgerAccountKind? kind,
+        Guid? ownerUserId,
+        string currency,
+        int limit,
+        int offset,
+        CancellationToken ct = default);
+
     /// <summary>The posted transaction carrying <paramref name="idempotencyKey"/>, or <c>null</c> if none.</summary>
     Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
         string idempotencyKey, CancellationToken ct = default);
