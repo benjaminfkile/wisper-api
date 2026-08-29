@@ -112,7 +112,7 @@ Frame types as shipped (`TUNNEL.md` §5 is authoritative):
 | W→H | `shell.open` / `shell.resize` | interactive PTY over `sid` (answered by `shell.opened`; bytes flow as binary frames) |
 | both | `stream.credit` / `stream.close` / `stream.closed` | per-stream flow control and teardown |
 | W→H | `lease.release` | destroy the contract; answered by `lease.released` |
-| H→W | `lease.ended` | contract expired/failed/gone locally |
+| H→W | `lease.ended` | contract ended locally (`reason:"expired"` on TTL, `"lost"` when the contract vanished before its TTL; see `TUNNEL.md` §5) |
 | H→W | `host.heartbeat` | live leases, load, optional capability refresh and `status` |
 | both | `error` | typed failure for a request or stream |
 | both | (ws ping/pong) | keepalive + liveness |
