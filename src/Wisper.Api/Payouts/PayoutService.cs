@@ -4,6 +4,7 @@ using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Ledger;
 using Wisper.Api.Payments;
+using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Payouts;
 using Wisper.Api.Persistence.Users;
 
@@ -16,10 +17,14 @@ namespace Wisper.Api.Payouts;
 /// with the same guard. Every payout is one <c>payouts</c> row + one Stripe Transfer (idempotency key =
 /// <c>payouts.id</c>) + one <c>payout</c> ledger txn (<c>host_earnings → platform_cash</c>), a three-way
 /// tie-out (docs/PAYMENTS.md §9). A transfer that fails is recorded <c>failed</c> and posts <b>no</b> ledger
-/// txn, so earnings stay in <c>host_earnings</c> and a later run retries (§6). Every settled or failed run
-/// also writes an <c>audit_log</c> row (docs/DATA_MODEL.md §12): actor is the host on the on-demand path
-/// and system (<c>null</c>) on the scheduled path, target is the host user, and meta carries the amounts
-/// and the Stripe transfer id, so the money trail matches the refund/chargeback path (task #185).
+/// txn, so earnings stay in <c>host_earnings</c> and a later run retries (§6). Every settled, failed, or
+/// on-demand rejected run also writes an <c>audit_log</c> row (docs/DATA_MODEL.md §12): actor is the host on
+/// the on-demand path and system (<c>null</c>) on the scheduled path, target is the host user, and meta
+/// carries the amounts, the Stripe transfer id (settlement), the failure reason (failure / rejection), and
+/// the caller's <c>host_ids</c> so the money trail matches the refund/chargeback path (tasks #185, #203).
+/// Scheduled below-minimum skips stay unaudited by design (noise; the accrual is untouched and the next run
+/// will retry). Post-hoc audit writes after a successful transfer are best-effort: a failure there is logged
+/// but does not bubble to the caller, so a stray audit-write error cannot 500 a payout that already moved money.
 /// Everything is behind interfaces so the unit suite runs without Stripe/Postgres.
 /// </summary>
 public sealed class PayoutService
@@ -30,6 +35,7 @@ public sealed class PayoutService
     private readonly LedgerService _ledger;
     private readonly IPayoutRepository _payouts;
     private readonly IUserRepository _users;
+    private readonly IHostRepository _hosts;
     private readonly IStripeConnectGateway _stripe;
     private readonly AuditService _audit;
     private readonly PayoutOptions _options;
@@ -40,6 +46,7 @@ public sealed class PayoutService
         LedgerService ledger,
         IPayoutRepository payouts,
         IUserRepository users,
+        IHostRepository hosts,
         IStripeConnectGateway stripe,
         AuditService audit,
         IOptions<PayoutOptions> options,
@@ -49,6 +56,7 @@ public sealed class PayoutService
         _ledger = ledger;
         _payouts = payouts;
         _users = users;
+        _hosts = hosts;
         _stripe = stripe;
         _audit = audit;
         _options = options.Value;
@@ -100,7 +108,9 @@ public sealed class PayoutService
     /// and guard as the scheduled run. Throws <see cref="ApiErrorCode.ConnectIncomplete"/> (403) when Connect
     /// is not enabled, and <see cref="ApiErrorCode.PaymentRequired"/> when the accrued balance is below the
     /// payout minimum. Otherwise returns the created payout (which may itself be <c>failed</c> if the transfer
-    /// could not be made, in which case earnings are retained). The actor recorded on the audit row is the host itself.
+    /// could not be made, in which case earnings are retained). The actor recorded on the audit row is the
+    /// host itself; pre-transfer rejections here also emit a <c>payout.rejected</c> audit row (task #203) so
+    /// operators can see why a self-serve run did not move money.
     /// </summary>
     public async Task<Payout> PayoutOnDemandAsync(Guid hostUserId, CancellationToken ct = default)
     {
@@ -109,6 +119,13 @@ public sealed class PayoutService
 
         if (!ConnectGate.CanReceivePayouts(user.ConnectStatus))
         {
+            await RecordRejectionAsync(
+                user,
+                actorUserId: hostUserId,
+                reason: "connect_incomplete",
+                accruedCents: null,
+                extra: new { connect_status = PgEnum.ToLabel(user.ConnectStatus) },
+                ct);
             throw new ApiException(
                 ApiErrorCode.ConnectIncomplete,
                 "Stripe Connect onboarding must be complete before earnings can be paid out.",
@@ -118,6 +135,13 @@ public sealed class PayoutService
         var balance = await _ledger.GetHostEarningsCentsAsync(hostUserId, Currency, ct);
         if (balance < _options.PayoutMinCents)
         {
+            await RecordRejectionAsync(
+                user,
+                actorUserId: hostUserId,
+                reason: "below_minimum",
+                accruedCents: balance,
+                extra: new { payout_min_cents = _options.PayoutMinCents },
+                ct);
             throw new ApiException(
                 ApiErrorCode.PaymentRequired,
                 $"Accrued earnings ({balance}¢) are below the payout minimum ({_options.PayoutMinCents}¢).",
@@ -196,13 +220,15 @@ public sealed class PayoutService
 
     /// <summary>
     /// The shared payout core (docs/PAYMENTS.md §6, §11): create the <c>payouts</c> row, make the Stripe
-    /// Transfer (idempotency key = <c>payouts.id</c>), then — only on success — post the <c>payout</c> ledger
+    /// Transfer (idempotency key = <c>payouts.id</c>), then, only on success, post the <c>payout</c> ledger
     /// txn (<c>host_earnings → platform_cash</c>, keyed by the same id) and advance the row to <c>in_transit</c>.
     /// A transfer failure records the row <c>failed</c> with no ledger effect, so earnings are retained. Both
     /// outcomes append an <c>audit_log</c> row (docs/DATA_MODEL.md §12) with action <c>payout.settled</c> or
     /// <c>payout.failed</c>, and actor = <paramref name="actorUserId"/> (host on the on-demand path,
-    /// <c>null</c> for the scheduled system run), so operators can trace every money movement to a specific
-    /// host and run.
+    /// <c>null</c> for the scheduled system run), and meta carries the caller's <c>host_ids</c> alongside
+    /// the amounts. Post-hoc audit appends are wrapped so a failed audit-write cannot 500 a payout whose
+    /// money has already moved (task #203); operators still see the incident via a logged error carrying
+    /// the payout id.
     /// </summary>
     private async Task<Payout> ExecutePayoutAsync(
         User user, long amountCents, Guid? actorUserId, CancellationToken ct)
@@ -210,9 +236,18 @@ public sealed class PayoutService
         if (string.IsNullOrWhiteSpace(user.ConnectAccountId))
         {
             // Guarded upstream (connect_status can't be `enabled` without an account), but never transfer blind.
+            await RecordRejectionAsync(
+                user,
+                actorUserId: actorUserId,
+                reason: "no_connect_account",
+                accruedCents: amountCents,
+                extra: null,
+                ct);
             throw new ApiException(
                 ApiErrorCode.ConnectIncomplete, "The host has no Stripe Connect account to pay out to.");
         }
+
+        var hostIds = await LoadHostIdsAsync(user.Id, ct);
 
         var now = _time.GetUtcNow();
         var payout = await _payouts.CreateAsync(new Payout
@@ -245,15 +280,18 @@ public sealed class PayoutService
                 ex, "payout {Payout} transfer failed for host {Host}; earnings retained", payout.Id, user.Id);
 
             // Audit the failed attempt so the trail matches every other money-sensitive action; earnings are
-            // still in host_earnings and the next run will retry (docs/PAYMENTS.md §6, §12).
-            await _audit.RecordAsync(
+            // still in host_earnings and the next run will retry (docs/PAYMENTS.md §6, §12). Best-effort: no
+            // money has moved on this path (no ledger txn was posted), but a failed audit-write must not mask
+            // the transfer error that the caller needs to see.
+            await TryAuditAsync(
                 "payout.failed",
                 actorUserId: actorUserId,
-                targetType: "user",
-                targetId: user.Id,
+                targetUserId: user.Id,
+                payoutId: failed.Id,
                 meta: new
                 {
                     payout_id = failed.Id,
+                    host_ids = hostIds,
                     amount_cents = amountCents,
                     currency = Currency,
                     error = ex.Message,
@@ -294,15 +332,18 @@ public sealed class PayoutService
 
         // Audit the money-sensitive action (docs/DATA_MODEL.md §12): actor is the host on the on-demand path
         // and null (system) for the scheduled run, target is the host user, meta names the payout id, the
-        // Stripe transfer id, and the ledger txn so a reviewer has the three-way tie-out (§9).
-        await _audit.RecordAsync(
+        // caller's host_ids, the Stripe transfer id, and the ledger txn so a reviewer has the three-way
+        // tie-out (§9). Best-effort: money has already moved (transfer + ledger txn are committed), so a
+        // failed audit-write is logged with the payout id and swallowed rather than surfacing as a 500.
+        await TryAuditAsync(
             "payout.settled",
             actorUserId: actorUserId,
-            targetType: "user",
-            targetId: user.Id,
+            targetUserId: user.Id,
+            payoutId: settled.Id,
             meta: new
             {
                 payout_id = settled.Id,
+                host_ids = hostIds,
                 amount_cents = amountCents,
                 currency = Currency,
                 stripe_transfer_id = transfer.Id,
@@ -312,6 +353,91 @@ public sealed class PayoutService
             },
             ct);
         return settled;
+    }
+
+    /// <summary>
+    /// Records a <c>payout.rejected</c> audit row for a pre-transfer rejection on the on-demand path (task
+    /// #203). Scheduled-path skips stay unaudited by design to avoid the noise of a below-minimum row on
+    /// every run of every hold-back host. The write is best-effort (a failure logs and swallows), because
+    /// even a rejection is a money-adjacent event that the caller will still see the typed <c>ApiException</c>
+    /// for; masking that with a downstream 500 helps no one.
+    /// </summary>
+    private async Task RecordRejectionAsync(
+        User user,
+        Guid? actorUserId,
+        string reason,
+        long? accruedCents,
+        object? extra,
+        CancellationToken ct)
+    {
+        if (actorUserId is null)
+        {
+            return;
+        }
+
+        var hostIds = await LoadHostIdsAsync(user.Id, ct);
+        var meta = new Dictionary<string, object?>
+        {
+            ["reason"] = reason,
+            ["currency"] = Currency,
+            ["host_ids"] = hostIds,
+            ["trigger"] = "on_demand",
+        };
+        if (accruedCents is { } cents)
+        {
+            meta["accrued_cents"] = cents;
+        }
+        if (extra is not null)
+        {
+            foreach (var prop in extra.GetType().GetProperties())
+            {
+                meta[prop.Name] = prop.GetValue(extra);
+            }
+        }
+
+        await TryAuditAsync(
+            "payout.rejected",
+            actorUserId: actorUserId,
+            targetUserId: user.Id,
+            payoutId: null,
+            meta: meta,
+            ct);
+    }
+
+    private async Task<IReadOnlyList<Guid>> LoadHostIdsAsync(Guid ownerUserId, CancellationToken ct)
+    {
+        try
+        {
+            var hosts = await _hosts.ListByOwnerAsync(ownerUserId, ct);
+            var ids = new List<Guid>(hosts.Count);
+            foreach (var host in hosts)
+            {
+                ids.Add(host.Id);
+            }
+            return ids;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "payout audit meta: host lookup for owner {Owner} failed; recording empty host_ids", ownerUserId);
+            return Array.Empty<Guid>();
+        }
+    }
+
+    private async Task TryAuditAsync(
+        string action, Guid? actorUserId, Guid targetUserId, Guid? payoutId, object meta, CancellationToken ct)
+    {
+        try
+        {
+            await _audit.RecordAsync(action, actorUserId, "user", targetUserId, meta, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "audit append for {Action} on payout {Payout} (host user {Host}) failed; continuing",
+                action, payoutId, targetUserId);
+        }
     }
 
     private static PayoutView ToView(Payout payout) => new(

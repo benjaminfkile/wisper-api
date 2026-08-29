@@ -30,6 +30,7 @@ public class PayoutServiceTests
         public LedgerService Ledger { get; }
         public InMemoryPayoutRepository Payouts { get; } = new();
         public InMemoryUserRepository Users { get; } = new();
+        public Wisper.Api.Persistence.Hosts.InMemoryHostRepository Hosts { get; } = new();
         public FakeStripeConnectGateway Gateway { get; } = new();
         public InMemoryAuditLogRepository AuditLog { get; } = new();
         public AuditService Audit { get; }
@@ -42,13 +43,16 @@ public class PayoutServiceTests
             Ledger = new LedgerService(LedgerStore);
             Audit = new AuditService(AuditLog, Clock);
             Service = new PayoutService(
-                Ledger, Payouts, Users, Gateway, Audit,
+                Ledger, Payouts, Users, Hosts, Gateway, Audit,
                 Microsoft.Extensions.Options.Options.Create(Options), Clock, NullLogger<PayoutService>.Instance);
         }
 
-        public Task<User> SeedHostAsync(
-            ConnectStatus connectStatus = ConnectStatus.Enabled, string? accountId = "acct_host") =>
-            Users.CreateAsync(new User
+        public async Task<User> SeedHostAsync(
+            ConnectStatus connectStatus = ConnectStatus.Enabled,
+            string? accountId = "acct_host",
+            int hostCount = 1)
+        {
+            var user = await Users.CreateAsync(new User
             {
                 CognitoSub = $"sub-{Guid.NewGuid():N}",
                 Email = "host@example.com",
@@ -58,6 +62,18 @@ public class PayoutServiceTests
                 CreatedAt = T0,
                 UpdatedAt = T0,
             });
+            for (var i = 0; i < hostCount; i++)
+            {
+                await Hosts.CreateAsync(new Wisper.Api.Domain.Host
+                {
+                    OwnerUserId = user.Id,
+                    AgentTokenHash = $"hash-{Guid.NewGuid():N}",
+                    CreatedAt = T0,
+                    UpdatedAt = T0,
+                });
+            }
+            return user;
+        }
 
         /// <summary>Accrues <paramref name="amountCents"/> into the host's host_earnings via topup → hold → charge (fee 0).</summary>
         public async Task AccrueEarningsAsync(Guid hostUserId, long amountCents)
@@ -266,6 +282,7 @@ public class PayoutServiceTests
         Assert.Contains("\"currency\":\"usd\"", entry.Meta!);
         Assert.Contains("\"stripe_transfer_id\":", entry.Meta!);
         Assert.Contains("\"trigger\":\"scheduled\"", entry.Meta!);
+        Assert.Contains("\"host_ids\":[", entry.Meta!);
     }
 
     [Fact]
@@ -282,6 +299,7 @@ public class PayoutServiceTests
         Assert.Equal("payout.settled", entry.Action);
         Assert.Equal(host.Id, entry.ActorUserId);
         Assert.Contains("\"trigger\":\"on_demand\"", entry.Meta!);
+        Assert.Contains("\"host_ids\":[", entry.Meta!);
     }
 
     [Fact]
@@ -303,5 +321,188 @@ public class PayoutServiceTests
         Assert.NotNull(entry.Meta);
         Assert.Contains("insufficient platform balance", entry.Meta!);
         Assert.Contains("\"amount_cents\":500", entry.Meta!);
+        Assert.Contains("\"host_ids\":[", entry.Meta!);
+    }
+
+    [Fact]
+    public async Task Payout_audit_meta_carries_all_host_ids_owned_by_the_user()
+    {
+        // Task #203: meta must carry the caller's hosts, so a reviewer can trace a payout to specific
+        // machines when the owner runs more than one.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(hostCount: 3);
+        await fx.AccrueEarningsAsync(host.Id, 500);
+
+        await fx.Service.PayoutOnDemandAsync(host.Id);
+
+        var owned = await fx.Hosts.ListByOwnerAsync(host.Id);
+        Assert.Equal(3, owned.Count);
+        var entry = Assert.Single(await fx.AuditLog.ListByTargetAsync("user", host.Id));
+        Assert.NotNull(entry.Meta);
+        foreach (var owned_host in owned)
+        {
+            Assert.Contains(owned_host.Id.ToString(), entry.Meta!);
+        }
+    }
+
+    [Fact]
+    public async Task On_demand_rejection_for_incomplete_connect_records_a_payout_rejected_audit_row()
+    {
+        // Task #203: pre-transfer rejections on the on-demand path must leave a `payout.rejected` audit
+        // row so operators can see why a self-serve run did not move money.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.Pending);
+        await fx.AccrueEarningsAsync(host.Id, 500);
+
+        await Assert.ThrowsAsync<ApiException>(() => fx.Service.PayoutOnDemandAsync(host.Id));
+
+        var entry = Assert.Single(await fx.AuditLog.ListByTargetAsync("user", host.Id));
+        Assert.Equal("payout.rejected", entry.Action);
+        Assert.Equal(host.Id, entry.ActorUserId);
+        Assert.NotNull(entry.Meta);
+        Assert.Contains("\"reason\":\"connect_incomplete\"", entry.Meta!);
+        Assert.Contains("\"trigger\":\"on_demand\"", entry.Meta!);
+        Assert.Contains("\"host_ids\":[", entry.Meta!);
+        // Earnings are untouched.
+        Assert.Equal(500, await fx.EarningsAsync(host.Id));
+    }
+
+    [Fact]
+    public async Task On_demand_rejection_for_below_minimum_records_a_payout_rejected_audit_row()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync();
+        await fx.AccrueEarningsAsync(host.Id, 50);
+
+        await Assert.ThrowsAsync<ApiException>(() => fx.Service.PayoutOnDemandAsync(host.Id));
+
+        var entry = Assert.Single(await fx.AuditLog.ListByTargetAsync("user", host.Id));
+        Assert.Equal("payout.rejected", entry.Action);
+        Assert.Equal(host.Id, entry.ActorUserId);
+        Assert.NotNull(entry.Meta);
+        Assert.Contains("\"reason\":\"below_minimum\"", entry.Meta!);
+        Assert.Contains("\"accrued_cents\":50", entry.Meta!);
+        Assert.Contains("\"payout_min_cents\":100", entry.Meta!);
+        Assert.Contains("\"trigger\":\"on_demand\"", entry.Meta!);
+        Assert.Contains("\"host_ids\":[", entry.Meta!);
+    }
+
+    [Fact]
+    public async Task Scheduled_below_minimum_skip_does_not_write_a_payout_rejected_row()
+    {
+        // Documented rule (docs/DATA_MODEL.md §12, task #203): scheduled below-minimum skips are silent
+        // on purpose to avoid per-run noise; earnings are untouched and the next run retries automatically.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync();
+        await fx.AccrueEarningsAsync(host.Id, 50);
+
+        await fx.Service.RunScheduledPayoutsAsync();
+
+        Assert.Empty(await fx.AuditLog.ListByTargetAsync("user", host.Id));
+    }
+
+    [Fact]
+    public async Task Post_hoc_audit_write_failure_after_a_successful_transfer_does_not_500_the_caller()
+    {
+        // Task #203: the transfer already moved money and the ledger txn is committed; a stray audit-write
+        // failure downstream of that must be logged, not surfaced to the caller as a 500. Otherwise a caller
+        // sees a server error for a payout that actually succeeded.
+        var fx = new FixtureWithBrokenAudit();
+        var host = await fx.SeedHostAsync();
+        await fx.AccrueEarningsAsync(host.Id, 500);
+
+        var payout = await fx.Service.PayoutOnDemandAsync(host.Id);
+
+        Assert.Equal(PayoutStatus.InTransit, payout.Status);
+        Assert.NotNull(payout.StripeTransferId);
+        Assert.NotNull(payout.PayoutTxnId);
+        Assert.Equal(0, await fx.EarningsAsync(host.Id));
+    }
+
+    /// <summary>
+    /// Same wiring as <see cref="Fixture"/> but with an <see cref="IAuditLogRepository"/> that throws on
+    /// every append, so tests can exercise the best-effort audit path in <see cref="PayoutService"/>.
+    /// </summary>
+    private sealed class FixtureWithBrokenAudit
+    {
+        public InMemoryLedgerStore LedgerStore { get; } = new();
+        public LedgerService Ledger { get; }
+        public InMemoryPayoutRepository Payouts { get; } = new();
+        public InMemoryUserRepository Users { get; } = new();
+        public Wisper.Api.Persistence.Hosts.InMemoryHostRepository Hosts { get; } = new();
+        public FakeStripeConnectGateway Gateway { get; } = new();
+        public AuditService Audit { get; }
+        public FakeTimeProvider Clock { get; } = new(T0);
+        public PayoutOptions Options { get; } = new() { PayoutMinCents = 100 };
+        public PayoutService Service { get; }
+
+        public FixtureWithBrokenAudit()
+        {
+            Ledger = new LedgerService(LedgerStore);
+            Audit = new AuditService(new ThrowingAuditLogRepository(), Clock);
+            Service = new PayoutService(
+                Ledger, Payouts, Users, Hosts, Gateway, Audit,
+                Microsoft.Extensions.Options.Options.Create(Options), Clock, NullLogger<PayoutService>.Instance);
+        }
+
+        public async Task<User> SeedHostAsync()
+        {
+            var user = await Users.CreateAsync(new User
+            {
+                CognitoSub = $"sub-{Guid.NewGuid():N}",
+                Email = "host@example.com",
+                Status = UserStatus.Active,
+                ConnectAccountId = "acct_host",
+                ConnectStatus = ConnectStatus.Enabled,
+                CreatedAt = T0,
+                UpdatedAt = T0,
+            });
+            await Hosts.CreateAsync(new Wisper.Api.Domain.Host
+            {
+                OwnerUserId = user.Id,
+                AgentTokenHash = $"hash-{Guid.NewGuid():N}",
+                CreatedAt = T0,
+                UpdatedAt = T0,
+            });
+            return user;
+        }
+
+        public async Task AccrueEarningsAsync(Guid hostUserId, long amountCents)
+        {
+            var consumer = Guid.NewGuid();
+            var leaseId = Guid.NewGuid();
+            var wallet = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer);
+            var platformCash = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+            var stripeFees = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.StripeFees, null);
+            var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
+            var earnings = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.HostEarnings, hostUserId);
+            var revenue = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformRevenue, null);
+
+            await Ledger.PostAsync(LedgerFlows.Topup(
+                wallet.Id, platformCash.Id, stripeFees.Id, amountCents, 0, $"topup-{Guid.NewGuid():N}"));
+            await Ledger.PostAsync(LedgerFlows.LeaseHold(wallet.Id, holds.Id, leaseId, amountCents));
+            await Ledger.PostAsync(LedgerFlows.LeaseCharge(
+                holds.Id, earnings.Id, revenue.Id, leaseId, amountCents, 0));
+        }
+
+        public Task<long> EarningsAsync(Guid hostUserId) => Ledger.GetHostEarningsCentsAsync(hostUserId);
+
+        private sealed class ThrowingAuditLogRepository : IAuditLogRepository
+        {
+            public Task<AuditLogEntry> AppendAsync(AuditLogEntry entry, CancellationToken ct = default) =>
+                throw new InvalidOperationException("audit store unreachable");
+
+            public Task<IReadOnlyList<AuditLogEntry>> ListByTargetAsync(
+                string targetType, Guid targetId, CancellationToken ct = default) =>
+                Task.FromResult<IReadOnlyList<AuditLogEntry>>(Array.Empty<AuditLogEntry>());
+
+            public Task<IReadOnlyList<AuditLogEntry>> ListByActorAsync(
+                Guid actorUserId, CancellationToken ct = default) =>
+                Task.FromResult<IReadOnlyList<AuditLogEntry>>(Array.Empty<AuditLogEntry>());
+
+            public Task<IReadOnlyList<AuditLogEntry>> ListAsync(
+                AuditLogQuery query, CancellationToken ct = default) =>
+                Task.FromResult<IReadOnlyList<AuditLogEntry>>(Array.Empty<AuditLogEntry>());
+        }
     }
 }

@@ -13,18 +13,19 @@ namespace Wisper.Api.Auth;
 /// (<see cref="CryptographicOperations.FixedTimeEquals"/>). If no keys are configured it <b>fails
 /// closed</b> — every key is rejected. It is not the primary authenticator: the DB-backed
 /// <see cref="DbApiKeyAuthenticator"/> resolves keys against the <c>api_keys</c> table and delegates here
-/// only as a dev/bootstrap fallback for a DB-less boot (empty, and thus fail-closed, in production). This
-/// mirrors <see cref="Tunnel.ConfigHostTokenValidator"/> for the tunnel's host tokens.
+/// only as a dev/bootstrap fallback for a key the DB does not know about (empty, and thus fail-closed, in
+/// production). This mirrors <see cref="Tunnel.ConfigHostTokenValidator"/> for the tunnel's host tokens.
 /// <para>
 /// A matched key's configured subject (<see cref="ApiKeyGrant.UserId"/>, a Cognito <c>sub</c>) must resolve
-/// to an <b>active</b> <c>users</c> row. Because the config allow-list is only used on a DB-less bootstrap
-/// (production leaves it empty), a matched key whose subject does not resolve is <b>seeded on first sight</b>
-/// from the grant's <see cref="ApiKeyGrant.Email"/> (an idempotent insert scoped to config-map keys), so
-/// a fresh in-memory boot can drive the whole flow with one key without out-of-band seeding (task #185). A
-/// grant with no <see cref="ApiKeyGrant.Email"/> still fails authentication (401), never a downstream 500.
-/// A suspended existing owner also fails closed. This mirrors <see cref="DbApiKeyAuthenticator"/>'s
-/// owner-must-exist gate so a single mistyped config value cannot take down every authenticated route with
-/// an opaque server error.
+/// to an <b>active</b> <c>users</c> row. If no row exists yet, the authenticator <b>seeds one on first
+/// sight</b> from the grant's <see cref="ApiKeyGrant.Email"/> (an idempotent insert scoped to config-map
+/// keys), so a single key drives the whole flow with no out-of-band seeding (task #185). The seed runs in
+/// every persistence mode (in-memory and Postgres alike); because <see cref="CognitoAuthOptions.ApiKeys"/>
+/// is empty by default outside self-hosted/dev, any key that reaches this branch is operator-controlled and
+/// the seed is bounded by that allow-list. A grant with no <see cref="ApiKeyGrant.Email"/> still fails
+/// authentication (401), never a downstream 500. A suspended existing owner also fails closed. This
+/// mirrors <see cref="DbApiKeyAuthenticator"/>'s owner-must-exist gate so a single mistyped config value
+/// cannot take down every authenticated route with an opaque server error.
 /// </para>
 /// </summary>
 public sealed class ConfigApiKeyAuthenticator : IApiKeyAuthenticator
@@ -82,12 +83,15 @@ public sealed class ConfigApiKeyAuthenticator : IApiKeyAuthenticator
             return null;
         }
 
-        // A config-map key is the DB-less bootstrap escape hatch: if the subject has no row yet, seed one
-        // from the grant's Email so a fresh in-memory boot works end to end (task #185). Idempotent (a
-        // second key/first request on the same sub finds the row on the initial lookup). Only config-map
-        // keys ever take this branch (the DB-key path in DbApiKeyAuthenticator never delegates here for a
-        // recognized row; a missing DB owner there still fails closed). A grant with no Email cannot seed
-        // a valid row (`users.email` is NOT NULL, docs/DATA_MODEL.md §3), so reject as 401, never 500.
+        // A config-map key is the bootstrap escape hatch: if the subject has no row yet, seed one from
+        // the grant's Email so a fresh boot works end to end (task #185). The seed runs in every
+        // persistence mode (in-memory and Postgres alike); Auth:ApiKeys is empty by default outside
+        // self-hosted/dev, so any key that reaches this branch is operator-controlled and the seed is
+        // bounded by that allow-list. Idempotent (a second key/first request on the same sub finds the
+        // row on the initial lookup). Only config-map keys ever take this branch (the DB-key path in
+        // DbApiKeyAuthenticator never delegates here for a recognized row; a missing DB owner there
+        // still fails closed). A grant with no Email cannot seed a valid row (`users.email` is NOT
+        // NULL, docs/DATA_MODEL.md §3), so reject as 401, never 500.
         var user = await ResolveOrBootstrapAsync(matched, matchedRaw, ct);
         if (user is null || user.Status != UserStatus.Active)
         {
