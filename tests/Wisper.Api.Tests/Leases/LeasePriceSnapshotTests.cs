@@ -95,7 +95,7 @@ public class LeasePriceSnapshotTests
             Reconciler = new LeaseReconciliationService(
                 Leases, Meter, WalletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
             Payouts = new PayoutService(
-                Ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
+                Ledger, new InMemoryPayoutRepository(), Users, Hosts, new FakeStripeConnectGateway(),
                 new Wisper.Api.Audit.AuditService(
                     new Wisper.Api.Persistence.Audit.InMemoryAuditLogRepository(), Clock),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
