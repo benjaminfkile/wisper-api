@@ -340,7 +340,7 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 | `fee_bps` | `int` NOT NULL CHECK (0..10000) | platform cut in basis points |
 | `min_topup_cents` | `bigint` NOT NULL DEFAULT 0 CHECK (`>= 0`) | |
 | `max_concurrent_leases_per_user` | `int` | NULL = unlimited; counts `pending`/`provisioning`/`active`/`suspended` leases |
-| `max_ttl_seconds_cap` | `int` | intended global ceiling over host limits; stored and returned by the admin API but **not enforced at lease create today** (only the offer's `max_ttl_seconds` is) |
+| `max_ttl_seconds_cap` | `int` | global TTL ceiling in seconds over per-image `max_ttl_seconds` (task #181): a create whose `ttl_seconds` exceeds this cap is refused with `validation_error` naming the requested TTL and the cap (never silently clamped). NULL = no global ceiling; the per-image cap is then the only bound. With no active policy row at all, no cap applies either |
 | `min_isolation` | `text` | global minimum isolation floor, NULL = no floor; a lease below it is rejected (`API.md`). Must be one of `shared`/`sandboxed`/`vm`. Migration `0011_LeaseIsolation` |
 | `first_topup_max_cents` | `bigint` | fraud guard — first-top-up hold cap (`PAYMENTS.md` §7) |
 | `new_account_window_hours` | `int` | fraud guard — how long an account counts as "new" |

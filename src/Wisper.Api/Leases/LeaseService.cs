@@ -104,6 +104,7 @@ public sealed class LeaseService : ILeaseService
 
         ValidateNetwork(network, image);
         ValidateTtl(ttlSeconds, image);
+        await EnforcePolicyTtlCapAsync(ttlSeconds, ct);
         ValidateEnv(request.Env);
         var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
 
@@ -589,6 +590,30 @@ public sealed class LeaseService : ILeaseService
                 ApiErrorCode.ValidationError,
                 "'ttl_seconds' exceeds the image's maximum.",
                 new { field = "ttl_seconds", max = image.MaxTtlSeconds });
+        }
+    }
+
+    /// <summary>
+    /// Enforces the platform-wide TTL ceiling (task #181, docs/DATA_MODEL.md §11,
+    /// <c>platform_policy.max_ttl_seconds_cap</c>): a request whose <c>ttl_seconds</c> exceeds the active
+    /// policy cap is refused with <c>validation_error</c> (never silently clamped), naming both the requested
+    /// TTL and the cap so the caller can adjust. No active policy, or a policy that leaves the cap NULL, means
+    /// "no global ceiling", and the per-image <see cref="HostImage.MaxTtlSeconds"/> remains the only bound.
+    /// </summary>
+    private async Task EnforcePolicyTtlCapAsync(int ttlSeconds, CancellationToken ct)
+    {
+        var policy = await _policy.GetActiveAsync(ct);
+        if (policy?.MaxTtlSecondsCap is not { } cap || cap <= 0)
+        {
+            return;
+        }
+
+        if (ttlSeconds > cap)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'ttl_seconds' exceeds the platform maximum.",
+                new { field = "ttl_seconds", max = cap, requested = ttlSeconds });
         }
     }
 

@@ -127,6 +127,11 @@ public class LeaseServiceTests
             new PlatformPolicyService(Policies, Clock).PublishAsync(
                 new PlatformPolicy { FeeBps = 0, MinIsolation = minIsolation, EffectiveFrom = T0 });
 
+        /// <summary>Publishes a platform policy version setting the global TTL ceiling (task #181).</summary>
+        public Task SetMaxTtlSecondsCapAsync(int? maxTtlSecondsCap) =>
+            new PlatformPolicyService(Policies, Clock).PublishAsync(
+                new PlatformPolicy { FeeBps = 0, MaxTtlSecondsCap = maxTtlSecondsCap, EffectiveFrom = T0 });
+
         /// <summary>Overwrites the seeded host's advertised isolation levels (task #417).</summary>
         public async Task SetHostIsolationLevelsAsync(params string[] levels)
         {
@@ -571,6 +576,81 @@ public class LeaseServiceTests
         var ex = await Assert.ThrowsAsync<ApiException>(() =>
             fx.Service().CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 7200)));
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task Create_rejects_a_ttl_over_the_platform_policy_cap()
+    {
+        // Task #181: platform_policy.max_ttl_seconds_cap is a global ceiling over the per-image max. A
+        // request under the offer's max_ttl_seconds but above the policy cap must be refused with
+        // validation_error (never silently clamped), naming the cap so the caller can adjust. No hold is
+        // posted and no tunnel frame is sent.
+        var gate = new RecordingWalletGate();
+        var fx = new Fixture { WalletGate = gate };
+        await fx.SeedImageAsync(maxTtl: 14400);
+        await fx.SetMaxTtlSecondsCapAsync(3600);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 7200)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Contains("platform", ex.Message, StringComparison.OrdinalIgnoreCase);
+        // The error names the platform cap so the caller sees the effective ceiling, not just the offer's.
+        var rendered = System.Text.Json.JsonSerializer.Serialize(ex.Details);
+        Assert.Contains("3600", rendered);
+        Assert.Empty(fx.Relay.CreateCalls);
+        Assert.Equal(0, gate.AuthorizeCalls); // refused before the wallet gate
+        Assert.Equal(0, gate.PlaceCalls);
+    }
+
+    [Fact]
+    public async Task Create_admits_a_ttl_at_the_platform_policy_cap()
+    {
+        // Boundary: ttl == cap is allowed (the cap is the maximum, not a strict-less-than).
+        var fx = new Fixture();
+        await fx.SeedImageAsync(maxTtl: 14400);
+        await fx.SetMaxTtlSecondsCapAsync(3600);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 3600));
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+        Assert.Equal(3600, created.Lease.TtlSeconds);
+    }
+
+    [Fact]
+    public async Task Create_treats_a_null_platform_policy_cap_as_no_ceiling()
+    {
+        // A policy that leaves max_ttl_seconds_cap NULL means "no global ceiling" — the per-image cap
+        // remains the only bound. A TTL above the (absent) policy cap but under the image's max provisions.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(maxTtl: 14400);
+        await fx.SetMaxTtlSecondsCapAsync(null);
+
+        var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 7200));
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task Create_admits_when_no_platform_policy_is_configured()
+    {
+        // Cover the no-policy case sensibly: with no active policy at all, there is no cap to enforce and
+        // the create proceeds under the per-image max. A previous test's fixture seeds a default policy on
+        // demand; here we go direct to LeaseService.CreateAsync WITHOUT touching SeedImageAsync's default
+        // seed so the policy table stays empty for this specific check.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(maxTtl: 14400);
+        // Deliberately do NOT publish a policy version — the fixture only seeded the default one to keep
+        // release-path billing valid, so any future create still uses it. Prove the no-policy branch by
+        // pointing at a fresh policy repo instead.
+        var emptyPolicies = new InMemoryPlatformPolicyRepository();
+        var svc = new LeaseService(
+            fx.Leases, fx.Hosts, fx.Images, fx.Relay, fx.Capabilities, fx.WalletGate,
+            fx.Meter(), new PlatformPolicyService(emptyPolicies, fx.Clock), fx.DegradedStore, fx.Clock);
+
+        var created = await svc.CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 7200));
+
+        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
     }
 
     [Fact]
