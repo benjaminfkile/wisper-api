@@ -182,6 +182,11 @@ app.LogPersistenceMode();
 // no database is configured, so the app still boots for the tunnel.
 app.ApplyDatabaseMigrations();
 
+// Seed the platform_policy default row for the in-memory dev mode (task #184). Postgres gets the same
+// seed via migration 0017 above; this hook keeps the DB-less boot in the same shape so billing never
+// throws for lack of a policy. Skipped when the store already carries a version.
+await app.SeedInMemoryDefaultsAsync();
+
 // Order is deliberate: the request id is assigned first so it tags every log line
 // and every error envelope; the exception handler wraps the whole pipeline.
 app.UseMiddleware<RequestIdMiddleware>();

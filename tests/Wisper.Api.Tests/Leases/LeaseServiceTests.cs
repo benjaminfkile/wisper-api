@@ -632,25 +632,31 @@ public class LeaseServiceTests
     }
 
     [Fact]
-    public async Task Create_admits_when_no_platform_policy_is_configured()
+    public async Task Create_refuses_when_no_platform_policy_is_configured()
     {
-        // Cover the no-policy case sensibly: with no active policy at all, there is no cap to enforce and
-        // the create proceeds under the per-image max. A previous test's fixture seeds a default policy on
-        // demand; here we go direct to LeaseService.CreateAsync WITHOUT touching SeedImageAsync's default
-        // seed so the policy table stays empty for this specific check.
-        var fx = new Fixture();
+        // Task #184 fail-safe: without an active platform_policy row there is no fee_bps to split the
+        // lease_charge by, so a paid metering flush would throw and the lease would run unbilled. Refuse the
+        // create up front with a clear error rather than provision a lease we cannot bill. Migration 0017
+        // seeds a conservative default so this branch never fires in practice, but the guard is the belt-and-
+        // suspenders defense. SeedImageAsync's default seed is deliberately bypassed here by pointing the
+        // service at a fresh empty policy repo.
+        var gate = new RecordingWalletGate();
+        var fx = new Fixture { WalletGate = gate };
         await fx.SeedImageAsync(maxTtl: 14400);
-        // Deliberately do NOT publish a policy version — the fixture only seeded the default one to keep
-        // release-path billing valid, so any future create still uses it. Prove the no-policy branch by
-        // pointing at a fresh policy repo instead.
         var emptyPolicies = new InMemoryPlatformPolicyRepository();
         var svc = new LeaseService(
             fx.Leases, fx.Hosts, fx.Images, fx.Relay, fx.Capabilities, fx.WalletGate,
             fx.Meter(), new PlatformPolicyService(emptyPolicies, fx.Clock), fx.DegradedStore, fx.Clock);
 
-        var created = await svc.CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 7200));
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            svc.CreateAsync(fx.ConsumerId, fx.Request(ttlSeconds: 7200)));
 
-        Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
+        Assert.Equal(ApiErrorCode.Internal, ex.Code);
+        Assert.Contains("billing", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(fx.Relay.CreateCalls);   // no tunnel frame; no compute provisioned
+        Assert.Equal(0, gate.AuthorizeCalls); // refused before the wallet gate
+        Assert.Equal(0, gate.PlaceCalls);
+        Assert.Empty(await fx.Leases.ListByConsumerAsync(fx.ConsumerId)); // no lease row persisted
     }
 
     [Fact]

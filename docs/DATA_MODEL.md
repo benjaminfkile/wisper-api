@@ -349,7 +349,11 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 | `effective_from` | `timestamptz` NOT NULL DEFAULT `now()` | the active row is the newest `effective_from` at or before now, so a future value schedules a version |
 | `created_by` | `uuid` → `users(id)` | admin (NULL for a seed row) |
 
-The four fraud-guard columns are all NULL-able (NULL = "no limit"), each with a `CHECK (>= 0)` on non-NULL values (`0008_FraudPolicy`); they carry the day-one, deterministic fraud controls (`PAYMENTS.md` §7, §13) the billing paths enforce at top-up and lease start. There is no seed row: until an admin publishes a policy, `fee_bps` is undefined and a paid metering flush throws (no charge is posted; the tick retries), while the caps and minimum top-up all read as "no limit".
+The four fraud-guard columns are all NULL-able (NULL = "no limit"), each with a `CHECK (>= 0)` on non-NULL values (`0008_FraudPolicy`); they carry the day-one, deterministic fraud controls (`PAYMENTS.md` §7, §13) the billing paths enforce at top-up and lease start.
+
+**Seeded default row (task #184, migration `0017_DefaultPlatformPolicy`).** A conservative default row is seeded when the table is empty so a fresh deployment never lacks a `fee_bps`: `fee_bps = 0` (no platform cut until an admin sets one), `min_topup_cents = 0`, every optional cap NULL (no restriction), `created_by = NULL` to mark it as a system seed. The insert is guarded on `NOT EXISTS`, so an already-populated table is left alone. The parallel DB-less dev-mode boot runs the same seed via `SeedInMemoryDefaultsAsync` at app startup, so the two backends behave the same way here.
+
+**Fail-safe (task #184).** Even with the seed, the paths that consume `platform_policy` refuse to proceed silently if a policy is somehow still missing. `POST /v1/leases` reads the active policy up front and, when none is present, refuses the create with a clear error (before any wallet hold or tunnel frame) rather than provision a lease no `lease_charge` can be split against. The metering flush retains its own `GetActiveOrThrowAsync` throw as a last-resort defense: the tick logs and retries, and the durable `last_metered_at` watermark stays behind, so an admin publishing a policy later still bills the accrued interval correctly.
 
 ## 12. Audit — `audit_log`
 

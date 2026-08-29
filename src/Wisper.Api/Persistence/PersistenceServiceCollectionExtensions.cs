@@ -15,6 +15,7 @@ using Wisper.Api.Persistence.Policy;
 using Wisper.Api.Persistence.Stripe;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Policy;
+using Wisper.Api.Domain;
 
 namespace Wisper.Api.Persistence;
 
@@ -174,6 +175,35 @@ public static class PersistenceServiceCollectionExtensions
             logger.LogWarning(
                 "persistence: in-memory (no connection string) — state resets on restart");
         }
+    }
+
+    /// <summary>
+    /// Seeds the platform_policy default row in the in-memory dev mode when the store is still empty
+    /// (task #184). Postgres gets the same seed via migration 0017 (idempotent); the in-memory doubles
+    /// have no migration runner, so this hook is what makes billing work on a fresh DB-less boot. The
+    /// insert is skipped when the store already carries at least one version, so it never overrides an
+    /// admin-published policy. No-op when a database is configured (the migration is the source of truth
+    /// there).
+    /// </summary>
+    public static async Task SeedInMemoryDefaultsAsync(this IHost app, CancellationToken ct = default)
+    {
+        var db = app.Services.GetRequiredService<Db>();
+        if (db.IsConfigured)
+        {
+            return; // Postgres seeds via migration 0017; nothing to do here.
+        }
+
+        var policies = app.Services.GetRequiredService<IPlatformPolicyRepository>();
+        var existing = await policies.ListAsync(ct);
+        if (existing.Count > 0)
+        {
+            return;
+        }
+
+        // Same conservative defaults as migration 0017: fee_bps=0 (no platform cut until an admin sets one)
+        // and every optional cap left NULL/0 ("no restriction"). effective_from is now so it is the active
+        // version immediately; created_by is NULL to mark it as a system seed.
+        await policies.AppendAsync(new PlatformPolicy { FeeBps = 0 }, ct);
     }
 
     /// <summary>
