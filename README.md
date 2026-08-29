@@ -38,13 +38,13 @@ src/Wisper.Api/            the service
   Billing/  Payouts/       /v1/billing/*, /v1/earnings*, /v1/payouts, the scheduled payout loop
   Catalog/  Hosts/         /v1/catalog, /v1/hosts/*, Connect onboarding
   Leases/                  /v1/leases/*, shell tickets, the wallet-hold gate
-  Ledger/  Policy/  Audit/ double-entry ledger, platform policy + fraud guards, audit trail
+  Ledger/  Policy/  Audit/ double-entry ledger + scheduled reconciliation loop, platform policy + fraud guards, audit trail
   Metering/                metering tick, lease reconciliation, durable suspension sweep
   Payments/                Stripe client/gateways, webhook ingest + handlers
-  Persistence/             Dapper repositories, in-memory doubles, DbUp migration runner
+  Persistence/             Dapper repositories, in-memory doubles, DbUp migration runner, Postgres advisory lock helper
   Migrations/              ordered embedded SQL migrations (0001 to 0016)
   Tunnel/                  WS /agent, frames, relay, streams, presence, Redis backplane, dev harness
-  Infrastructure/          request-id + error-envelope middleware, typed API errors, Idempotency-Key
+  Infrastructure/          request-id + error-envelope middleware, typed API errors, Idempotency-Key + scheduled TTL sweep
 tests/Wisper.Api.Tests/    xUnit unit + integration tests over WebApplicationFactory<Program>
 docs/                      the design docs above
 Dockerfile                 multi-stage build to the runtime image (listens on 8080 in-container)
@@ -83,11 +83,22 @@ curl localhost:5214/api/health   # {"status":"ok","checks":{"database":{...}}}  
 
 Every response carries an `X-Request-Id`; errors use the uniform envelope `{ "error": { "code", "message", "request_id", "details" } }` (see `docs/API.md` §3).
 
+## Background loops (config keys)
+
+Long-running background work is broken into small, restartable loops. Each loop is off automatically in the [in-memory persistence mode](#in-memory-persistence-mode-db-less-dev-boot) (it needs a real database) and off when its enable flag is false. Loops that touch shared state coordinate via a Postgres session-scope advisory lock so multi-instance deployments run each pass exactly once. Full spec: `docs/DATA_MODEL.md` §7e, §10, §14.
+
+| Config key | Default | What runs |
+|---|---|---|
+| `Metering:Enabled` / `Metering:TickSeconds` | true / 60 | The metering flush tick: reload every `active` lease, bill from `last_metered_at` up to now (capped at TTL and last-healthy), post the `lease_charge` + `lease_usage` row. |
+| `Payouts:Enabled` / `Payouts:IntervalHours` / `Payouts:PayoutMinCents` | true / 24 / 100 | Scheduled host payouts: for each host whose accrued `host_earnings` clears the minimum and whose Connect account is enabled, make a Stripe Transfer and post the `payout` ledger txn. |
+| `LedgerReconcile:Enabled` / `LedgerReconcile:IntervalMinutes` | true / 15 | Re-derive every account balance from the immutable journal and compare it to `balance_cents` (`DATA_MODEL.md` §7e). Non-zero drift is logged at warning and surfaced on `GET /v1/admin/overview` as `ledger_reconcile.has_drift`; `health` flips to `ledger_drift`. Multi-instance safe via a Postgres advisory lock. |
+| `IdempotencySweep:Enabled` / `IdempotencySweep:IntervalMinutes` | true / 60 | Delete expired `idempotency_keys` rows so the table doesn't accumulate between low-traffic windows (retries still sweep lazily). Multi-instance safe via a Postgres advisory lock. |
+
 ## In-memory persistence mode (DB-less dev boot)
 
 With **no** `ConnectionStrings:Wisper` set (the default for `dotnet run` and the whole test suite), the app boots in **in-memory persistence mode**: it registers in-memory doubles for *every* repository, so the full `/v1` path runs with no Postgres. Set the connection string (`ConnectionStrings__Wisper`) to switch to the Postgres path — production behaviour is unchanged.
 
-- **Loud:** a single startup warning line (`persistence: in-memory (no connection string) ... state resets on restart`), and `GET /api/health` reports the `database` check as `in-memory`. Migrations are a no-op. The metering flush loop, the durable suspension sweep, and the scheduled payout loop do **not** start in this mode (all three gate on a configured database), so leases run and hold but usage/ledger charges never accrue.
+- **Loud:** a single startup warning line (`persistence: in-memory (no connection string) ... state resets on restart`), and `GET /api/health` reports the `database` check as `in-memory`. Migrations are a no-op. The metering flush loop, the durable suspension sweep, the scheduled payout loop, the scheduled ledger reconciliation loop, and the scheduled idempotency-key TTL sweep do **not** start in this mode (all gate on a configured database), so leases run and hold but usage/ledger charges never accrue and expired idempotency-key rows are swept only lazily on retry.
 - **Self-hosted flow with no Cognito/Postgres:** configure a config API key (`Auth:ApiKeys`) with `consumer`+`host` scopes and drive `POST /v1/hosts` → `PUT /v1/hosts/:id/images` (0-cent pricing allowed) → `GET /v1/catalog` → `POST /v1/leases`. Note that a config key authenticates only when its `UserId` names an **existing, active** `users` row (an unresolvable subject is `401`, see `docs/API.md` §2); the key does not create that row itself, and the optional `Email` only seeds the principal's email claim. Example `appsettings.Development.json` / env:
 
   ```jsonc

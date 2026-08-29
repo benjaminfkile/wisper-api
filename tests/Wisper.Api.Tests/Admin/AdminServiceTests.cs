@@ -50,6 +50,7 @@ public class AdminServiceTests
         public AuditService Audit { get; }
         public MeteringService Meter { get; }
         public WalletLeaseGate WalletGate { get; }
+        public LedgerReconcileMonitor ReconcileMonitor { get; } = new();
         public AdminService Service { get; }
 
         public Fixture()
@@ -68,7 +69,7 @@ public class AdminServiceTests
                 Ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             Service = new AdminService(
                 Users, Hosts, Leases, Ledger, policy, Audit, billing,
-                Meter, WalletGate, Relay, Clock, NullLogger<AdminService>.Instance);
+                Meter, WalletGate, Relay, ReconcileMonitor, Clock, NullLogger<AdminService>.Instance);
         }
 
         public async Task<Guid> SeedUserAsync(string email = "user@example.com")
@@ -202,6 +203,30 @@ public class AdminServiceTests
         Assert.Equal(1, overview.HostCount);
         Assert.Equal(0, overview.ActiveLeaseCount);
         Assert.Equal("ok", overview.Health);
+        // Default before any reconcile pass has run: empty signal, no drift, no timestamp.
+        Assert.Null(overview.LedgerReconcile.RanAt);
+        Assert.False(overview.LedgerReconcile.HasDrift);
+        Assert.Equal(0, overview.LedgerReconcile.DriftAccountCount);
+    }
+
+    [Fact]
+    public async Task Overview_surfaces_ledger_drift_from_the_reconcile_monitor()
+    {
+        // Task #183: the admin overview must expose drift the scheduled reconciler observed, so an
+        // operator sees the incident without waiting for the next log line.
+        var fx = new Fixture();
+        fx.ReconcileMonitor.Record(new LedgerReconcileSummary(
+            RanAt: T0.AddMinutes(-1), AccountsChecked: 12, DriftAccountCount: 2,
+            TotalAbsoluteDriftCents: 137));
+
+        var overview = await fx.Service.GetOverviewAsync();
+
+        Assert.Equal(T0.AddMinutes(-1), overview.LedgerReconcile.RanAt);
+        Assert.Equal(12, overview.LedgerReconcile.AccountsChecked);
+        Assert.Equal(2, overview.LedgerReconcile.DriftAccountCount);
+        Assert.Equal(137, overview.LedgerReconcile.TotalAbsoluteDriftCents);
+        Assert.True(overview.LedgerReconcile.HasDrift);
+        Assert.Equal("ledger_drift", overview.Health);
     }
 
     // ---- policy -----------------------------------------------------------------------------------

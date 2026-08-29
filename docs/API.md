@@ -259,7 +259,7 @@ The consumer console and live output flow **through** Wisper to the host tunnel 
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/v1/admin/overview` | `{ currency, revenue_cents (platform_revenue balance), wallet_liability_cents, host_earnings_cents, active_lease_count, host_count, online_host_count, user_count, health }`; `health` is a constant `"ok"` today (no downstream probing) |
+| GET | `/v1/admin/overview` | `{ currency, revenue_cents (platform_revenue balance), wallet_liability_cents, host_earnings_cents, active_lease_count, host_count, online_host_count, user_count, health, ledger_reconcile }`; `ledger_reconcile` is `{ ran_at, accounts_checked, drift_account_count, total_absolute_drift_cents, has_drift }` from the most recent scheduled reconciliation pass on this instance (`DATA_MODEL.md` §7e; `ran_at` is null until the first pass completes). `health` reads `"ok"` normally and flips to `"ledger_drift"` when the last observed reconcile pass saw non-zero drift; no other downstream is probed today |
 | GET | `/v1/admin/policy` | `{ "active": policy\|null, "versions": [policies newest first] }` |
 | PUT | `/v1/admin/policy` | body `{ fee_bps (required, 0..10000), min_topup_cents?, max_concurrent_leases_per_user?, max_ttl_seconds_cap?, min_isolation?, first_topup_max_cents?, new_account_window_hours?, new_account_max_topup_cents_per_day?, max_spend_cents_per_day?, effective_from? }`; appends a new **versioned** policy row (never edits), audited as `policy.update`. `max_ttl_seconds_cap` is enforced at lease create as a global ceiling over the per-image `max_ttl_seconds` (task #181): a request whose `ttl_seconds` exceeds it is rejected with `validation_error` (never silently clamped); NULL / no active policy = no global ceiling |
 | GET | `/v1/admin/hosts` · `/v1/admin/users` | `?query=&limit=&offset=` search (name/label/email substring or exact id) → `{ "data": [...], "next_offset": n\|null }` |
@@ -278,7 +278,7 @@ Every admin write records an `audit_log` row with actor + before/after (`DATA_MO
 
 - **Required** on `POST /v1/leases`, `/v1/billing/topup`, `/v1/billing/refund`, `/v1/payouts`, `/v1/admin/refunds`, `/v1/admin/adjustments` via the `Idempotency-Key` header (client-generated UUID).
 - A missing header is `400 validation_error` (`details.header = "Idempotency-Key"`).
-- Semantics (`DATA_MODEL.md` §10): first request runs and stores its response under the key; a **replay with the same key + same body** returns the stored response verbatim; **same key + different body** (or the same key presented by a different user) → `409 conflict`; a replay while the first is still in-flight → `409` (in-progress lock). A request that **fails** releases the lock, so the same key can be retried once the condition clears. Records live 24 h; an expired record is swept lazily when its key is presented again (there is no scheduled sweep).
+- Semantics (`DATA_MODEL.md` §10): first request runs and stores its response under the key; a **replay with the same key + same body** returns the stored response verbatim; **same key + different body** (or the same key presented by a different user) → `409 conflict`; a replay while the first is still in-flight → `409` (in-progress lock). A request that **fails** releases the lock, so the same key can be retried once the condition clears. Records live 24 h; an expired record is swept both lazily (when its key is presented again) and proactively by a scheduled background loop (`IdempotencySweep:Enabled` / `IdempotencySweep:IntervalMinutes`, default hourly; off in the in-memory persistence mode, multi-instance safe via a Postgres advisory lock).
 - Below the API, `ledger_transactions.idempotency_key` provides a second, DB-level guarantee, so even a bug in the API layer cannot double-post money.
 
 ## 10. Pagination, filtering, sorting
@@ -295,7 +295,7 @@ Every admin write records an `audit_log` row with actor + before/after (`DATA_MO
 ## 12. Observability & correlation
 
 - `X-Request-Id` on every response and as `request_id` in every structured log line and error envelope for that request. It is **not** carried on tunnel frames or ledger rows today; those are correlated by lease id / idempotency key in the logs.
-- Structured JSON logs to stdout (one line per event, UTC). Metrics and downstream health (Postgres, Redis, Stripe) are not exposed yet: `/v1/admin/overview.health` is a constant `"ok"` and only `/healthz` probes the database.
+- Structured JSON logs to stdout (one line per event, UTC). Metrics and downstream health (Postgres, Redis, Stripe) are not exposed yet: `/v1/admin/overview.health` reads `"ok"` normally and flips to `"ledger_drift"` when the last scheduled ledger reconciliation pass saw non-zero drift (the pass and its `ledger_reconcile` payload are described in §8 and `DATA_MODEL.md` §7e). Only `/healthz` probes the database.
 
 ## 13. Deliberate scope boundaries
 

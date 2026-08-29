@@ -9,7 +9,8 @@ namespace Wisper.Api.Admin;
 /// <summary>
 /// Response of <c>GET /v1/admin/overview</c> (docs/API.md §8): platform revenue (the accrued
 /// <c>platform_revenue</c> ledger balance — the source of truth, docs/DATA_MODEL.md §7), the live active-lease
-/// count, host/consumer counts, and a coarse health flag.
+/// count, host/consumer counts, a coarse health flag, and the last ledger reconciliation pass (§7e;
+/// non-zero drift means the balance cache has diverged from the journal and an operator should page).
 /// </summary>
 public sealed record AdminOverviewResponse(
     [property: JsonPropertyName("currency")] string Currency,
@@ -20,7 +21,25 @@ public sealed record AdminOverviewResponse(
     [property: JsonPropertyName("host_count")] int HostCount,
     [property: JsonPropertyName("online_host_count")] int OnlineHostCount,
     [property: JsonPropertyName("user_count")] int UserCount,
-    [property: JsonPropertyName("health")] string Health);
+    [property: JsonPropertyName("health")] string Health,
+    [property: JsonPropertyName("ledger_reconcile")] LedgerReconcileView LedgerReconcile);
+
+/// <summary>
+/// The most recent ledger reconciliation pass on the admin overview (docs/API.md §8, docs/DATA_MODEL.md
+/// §7e). <see cref="RanAt"/> is <c>null</c> until the first pass completes; <see cref="HasDrift"/> is the
+/// operator flag: non-zero drift means the maintained balance cache disagrees with the journal on at
+/// least one account and should page.
+/// </summary>
+public sealed record LedgerReconcileView(
+    [property: JsonPropertyName("ran_at")] DateTimeOffset? RanAt,
+    [property: JsonPropertyName("accounts_checked")] int AccountsChecked,
+    [property: JsonPropertyName("drift_account_count")] int DriftAccountCount,
+    [property: JsonPropertyName("total_absolute_drift_cents")] long TotalAbsoluteDriftCents,
+    [property: JsonPropertyName("has_drift")] bool HasDrift)
+{
+    /// <summary>The "never ran on this instance" default surfaced when the monitor is empty.</summary>
+    public static LedgerReconcileView Empty { get; } = new(null, 0, 0, 0, false);
+}
 
 /// <summary>
 /// A platform policy version on the wire (docs/API.md §8, docs/DATA_MODEL.md §11) — the admin-tunable fee,
