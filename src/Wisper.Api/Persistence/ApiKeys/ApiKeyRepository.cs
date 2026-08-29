@@ -82,7 +82,7 @@ public sealed class ApiKeyRepository : RepositoryBase, IApiKeyRepository
         }
         catch
         {
-            // swallowed on purpose — see summary above.
+            // swallowed on purpose -- see summary above.
         }
     }
 

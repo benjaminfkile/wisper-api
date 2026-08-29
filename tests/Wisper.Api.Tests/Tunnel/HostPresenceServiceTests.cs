@@ -14,7 +14,7 @@ using Host = Wisper.Api.Domain.Host;
 namespace Wisper.Api.Tests.Tunnel;
 
 /// <summary>
-/// Unit tests for <see cref="HostPresenceService"/> — the tunnel-driven flip of a host's persisted
+/// Unit tests for <see cref="HostPresenceService"/> -- the tunnel-driven flip of a host's persisted
 /// <c>host_status</c> (docs/TUNNEL.md §3, §8, task #392). Ready flips a host online only when it clears the
 /// earning gate (owner Connect-enabled, or every enabled image zero-priced); a suspended host never comes
 /// back online; a durable loss flips it offline; a non-Guid dev host id is a no-op.
@@ -246,7 +246,7 @@ public class HostPresenceServiceTests
     public async Task Ready_without_a_gpu_block_does_not_null_a_previously_advertised_host()
     {
         // A host that previously advertised GPU then sends a hello with no gpu block (null classes) keeps its
-        // persisted GPU — matching the isolation refresh, an absent block leaves the capability as-is (#521).
+        // persisted GPU -- matching the isolation refresh, an absent block leaves the capability as-is (#521).
         var fx = new Fixture();
         var host = await fx.SeedHostAsync(ConnectStatus.None);
         await fx.AddImageAsync(host.Id, price: 0);

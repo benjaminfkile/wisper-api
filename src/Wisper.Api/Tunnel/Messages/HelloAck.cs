@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>hello.ack</c> (W→A) — Wisper's reply to <see cref="Hello"/> (docs/TUNNEL.md §3, §5).
+/// <c>hello.ack</c> (W→A) -- Wisper's reply to <see cref="Hello"/> (docs/TUNNEL.md §3, §5).
 /// Carries the negotiated protocol version, the assigned <c>sessionId</c>, and the
 /// operational params the agent runs by: liveness cadence (§7), max binary payload,
 /// per-stream flow window (§9), and disconnect grace (§8).

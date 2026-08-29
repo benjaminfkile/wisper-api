@@ -90,7 +90,7 @@ public class LeaseMigrationsTests
         Assert.Contains("ALTER TABLE leases", sql, StringComparison.Ordinal);
         Assert.Contains("ADD COLUMN isolation text NOT NULL DEFAULT 'shared'", sql, StringComparison.Ordinal);
 
-        // The admin-tunable minimum-isolation floor on platform_policy (nullable — no floor by default).
+        // The admin-tunable minimum-isolation floor on platform_policy (nullable -- no floor by default).
         Assert.Contains("ALTER TABLE platform_policy", sql, StringComparison.Ordinal);
         Assert.Contains("ADD COLUMN min_isolation text", sql, StringComparison.Ordinal);
     }

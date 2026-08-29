@@ -6,7 +6,7 @@ namespace Wisper.Api.Tests.TestSupport;
 
 /// <summary>
 /// Mints RS256-signed JWTs for tests (Grunt has no Cognito), plus the matching JWKS document
-/// and public key — so the real <see cref="Wisper.Api.Auth.CognitoJwtValidator"/> and
+/// and public key -- so the real <see cref="Wisper.Api.Auth.CognitoJwtValidator"/> and
 /// <see cref="Wisper.Api.Auth.JwksSigningKeyProvider"/> validation paths run end-to-end offline.
 /// </summary>
 public sealed class TestJwtSigner : IDisposable

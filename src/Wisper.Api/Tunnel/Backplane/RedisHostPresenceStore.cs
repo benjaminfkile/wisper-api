@@ -6,11 +6,11 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// Redis <see cref="IHostPresenceStore"/>: presence lives in a single hash <c>{prefix}:presence</c>
 /// mapping <c>hostId → instanceId</c> (docs/DESIGN.md §7). Reads/writes are O(1) hash ops; the
 /// supersede-safe clear uses a tiny Lua script so it only deletes the field when this instance still
-/// owns it. Verified against a real Redis separately — Grunt tests the in-memory store.
+/// owns it. Verified against a real Redis separately -- Grunt tests the in-memory store.
 /// </summary>
 public sealed class RedisHostPresenceStore : IHostPresenceStore
 {
-    // DEL the field only if it still equals the owning instance — an atomic compare-and-clear.
+    // DEL the field only if it still equals the owning instance -- an atomic compare-and-clear.
     private const string ClearIfOwnerScript =
         "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) else return 0 end";
 

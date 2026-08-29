@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// A registered host — a machine an owner offers for leases (docs/DATA_MODEL.md §4, <c>hosts</c>).
+/// A registered host -- a machine an owner offers for leases (docs/DATA_MODEL.md §4, <c>hosts</c>).
 /// The agent token is stored <b>hashed only</b>; the token itself is shown once at issuance. Presence
 /// (<see cref="Status"/>) and capability/version fields are refreshed from the tunnel <c>hello</c>
 /// and heartbeats (docs/TUNNEL.md §5).
@@ -11,7 +11,7 @@ public sealed record Host
     /// <summary>Host id (DB default <c>gen_random_uuid()</c>).</summary>
     public Guid Id { get; init; }
 
-    /// <summary>Owner — the user who registered and controls this host.</summary>
+    /// <summary>Owner -- the user who registered and controls this host.</summary>
     public required Guid OwnerUserId { get; init; }
 
     /// <summary>Display name.</summary>
@@ -23,7 +23,7 @@ public sealed record Host
     /// <summary>Presence/gating state; only <see cref="HostStatus.Online"/> hosts are catalogued.</summary>
     public HostStatus Status { get; init; } = HostStatus.Offline;
 
-    /// <summary>Argon2/bcrypt hash of the agent token — never the token itself.</summary>
+    /// <summary>Argon2/bcrypt hash of the agent token -- never the token itself.</summary>
     public required string AgentTokenHash { get; init; }
 
     /// <summary>Short non-secret prefix for identification/rotation UX.</summary>
@@ -59,7 +59,7 @@ public sealed record Host
     /// The distinct GPU hardware classes this host offers, from its agent capability report (docs/TUNNEL.md
     /// §5, the wire <c>gpu</c> block, task #521). Opaque strings mirrored from the agent, like
     /// <see cref="IsolationLevels"/>; empty for a host that advertises no GPU (an older agent, or a machine
-    /// with none). Surfaced read-only on the host views — catalog filtering lands in a later task.
+    /// with none). Surfaced read-only on the host views -- catalog filtering lands in a later task.
     /// </summary>
     public IReadOnlyList<string> GpuClasses { get; init; } = HostGpu.NoClasses;
 

@@ -160,7 +160,7 @@ public class CatalogServiceTests
     public async Task Excludes_a_host_whose_row_is_online_but_tunnel_is_dead()
     {
         var h = new Harness();
-        // status='online' in the DB, but never registered a live tunnel — registry is authoritative.
+        // status='online' in the DB, but never registered a live tunnel -- registry is authoritative.
         var host = await h.AddHostAsync("stale", "us", T0, online: false);
         await h.AddImageAsync(host.Id, "img:1", price: 5);
 
@@ -324,7 +324,7 @@ public class CatalogServiceTests
         await h.AddImageAsync(host.Id, "cpu-only", price: 5, maxGpus: 0);
         await h.AddImageAsync(host.Id, "one-gpu", price: 5, maxGpus: 1);
 
-        // No min_gpus / gpu_class set — every enabled priced image is returned, GPU ceilings ignored.
+        // No min_gpus / gpu_class set -- every enabled priced image is returned, GPU ceilings ignored.
         var page = await h.Service.ListAsync(new CatalogQuery());
 
         var item = Assert.Single(page.Data);
@@ -380,7 +380,7 @@ public class CatalogServiceTests
     [Fact]
     public async Task List_resolves_a_sized_offer_to_its_own_values_source_offer()
     {
-        // task #578: an offer that pins cpus/memory surfaces those as the effective profile — the offer beats
+        // task #578: an offer that pins cpus/memory surfaces those as the effective profile -- the offer beats
         // the host's per-lease cap (which the harness advertises at 4/8192), and the raw fields are kept as-is.
         var h = new Harness();
         var host = await h.AddHostAsync("sized-host", "us", T0);
@@ -398,7 +398,7 @@ public class CatalogServiceTests
     [Fact]
     public async Task List_resolves_a_null_profile_offer_to_the_host_per_lease_cap_source_host_cap()
     {
-        // task #578: the live UX bug — a NULL cpus/memory_mb offer used to render as "host default". It now
+        // task #578: the live UX bug -- a NULL cpus/memory_mb offer used to render as "host default". It now
         // resolves the effective profile from the host's advertised per-lease cap (limits.max_cpus/memory_mb,
         // the harness's 4/8192) so the consumer never shops blind, while the raw fields stay null for the editor.
         var h = new Harness();
@@ -418,7 +418,7 @@ public class CatalogServiceTests
     public async Task List_leaves_a_null_profile_offer_unknown_when_the_host_advertises_no_cap()
     {
         // task #578: when neither the offer nor the host advertises a per-lease cap, the size is genuinely
-        // unknown — effective values stay null and resources_source is "unknown" (an honest annotation).
+        // unknown -- effective values stay null and resources_source is "unknown" (an honest annotation).
         var h = new Harness();
         var host = await h.AddHostAsync("no-cap-host", "us", T0);
         // Overwrite the live capability with one that advertises no per-lease cpu/memory cap.
@@ -511,7 +511,7 @@ public class CatalogServiceTests
     public async Task List_omits_capacity_counts_for_an_unlimited_host()
     {
         // A host that advertises no ceiling (max_contracts=0) is never at capacity and omits the counts (null),
-        // keeping the tolerant-optional-field discipline the frontend relies on — even with live leases running.
+        // keeping the tolerant-optional-field discipline the frontend relies on -- even with live leases running.
         var h = new Harness();
         var host = await h.AddHostAsync("unlimited-host", "us", T0, maxContracts: 0);
         await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
@@ -544,7 +544,7 @@ public class CatalogServiceTests
     public async Task Get_host_omits_capacity_counts_for_an_offline_host()
     {
         // An offline host has no live capability snapshot, so there is no advertised ceiling: never at capacity,
-        // counts omitted (null) — the offline surfacing case.
+        // counts omitted (null) -- the offline surfacing case.
         var h = new Harness();
         var host = await h.AddHostAsync("home", "eu", T0, status: HostStatus.Offline, online: false);
         await h.AddImageAsync(host.Id, "img", price: 7);
@@ -594,7 +594,7 @@ public class CatalogServiceTests
         var c = await h.AddHostAsync("c", "us", T0);
         await h.AddImageAsync(a.Id, "img", price: 5);
         await h.AddImageAsync(b.Id, "img", price: 5);
-        // c has only a disabled image, so it never qualifies — the page of 2 is the whole listing.
+        // c has only a disabled image, so it never qualifies -- the page of 2 is the whole listing.
         await h.AddImageAsync(c.Id, "img", price: 5, enabled: false);
 
         var page = await h.Service.ListAsync(new CatalogQuery { Limit = 2 });
@@ -663,7 +663,7 @@ public class CatalogServiceTests
     public async Task List_os_is_null_when_the_capability_advertises_none()
     {
         var h = new Harness();
-        // Online host whose (older) agent advertised no os — surfaces as null, never an error.
+        // Online host whose (older) agent advertised no os -- surfaces as null, never an error.
         var host = await h.AddHostAsync("legacy", "us", T0, os: null);
         await h.AddImageAsync(host.Id, "reg/wisp-base:latest", price: 5);
 
@@ -753,7 +753,7 @@ public class CatalogServiceTests
         var h = new Harness();
         // online: false → local registry is empty (simulates instance B which does not own the socket).
         var host = await h.AddHostAsync("remote", "us", T0, online: false);
-        // Presence store records the owner that instance A wrote — the distributed source of truth.
+        // Presence store records the owner that instance A wrote -- the distributed source of truth.
         await h.PresenceStore.SetOwnerAsync(host.Id.ToString(), "instance-a");
         // Provide capability so the catalog entry is complete (mirrors what instance A's registry holds).
         h.Capabilities.Set(host.Id, new HostCapabilitySnapshot(
@@ -817,7 +817,7 @@ public class CatalogServiceTests
     public async Task List_excludes_a_host_marked_degraded_even_when_the_tunnel_is_live()
     {
         // Task #62 AC #211: a degraded heartbeat marks the host degraded (its agent cannot reach its
-        // local wisp) — the catalog must exclude it from new lease placement even though the tunnel
+        // local wisp) -- the catalog must exclude it from new lease placement even though the tunnel
         // is still up and presence still reports it online.
         var h = new Harness();
         var host = await h.AddHostAsync("wisp-down", "us", T0, online: true);
@@ -833,7 +833,7 @@ public class CatalogServiceTests
     public async Task List_reincludes_a_host_after_its_degraded_flag_is_cleared()
     {
         // Task #62 AC #212: the next non-degraded heartbeat clears the flag and placement resumes
-        // automatically — no manual admin action, no reconnect required.
+        // automatically -- no manual admin action, no reconnect required.
         var h = new Harness();
         var host = await h.AddHostAsync("recovers", "us", T0, online: true);
         await h.AddImageAsync(host.Id, "img:1", price: 5);
@@ -870,7 +870,7 @@ public class CatalogServiceTests
     [Fact]
     public async Task Get_host_reports_online_false_for_a_degraded_host()
     {
-        // On the detail page a degraded host surfaces as online=false — the "book this host" view
+        // On the detail page a degraded host surfaces as online=false -- the "book this host" view
         // must be honest about placement being blocked, mirroring the offline path (AC #211).
         var h = new Harness();
         var host = await h.AddHostAsync("wisp-down", "us", T0, online: true);
@@ -890,7 +890,7 @@ public class CatalogServiceTests
         // but the host still appears). This is the existing single-instance behaviour unchanged.
         var h = new Harness();
         var host = await h.AddHostAsync("local", "us", T0, online: true);
-        // Presence store is empty — no SetOwnerAsync called. Local registry is the only source.
+        // Presence store is empty -- no SetOwnerAsync called. Local registry is the only source.
         await h.AddImageAsync(host.Id, "img:1", price: 5);
 
         var page = await h.Service.ListAsync(new CatalogQuery());

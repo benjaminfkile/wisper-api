@@ -6,7 +6,7 @@ namespace Wisper.Api.Payments;
 /// Real <see cref="IStripeBillingGateway"/> over the Stripe SDK (docs/PAYMENTS.md §3). Each call constructs
 /// the relevant Stripe service from the shared <see cref="IStripeClient.Sdk"/> and forwards the idempotency
 /// key via <see cref="RequestOptions"/> where one applies. Not exercised by the unit suite (Grunt has no
-/// Stripe) — the fake double backs <see cref="Wisper.Api.Billing.BillingService"/>'s tests; this type is
+/// Stripe) -- the fake double backs <see cref="Wisper.Api.Billing.BillingService"/>'s tests; this type is
 /// covered by the separate live-integration verification.
 /// </summary>
 public sealed class StripeBillingGateway : IStripeBillingGateway

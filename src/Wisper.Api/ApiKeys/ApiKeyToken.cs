@@ -7,9 +7,9 @@ namespace Wisper.Api.ApiKeys;
 /// long-lived, high-entropy machine bearer shown to the user <b>once</b> at mint; only its hash and a
 /// short non-secret prefix are stored. This mirrors <see cref="Wisper.Api.Hosts.HostAgentToken"/>
 /// byte-for-byte in approach: because the key carries full CSPRNG entropy, a plain <see cref="SHA256"/>
-/// digest is the right at-rest form — deterministic (so a presented key resolves to its row by an
-/// indexed hash lookup) and preimage-resistant, which a salted password hash (argon2/bcrypt) — designed
-/// for low-entropy secrets and non-deterministic by design — could not provide for an O(1) lookup.
+/// digest is the right at-rest form -- deterministic (so a presented key resolves to its row by an
+/// indexed hash lookup) and preimage-resistant, which a salted password hash (argon2/bcrypt) -- designed
+/// for low-entropy secrets and non-deterministic by design -- could not provide for an O(1) lookup.
 /// <para>
 /// The <see cref="Namespace"/> also lets the auth layer cheaply distinguish a key from a JWT: keys start
 /// with <c>wck_</c>; JWTs never do (see <see cref="LooksLikeApiKey"/>).
@@ -17,7 +17,7 @@ namespace Wisper.Api.ApiKeys;
 /// </summary>
 public static class ApiKeyToken
 {
-    /// <summary>The token namespace — the discriminator the auth layer uses to tell a key from a JWT.</summary>
+    /// <summary>The token namespace -- the discriminator the auth layer uses to tell a key from a JWT.</summary>
     public const string Namespace = "wck_";
 
     /// <summary>The token prefix (namespace + environment marker); the secret follows.</summary>
@@ -50,7 +50,7 @@ public static class ApiKeyToken
         Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 
     /// <summary>
-    /// Whether <paramref name="token"/> looks like an API key rather than a JWT — the cheap discriminator
+    /// Whether <paramref name="token"/> looks like an API key rather than a JWT -- the cheap discriminator
     /// the auth layer uses before doing a hashed lookup. Keys carry the <see cref="Namespace"/> prefix;
     /// JWTs (three base64url segments) never do. This is a shape check only, not authentication.
     /// </summary>

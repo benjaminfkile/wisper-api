@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// One append-only audit record (docs/DATA_MODEL.md §12, <c>audit_log</c>) — every admin/policy/
+/// One append-only audit record (docs/DATA_MODEL.md §12, <c>audit_log</c>) -- every admin/policy/
 /// money-sensitive action, written for a permanent, tamper-evident trail (the table forbids
 /// UPDATE/DELETE). <see cref="Meta"/> carries the before/after, amounts, and reason as <c>jsonb</c>.
 /// </summary>

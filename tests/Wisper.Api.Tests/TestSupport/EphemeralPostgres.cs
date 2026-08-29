@@ -7,15 +7,15 @@ namespace Wisper.Api.Tests.TestSupport;
 
 /// <summary>
 /// A throwaway PostgreSQL cluster for the few tests that must run against the REAL SQL stores rather than the
-/// in-memory doubles (task #540: the ledger <c>lease_id</c> FK ordering is only observable against Postgres —
+/// in-memory doubles (task #540: the ledger <c>lease_id</c> FK ordering is only observable against Postgres --
 /// the in-memory ledger enforces no FK, which is exactly why the unit suite never caught the bug). It
 /// <c>initdb</c>'s a fresh data directory under the temp folder, starts a private server on a free loopback
 /// TCP port with <c>trust</c> auth, and tears both down on dispose.
 /// <para>
 /// <b>Opt-in (task #558).</b> These regressions stand up a real server, so they are gated behind an explicit
-/// <c>WISPER_RUN_PG_TESTS</c> env var. When it is unset (the default — including normal CI on GitHub's
+/// <c>WISPER_RUN_PG_TESTS</c> env var. When it is unset (the default -- including normal CI on GitHub's
 /// ubuntu-latest, which ships Postgres under <c>/usr/lib/postgresql/*/bin</c>) <see cref="TryStartAsync"/>
-/// returns <c>null</c> and the callers skip <i>visibly</i> — deterministically, regardless of whether ambient
+/// returns <c>null</c> and the callers skip <i>visibly</i> -- deterministically, regardless of whether ambient
 /// Postgres binaries happen to exist. The first CI run hung for 14+ minutes precisely because discovery keyed
 /// off ambient binaries rather than an explicit opt-in; it no longer does. Set <c>WISPER_RUN_PG_TESTS=1</c> to
 /// run the regression for real. Set <c>WISPER_TEST_PG_BIN</c> to point at a <c>bin</c> directory to override
@@ -32,7 +32,7 @@ namespace Wisper.Api.Tests.TestSupport;
 // Why pg_ctl -w -t 60 did NOT bound the original 14-minute hang, and what actually fixes it:
 //   * `pg_ctl start` launches the long-lived postgres server as a child that INHERITS this process's
 //     redirected stdout/stderr pipes. pg_ctl itself exits after the readiness wait (bounded by -w -t), but the
-//     daemon keeps the WRITE end of those pipes open — so `StandardOutput/StandardError.ReadToEndAsync()` never
+//     daemon keeps the WRITE end of those pipes open -- so `StandardOutput/StandardError.ReadToEndAsync()` never
 //     observes EOF and blocks for the life of the server (i.e. until the test host is killed). The `-t 60` only
 //     bounds pg_ctl's own wait, never that dangling read. Fix: pass `-l <root>/server.log` so the server's
 //     output goes to a file and pg_ctl's inherited pipes close cleanly on exit.
@@ -70,14 +70,14 @@ public sealed class EphemeralPostgres : IAsyncDisposable
 
     /// <summary>
     /// Stands up a throwaway server, or returns <c>null</c> when the regression is not opted in
-    /// (<see cref="OptInEnvVar"/> unset — the default, so the caller skips) or the PostgreSQL server binaries
+    /// (<see cref="OptInEnvVar"/> unset -- the default, so the caller skips) or the PostgreSQL server binaries
     /// (<c>initdb</c>/<c>pg_ctl</c>) are not available. When opted in <i>and</i> the binaries are present a
     /// startup failure throws (bounded by the deadline), so a genuinely broken server is not silently skipped.
     /// </summary>
     public static async Task<EphemeralPostgres?> TryStartAsync(CancellationToken ct = default)
     {
         // Explicit opt-in gate: the regression NEVER runs off the mere presence of ambient binaries. This is the
-        // whole fix for task #558 — CI is deterministic regardless of what Postgres the runner happens to ship.
+        // whole fix for task #558 -- CI is deterministic regardless of what Postgres the runner happens to ship.
         if (!OptedIn())
         {
             return null;
@@ -130,7 +130,7 @@ public sealed class EphemeralPostgres : IAsyncDisposable
             new[] { "-D", _dataDir, "-U", "postgres", "-A", "trust", "-E", "UTF8", "--no-sync" }, dct);
 
         // Private server: loopback TCP on our free port, unix socket under the temp root (the default socket
-        // dir may be root-owned), and durability off — this cluster is discarded at the end of the test.
+        // dir may be root-owned), and durability off -- this cluster is discarded at the end of the test.
         // -l sends the SERVER's stdout/stderr to a log file: without it the daemon inherits our redirected pipes
         // and ReadToEndAsync never sees EOF (the real cause of the 14-minute hang; see the class-level note).
         var logFile = Path.Combine(_root, "server.log");
@@ -146,14 +146,14 @@ public sealed class EphemeralPostgres : IAsyncDisposable
         {
             try
             {
-                // Bound teardown too — a wedged stop must not hang the run any more than a wedged start.
+                // Bound teardown too -- a wedged stop must not hang the run any more than a wedged start.
                 using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(DeadlineSeconds));
                 await RunToolAsync("pg_ctl",
                     new[] { "-D", _dataDir, "-m", "immediate", "-w", "stop" }, deadline.Token);
             }
             catch
             {
-                // Best-effort teardown — the data directory is removed below regardless.
+                // Best-effort teardown -- the data directory is removed below regardless.
             }
 
             _started = false;
@@ -171,8 +171,8 @@ public sealed class EphemeralPostgres : IAsyncDisposable
 
     /// <summary>
     /// Runs a bundled tool to completion under <paramref name="ct"/>, returning its stdout. On cancellation
-    /// (the overall deadline firing, or the caller cancelling) the process is <b>killed</b> — including any
-    /// children — and a <see cref="TimeoutException"/> is thrown, so a hung tool can never block the run.
+    /// (the overall deadline firing, or the caller cancelling) the process is <b>killed</b> -- including any
+    /// children -- and a <see cref="TimeoutException"/> is thrown, so a hung tool can never block the run.
     /// </summary>
     private async Task<string> RunToolAsync(string tool, IReadOnlyList<string> args, CancellationToken ct)
     {
@@ -192,7 +192,7 @@ public sealed class EphemeralPostgres : IAsyncDisposable
             ?? throw new InvalidOperationException($"could not start {tool}");
         try
         {
-            // Read both pipes concurrently and wait for exit — all bound to ct so a stuck tool cannot wedge us.
+            // Read both pipes concurrently and wait for exit -- all bound to ct so a stuck tool cannot wedge us.
             var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
             var stderrTask = proc.StandardError.ReadToEndAsync(ct);
             await proc.WaitForExitAsync(ct);

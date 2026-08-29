@@ -10,7 +10,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// The host's advertised container OS from the tunnel <c>hello.capability</c> (docs/TUNNEL.md §5, task #314):
 /// a hello carrying the snake_case <c>os</c> field is parsed onto <see cref="HelloCapability.Os"/> and the
 /// live capability the registry tracks (<see cref="RegistryHostCapabilitySource"/>) surfaces it on the
-/// <see cref="HostCapabilitySnapshot"/>. It is surfacing only — an older agent that omits <c>os</c> leaves it
+/// <see cref="HostCapabilitySnapshot"/>. It is surfacing only -- an older agent that omits <c>os</c> leaves it
 /// <c>null</c> (unknown) and never faults, so nothing downstream regresses.
 /// </summary>
 public class HostCapabilityOsTests

@@ -6,7 +6,7 @@ namespace Wisper.Api.Tests.Payments;
 
 /// <summary>
 /// Unit tests for the real <see cref="StripeClient"/> wrapper (docs/PAYMENTS.md §1): it is config-driven and
-/// <b>fails closed</b> — with no secret key it reports unconfigured and refuses to hand out an SDK client,
+/// <b>fails closed</b> -- with no secret key it reports unconfigured and refuses to hand out an SDK client,
 /// so a Stripe-less boot cannot silently make calls. With a key it constructs the shared SDK client.
 /// </summary>
 public class StripeClientTests

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>error</c> (either direction) — a generic typed failure for a request or stream
+/// <c>error</c> (either direction) -- a generic typed failure for a request or stream
 /// (docs/TUNNEL.md §5, §12). Optionally echoes the <c>rid</c>/<c>sid</c> of the frame it
 /// refers to (inherited from <see cref="ControlEnvelope"/>, omitted when 0).
 /// </summary>

@@ -5,13 +5,13 @@ using Wisper.Api.Infrastructure;
 namespace Wisper.Api.Tunnel;
 
 /// <summary>
-/// DEV-ONLY, money-free interactive shell endpoint — a Phase-1 test harness for driving a tunnel
+/// DEV-ONLY, money-free interactive shell endpoint -- a Phase-1 test harness for driving a tunnel
 /// shell stream end-to-end before accounts/billing/tickets exist. It maps a raw WebSocket
 /// <c>GET /dev/leases/{leaseId}/shell</c> and bridges the consumer socket to a tunnel shell
 /// stream via the shared <see cref="ShellBridge"/>, honouring per-stream credit flow control
 /// (docs/TUNNEL.md §9) both ways. Gated behind <see cref="TunnelOptions.EnableDevEndpoints"/> (off by
 /// default). This mirrors the framing of the real <c>WS /v1/leases/:id/shell</c> (docs/API.md §7),
-/// which replaces it once accounts land — so there is no auth, no ticket, and the caller names the
+/// which replaces it once accounts land -- so there is no auth, no ticket, and the caller names the
 /// host directly via a query parameter.
 /// </summary>
 public static class DevShellEndpoints
@@ -57,7 +57,7 @@ public static class DevShellEndpoints
         }
         catch (ApiException ex)
         {
-            // host_offline / upstream_timeout etc. — the shell never opened; report a server-side
+            // host_offline / upstream_timeout etc. -- the shell never opened; report a server-side
             // WebSocket error close (1011) carrying the typed code so a client can surface it.
             logger.LogInformation(
                 "dev shell: open failed for lease {LeaseId} on host {HostId}: {Code}", leaseId, hostId, ex.Code);

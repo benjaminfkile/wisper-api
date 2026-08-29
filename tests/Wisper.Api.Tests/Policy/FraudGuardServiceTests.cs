@@ -13,7 +13,7 @@ namespace Wisper.Api.Tests.Policy;
 /// <summary>
 /// Unit tests for the day-one fraud guards (docs/PAYMENTS.md §7, §13) over the in-memory ledger + repos
 /// (Grunt has no Postgres). Covers all three <c>platform_policy</c> knobs enforced at top-up / lease start:
-/// the first-top-up hold, the new-account top-up velocity, and the per-user daily spend cap — each a no-op
+/// the first-top-up hold, the new-account top-up velocity, and the per-user daily spend cap -- each a no-op
 /// when unset or when no policy is configured, and a <c>limit_exceeded</c> (429) on breach.
 /// </summary>
 public class FraudGuardServiceTests
@@ -148,7 +148,7 @@ public class FraudGuardServiceTests
         });
         await fx.SeedTopupAsync(6000);
 
-        // Account created 48h ago — past the new-account window, so the velocity cap does not apply.
+        // Account created 48h ago -- past the new-account window, so the velocity cap does not apply.
         await fx.Guard.EnforceTopupAllowedAsync(fx.NewUser(T0 - TimeSpan.FromHours(48)), 9000); // no throw
     }
 

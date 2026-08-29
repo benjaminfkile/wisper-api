@@ -86,7 +86,7 @@ public class ApiKeyEndpointsTests
         var fx = new Fixture();
         using var factory = fx.Build();
 
-        // Mint (JWT-authenticated) — the full key is returned exactly once.
+        // Mint (JWT-authenticated) -- the full key is returned exactly once.
         var minted = await MintAsync(Jwt(factory), new { name = "orchestrator" });
         Assert.StartsWith("wck_live_", minted.Key);
         Assert.StartsWith("wck_live_", minted.TokenPrefix);
@@ -237,7 +237,7 @@ public class ApiKeyEndpointsTests
         var list = await Jwt(factory).GetFromJsonAsync<ApiKeysDto>("/v1/me/api-keys");
         Assert.Empty(list!.Data);
 
-        // ...and cannot revoke A's key — it is a 404, never revealing it exists.
+        // ...and cannot revoke A's key -- it is a 404, never revealing it exists.
         var revoke = await Jwt(factory).DeleteAsync($"/v1/me/api-keys/{aKey.Id}");
         Assert.Equal(HttpStatusCode.NotFound, revoke.StatusCode);
 

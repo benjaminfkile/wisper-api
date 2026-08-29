@@ -4,7 +4,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Tunnel.Backplane;
 
 /// <summary>
-/// Unit tests for the in-process <see cref="InMemoryHostPresenceStore"/> — presence (which host is on
+/// Unit tests for the in-process <see cref="InMemoryHostPresenceStore"/> -- presence (which host is on
 /// which instance) that a shared Redis would hold in multi-instance mode (docs/DESIGN.md §7). The
 /// supersede-safe clear is the subtle bit: a stale unregister from the old owner must not evict a record
 /// a newer owner has already written (mirrors the registry's supersede-on-reconnect).

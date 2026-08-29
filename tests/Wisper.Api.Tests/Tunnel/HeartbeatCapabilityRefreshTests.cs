@@ -15,11 +15,11 @@ namespace Wisper.Api.Tests.Tunnel;
 
 /// <summary>
 /// Task #61: a <c>host.heartbeat</c> that carries a full <c>capability</c> block replaces the manager's
-/// live view of the host — not just isolation/GPU (tasks #417, #521) but capacity/limits/os too — so the
+/// live view of the host -- not just isolation/GPU (tasks #417, #521) but capacity/limits/os too -- so the
 /// next lease admission sees fresh values within one heartbeat with no reconnect. Verifies both the wire
 /// contract (the block deserializes into the same <see cref="HelloCapability"/> the hello uses) and the
 /// runtime contract (the local snapshot flips, the shared capability store is republished, and an omitted
-/// block is "no update — keep last known").
+/// block is "no update -- keep last known").
 /// </summary>
 public class HeartbeatCapabilityRefreshTests
 {
@@ -30,8 +30,8 @@ public class HeartbeatCapabilityRefreshTests
     [Fact]
     public void Heartbeat_carrying_the_full_capability_block_is_parsed()
     {
-        // The full hello.capability shape — images/default/limits/os/isolation_levels/default_isolation/
-        // gpu/capacity — must all round-trip on host.heartbeat too (the agent sends this every ~15s).
+        // The full hello.capability shape -- images/default/limits/os/isolation_levels/default_isolation/
+        // gpu/capacity -- must all round-trip on host.heartbeat too (the agent sends this every ~15s).
         const string json =
             "{\"t\":\"host.heartbeat\",\"leases\":[]," +
             "\"capability\":{\"images\":[\"alpine\",\"ubuntu\"],\"default\":\"alpine\",\"os\":\"linux\"," +
@@ -86,7 +86,7 @@ public class HeartbeatCapabilityRefreshTests
 
         var after = fx.Source.GetCapability(fx.HostId)!;
         Assert.Equal(2, after.MaxContracts);
-        // And the shared capability store is republished — non-owner instances see the new ceiling too.
+        // And the shared capability store is republished -- non-owner instances see the new ceiling too.
         Assert.Equal(2, fx.CapabilityStore.Get(fx.HostId.ToString())!.MaxContracts);
     }
 
@@ -96,7 +96,7 @@ public class HeartbeatCapabilityRefreshTests
         // AC 208: a heartbeat that omits `capability` (the agent's local wisp is unreachable, so it
         // deliberately drops the block) MUST leave the last-known snapshot exactly as-is. The router
         // does not invoke the helper at all, so the connection's Capability and the shared store keep
-        // the hello-time values — the manager keeps admitting against the last-known truth.
+        // the hello-time values -- the manager keeps admitting against the last-known truth.
         var fx = await Fixture.CreateAsync();
         fx.ConnectHost(WithCapacity(maxContracts: 4));
 
@@ -106,7 +106,7 @@ public class HeartbeatCapabilityRefreshTests
 
         var heartbeat = ControlJson.Deserialize<HostHeartbeat>(
             "{\"t\":\"host.heartbeat\",\"leases\":[]}")!;
-        Assert.Null(heartbeat.Capability); // the wire is bare — no capability block
+        Assert.Null(heartbeat.Capability); // the wire is bare -- no capability block
 
         // The endpoint's router only invokes the refresh helper when heartbeat.Capability is present;
         // simulate that contract here.
@@ -125,7 +125,7 @@ public class HeartbeatCapabilityRefreshTests
     [Fact]
     public async Task Heartbeat_refresh_still_updates_persisted_isolation_and_gpu()
     {
-        // AC 209: task #417 + #521 mid-session refresh behavior must be preserved — the same heartbeat
+        // AC 209: task #417 + #521 mid-session refresh behavior must be preserved -- the same heartbeat
         // that refreshes capacity also updates the host row's advertised isolation and GPU (persisted
         // for the catalog). Same call as before; no regression.
         var fx = await Fixture.CreateAsync();

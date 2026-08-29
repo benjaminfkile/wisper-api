@@ -5,8 +5,8 @@ using Xunit;
 namespace Wisper.Api.Tests.Ledger;
 
 /// <summary>
-/// The pure accounting rules (docs/DATA_MODEL.md §7) — normal side, earmarked-liability set, and the
-/// signed-delta a posting makes — that the in-memory ledger and the SQL triggers both rely on. Getting
+/// The pure accounting rules (docs/DATA_MODEL.md §7) -- normal side, earmarked-liability set, and the
+/// signed-delta a posting makes -- that the in-memory ledger and the SQL triggers both rely on. Getting
 /// the normal side wrong is a money bug, so it is pinned per kind.
 /// </summary>
 public class LedgerAccountKindsTests

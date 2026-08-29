@@ -39,7 +39,7 @@ public sealed class InMemoryHostRegistry : IHostRegistry
                 return;
             }
 
-            // Lost a race with a concurrent register/unregister for this host — retry.
+            // Lost a race with a concurrent register/unregister for this host -- retry.
         }
     }
 

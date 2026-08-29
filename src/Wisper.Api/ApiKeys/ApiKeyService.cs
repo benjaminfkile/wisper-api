@@ -10,7 +10,7 @@ namespace Wisper.Api.ApiKeys;
 /// (shown once, hash-at-rest, scope-capped by the minter's roles), list the caller's keys (prefix only,
 /// never the hash/key), and revoke a key (idempotent, owner-scoped). Everything runs against the
 /// <see cref="IApiKeyRepository"/> interface so the unit suite needs no Postgres. Secret values are never
-/// logged — only the non-secret display prefix.
+/// logged -- only the non-secret display prefix.
 /// </summary>
 public sealed class ApiKeyService
 {
@@ -27,7 +27,7 @@ public sealed class ApiKeyService
 
     /// <summary>
     /// Mints a new API key for <paramref name="ownerUserId"/> (docs/API.md §5). The requested scopes default
-    /// to <c>consumer</c> and every scope must be one of <paramref name="callerRoles"/> — a key can never be
+    /// to <c>consumer</c> and every scope must be one of <paramref name="callerRoles"/> -- a key can never be
     /// granted a role its minter lacks (privilege containment, docs/API.md §2). Only the hash + prefix are
     /// persisted; the returned <see cref="ApiKeyMintedResponse.Key"/> is the full bearer, shown <b>once</b>.
     /// </summary>
@@ -56,7 +56,7 @@ public sealed class ApiKeyService
             CreatedAt = _time.GetUtcNow(),
         }, ct);
 
-        // Log the id + non-secret prefix + scopes only — never the clear key.
+        // Log the id + non-secret prefix + scopes only -- never the clear key.
         _logger.LogInformation(
             "api key {Key} minted by user {User} (prefix {Prefix}, scopes {Scopes})",
             created.Id, ownerUserId, issued.TokenPrefix, string.Join(',', created.Scopes));
@@ -65,7 +65,7 @@ public sealed class ApiKeyService
             created.Id, created.Name, issued.Token, created.TokenPrefix, created.Scopes, created.CreatedAt);
     }
 
-    /// <summary>The caller's keys (docs/API.md §5), newest first — prefix + scopes + lifecycle only.</summary>
+    /// <summary>The caller's keys (docs/API.md §5), newest first -- prefix + scopes + lifecycle only.</summary>
     public async Task<ApiKeysResponse> ListAsync(Guid ownerUserId, CancellationToken ct = default)
     {
         var keys = await _keys.ListByUserAsync(ownerUserId, ct);
@@ -89,7 +89,7 @@ public sealed class ApiKeyService
 
         if (key.RevokedAt is not null)
         {
-            // Idempotent: already revoked — return the existing state without a second write.
+            // Idempotent: already revoked -- return the existing state without a second write.
             return ApiKeyView.From(key);
         }
 

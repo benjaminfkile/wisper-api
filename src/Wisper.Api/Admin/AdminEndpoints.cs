@@ -272,7 +272,7 @@ public static class AdminEndpoints
             }
             catch (JsonException)
             {
-                meta = null; // A non-JSON meta (shouldn't happen — the column is jsonb) is omitted, not fatal.
+                meta = null; // A non-JSON meta (shouldn't happen -- the column is jsonb) is omitted, not fatal.
             }
         }
 
@@ -349,7 +349,7 @@ public static class AdminEndpoints
             : throw new ApiException(ApiErrorCode.NotFound, $"No such {what} '{id}'.");
 
     /// <summary>
-    /// Parses an admin lease id — the same <c>lease_&lt;guid&gt;</c> token the consumer surface accepts —
+    /// Parses an admin lease id -- the same <c>lease_&lt;guid&gt;</c> token the consumer surface accepts --
     /// AND falls back to a plain uuid so an operator pasting either shape can end the lease. A non-parseable
     /// id is <c>404</c> so the id shape is never leaked (docs/API.md §3).
     /// </summary>

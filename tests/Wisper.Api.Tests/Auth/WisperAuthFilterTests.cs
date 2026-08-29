@@ -16,7 +16,7 @@ namespace Wisper.Api.Tests.Auth;
 /// <summary>
 /// Unit tests for the role-gating <see cref="WisperAuthFilter"/> (docs/API.md §2): missing/invalid
 /// credentials → <c>401 unauthenticated</c>; authenticated-but-under-privileged → <c>403 forbidden</c>;
-/// authorized calls flow through. Uses <see cref="FakeJwtValidator"/> — no crypto.
+/// authorized calls flow through. Uses <see cref="FakeJwtValidator"/> -- no crypto.
 /// </summary>
 public class WisperAuthFilterTests
 {
@@ -195,7 +195,7 @@ public class WisperAuthFilterTests
     public async Task Consumer_owning_a_host_passes_the_host_gate_without_the_group()
     {
         // The live bug: a consumer whose current token predates the host-group add owns a host but 403s.
-        // The host gate now honors DB ownership, so this call passes on the pre-existing token — no re-login.
+        // The host gate now honors DB ownership, so this call passes on the pre-existing token -- no re-login.
         var principal = WisperPrincipal.Create("owner-sub", "owner@example.com", Array.Empty<string>());
         Assert.False(principal.HasRole(WisperRole.Host)); // the token itself carries no host group
         var (context, _, hosts, users) = NewOwnershipContext(principal);
@@ -271,7 +271,7 @@ public class WisperAuthFilterTests
 
 /// <summary>
 /// An <see cref="IHostRepository"/> that counts <see cref="ListByOwnerAsync"/> calls (the host-ownership
-/// query) and delegates everything else to an in-memory double — so a test can assert ownership is resolved
+/// query) and delegates everything else to an in-memory double -- so a test can assert ownership is resolved
 /// at most once per request.
 /// </summary>
 internal sealed class CountingHostRepository : IHostRepository

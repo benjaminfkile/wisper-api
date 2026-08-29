@@ -6,7 +6,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// <summary>
 /// In-process <see cref="ITunnelBackplane"/>: publishes fan out to every subscriber registered on the
 /// same channel <b>within this process</b>. Each subscription drains its own ordered queue on a
-/// background pump, so delivery is asynchronous (like a real broker) yet ordered per subscription —
+/// background pump, so delivery is asynchronous (like a real broker) yet ordered per subscription --
 /// no message is lost between publish and handler invocation. This is the "fake/looped backplane"
 /// the design calls for: it lets two simulated instances (distinct <see cref="WisperInstanceIdentity"/>
 /// sharing one loopback) bridge each other with no Redis, which is exactly what the unit tests use.
@@ -20,7 +20,7 @@ public sealed class LoopbackTunnelBackplane : ITunnelBackplane
     {
         if (_channels.TryGetValue(channel, out var subscribers))
         {
-            // Copy once — subscribers get independent ownership of the bytes.
+            // Copy once -- subscribers get independent ownership of the bytes.
             var payload = message.ToArray();
             foreach (var subscriber in subscribers.Values)
             {
@@ -70,7 +70,7 @@ public sealed class LoopbackTunnelBackplane : ITunnelBackplane
                         }
                         catch
                         {
-                            // A handler fault must not kill the pump — the next message still flows.
+                            // A handler fault must not kill the pump -- the next message still flows.
                         }
                     }
                 }

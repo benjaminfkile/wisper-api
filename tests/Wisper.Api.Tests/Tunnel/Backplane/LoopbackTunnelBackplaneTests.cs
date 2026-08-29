@@ -5,7 +5,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Tunnel.Backplane;
 
 /// <summary>
-/// Unit tests for the in-process <see cref="LoopbackTunnelBackplane"/> — the "fake/looped backplane" the
+/// Unit tests for the in-process <see cref="LoopbackTunnelBackplane"/> -- the "fake/looped backplane" the
 /// design calls for (docs/DESIGN.md §7). It stands in for Redis pub/sub in the single-process suite, so it
 /// must fan a publish out to every live subscriber on the channel, deliver in publish order, isolate
 /// channels, and stop delivering once a subscription is disposed.
@@ -114,7 +114,7 @@ public class LoopbackTunnelBackplaneTests
         await sub.DisposeAsync();
         await backplane.PublishAsync("chan", Msg("two"));
 
-        // No live subscriber remains, so the second publish is dropped — the count stays at 1.
+        // No live subscriber remains, so the second publish is dropped -- the count stays at 1.
         Assert.False(await gate.WaitAsync(TimeSpan.FromMilliseconds(200)));
         Assert.Equal(1, count);
     }

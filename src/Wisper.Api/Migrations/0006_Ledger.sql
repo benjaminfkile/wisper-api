@@ -1,17 +1,17 @@
--- 0006_Ledger.sql — the double-entry ledger: the money source of truth (docs/DATA_MODEL.md §7, §8).
+-- 0006_Ledger.sql -- the double-entry ledger: the money source of truth (docs/DATA_MODEL.md §7, §8).
 --
 -- Every cent that exists in Wisper is a balance *derived from* these three append-only tables. The
 -- invariants are enforced in the database itself, not just app code, so no bug above the DB can post
 -- unbalanced or duplicate money:
---   (a) every transaction balances (Σ debit = Σ credit) — a DEFERRED constraint trigger checked at
+--   (a) every transaction balances (Σ debit = Σ credit) -- a DEFERRED constraint trigger checked at
 --       commit, after all of a txn's entries are inserted;
---   (b) entries & transactions are immutable (append-only) — corrections are reversing transactions;
---   (c) account balances are *maintained*, never authored — a trigger updates balance_cents by each
+--   (b) entries & transactions are immutable (append-only) -- corrections are reversing transactions;
+--   (c) account balances are *maintained*, never authored -- a trigger updates balance_cents by each
 --       account's normal side as entries land;
 --   (d) the same trigger guards the earmarked liabilities (user_wallet, lease_holds) non-negative, the
 --       hard guarantee a consumer can never outspend their wallet (the one documented exception is a
 --       `chargeback`, which may drive a wallet negative = a genuine debt, docs/PAYMENTS.md §7).
--- The C# LedgerService mirrors (a)–(d) over an in-memory ledger so the logic is unit-testable without
+-- The C# LedgerService mirrors (a)-(d) over an in-memory ledger so the logic is unit-testable without
 -- Postgres; these SQL triggers are the defense-in-depth backstop.
 --
 -- This migration also closes the circular FKs deferred by 0005 (leases.hold_txn_id and
@@ -98,7 +98,7 @@ CREATE CONSTRAINT TRIGGER ledger_txn_balanced
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION assert_txn_balanced();
 
--- (b) Entries & transactions are immutable — append-only; corrections are reversing transactions
+-- (b) Entries & transactions are immutable -- append-only; corrections are reversing transactions
 -- (docs/DATA_MODEL.md §7b). Balances live on ledger_accounts and are maintained by (c), so accounts are
 -- deliberately not frozen.
 CREATE FUNCTION ledger_forbid_mutation() RETURNS trigger

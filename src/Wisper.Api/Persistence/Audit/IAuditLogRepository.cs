@@ -3,7 +3,7 @@ using Wisper.Api.Domain;
 namespace Wisper.Api.Persistence.Audit;
 
 /// <summary>
-/// Data access for <see cref="AuditLogEntry"/> rows (docs/DATA_MODEL.md §12) — the append-only trail of
+/// Data access for <see cref="AuditLogEntry"/> rows (docs/DATA_MODEL.md §12) -- the append-only trail of
 /// admin/policy/money-sensitive actions. Only appends and reads exist; the table forbids UPDATE/DELETE. A
 /// Dapper + explicit-SQL implementation backs Postgres; an in-memory double backs the unit suite (Grunt
 /// has no Postgres).
@@ -30,8 +30,8 @@ public interface IAuditLogRepository : IRepository
 
 /// <summary>
 /// Filters + a page bound for the admin audit view (docs/API.md §8, docs/DATA_MODEL.md §12). Every filter
-/// is optional (a <c>null</c> filter matches all); <see cref="BeforeId"/> is the keyset cursor — only rows
-/// with a strictly smaller id (i.e. older, since ids are monotonic) are returned — and <see cref="Limit"/>
+/// is optional (a <c>null</c> filter matches all); <see cref="BeforeId"/> is the keyset cursor -- only rows
+/// with a strictly smaller id (i.e. older, since ids are monotonic) are returned -- and <see cref="Limit"/>
 /// bounds the page.
 /// </summary>
 public sealed record AuditLogQuery

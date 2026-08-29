@@ -10,7 +10,7 @@ namespace Wisper.Api.Tests.Ledger;
 /// <see cref="LedgerService"/> over the in-memory store (Grunt has no Postgres): balanced-only posting
 /// (§7a), maintained balances by normal side (§7c), the non-negative guard on the earmarked liabilities
 /// (§7d) with the documented chargeback exception, idempotent replay (§8), and journal reconciliation
-/// (§7e). Every persisted transaction is atomic — a rejected post leaves balances untouched.
+/// (§7e). Every persisted transaction is atomic -- a rejected post leaves balances untouched.
 /// </summary>
 public class LedgerServiceTests
 {
@@ -125,12 +125,12 @@ public class LedgerServiceTests
         var lease = Guid.NewGuid();
         await svc.PostAsync(LedgerFlows.Topup(a.Wallet, a.PlatformCash, a.StripeFees, 500, 0, "evt_topup"));
 
-        // A hold for more than the wallet holds must fail — the hard gate (§7d).
+        // A hold for more than the wallet holds must fail -- the hard gate (§7d).
         var ex = await Assert.ThrowsAsync<LedgerException>(
             () => svc.PostAsync(LedgerFlows.LeaseHold(a.Wallet, a.Holds, lease, amountCents: 600)));
 
         Assert.Equal(LedgerViolation.InsufficientFunds, ex.Reason);
-        Assert.Equal(500, await svc.GetBalanceAsync(a.Wallet));  // untouched — atomic rollback
+        Assert.Equal(500, await svc.GetBalanceAsync(a.Wallet));  // untouched -- atomic rollback
         Assert.Equal(0, await svc.GetBalanceAsync(a.Holds));
     }
 
@@ -159,7 +159,7 @@ public class LedgerServiceTests
         var a = await SeedAccountsAsync(svc);
         await svc.PostAsync(LedgerFlows.Topup(a.Wallet, a.PlatformCash, a.StripeFees, 200, 0, "evt_topup"));
 
-        // The one documented case a wallet may go below zero — a debt (docs/PAYMENTS.md §7).
+        // The one documented case a wallet may go below zero -- a debt (docs/PAYMENTS.md §7).
         var chargeback = new TransactionDraft
         {
             Kind = LedgerTxnKind.Chargeback,

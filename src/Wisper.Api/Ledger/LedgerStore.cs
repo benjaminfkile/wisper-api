@@ -9,7 +9,7 @@ namespace Wisper.Api.Ledger;
 /// Dapper + explicit-SQL <see cref="ILedgerStore"/> over Postgres (docs/DATA_MODEL.md §7). A money
 /// movement is one DB transaction that inserts the <c>ledger_transaction</c> and all its balanced
 /// <c>ledger_entries</c>; the schema's triggers then maintain balances and enforce the balanced and
-/// non-negative invariants atomically (§7a, §7c, §7d) — this store leans on them as the source of truth
+/// non-negative invariants atomically (§7a, §7c, §7d) -- this store leans on them as the source of truth
 /// and translates their <c>RAISE</c>s into <see cref="LedgerException"/>. The C# <see cref="LedgerService"/>
 /// pre-validates shape/balance and the in-memory store mirrors the same rules, so the logic is unit-tested
 /// without Postgres; this type is not exercised by the unit suite (Grunt has no database), matching the
@@ -52,7 +52,7 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
         {
-            // Lost a race to create the singleton — read the winner back.
+            // Lost a race to create the singleton -- read the winner back.
             return await FindAccountAsync(conn, kind, ownerUserId, ct)
                 ?? throw new LedgerException(LedgerViolation.InvalidTransaction,
                     $"ledger account ({kind}, {ownerUserId}) could not be created or found");
@@ -178,7 +178,7 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
 
         await using var conn = await OpenConnectionAsync(ct);
 
-        // Idempotent replay — a duplicate key returns the existing txn, posts nothing (docs/DATA_MODEL.md §8).
+        // Idempotent replay -- a duplicate key returns the existing txn, posts nothing (docs/DATA_MODEL.md §8).
         if (draft.IdempotencyKey is { } key)
         {
             var found = await FindTransactionByKeyAsync(conn, key, ct);
@@ -240,7 +240,7 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
         {
             await tx.RollbackAsync(ct);
 
-            // A concurrent poster committed the same idempotency key first — return theirs.
+            // A concurrent poster committed the same idempotency key first -- return theirs.
             if (ex.SqlState == PostgresErrorCodes.UniqueViolation && draft.IdempotencyKey is { } racedKey)
             {
                 var found = await FindTransactionByKeyAsync(conn, racedKey, ct);

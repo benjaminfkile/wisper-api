@@ -47,7 +47,7 @@ public sealed class PlatformPolicyService
         return _repo.AppendAsync(toStore, ct);
     }
 
-    /// <summary>Every policy version, newest first — the audit trail of policy changes.</summary>
+    /// <summary>Every policy version, newest first -- the audit trail of policy changes.</summary>
     public Task<IReadOnlyList<PlatformPolicy>> ListVersionsAsync(CancellationToken ct = default) =>
         _repo.ListAsync(ct);
 }

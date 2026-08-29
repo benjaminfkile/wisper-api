@@ -4,7 +4,7 @@ namespace Wisper.Api.Leases;
 /// The consumer lease surface behind <c>POST/GET/DELETE /v1/leases</c> (docs/API.md §5). It validates a
 /// requested lease against the host's priced allow-list, runs the wallet gate (docs/DATA_MODEL.md §8),
 /// drives the host over the tunnel via <see cref="Wisper.Api.Tunnel.ITunnelRelay"/>, and persists the
-/// <c>leases</c> row (docs/DATA_MODEL.md §5). Reads are strictly caller-scoped — a lease owned by another
+/// <c>leases</c> row (docs/DATA_MODEL.md §5). Reads are strictly caller-scoped -- a lease owned by another
 /// user is indistinguishable from a missing one (docs/API.md §3, ownership → 404). Transport concerns
 /// (auth, the <c>Idempotency-Key</c> replay) live at the endpoint; this layer is unit-testable with a
 /// fake relay and in-memory repositories.
@@ -32,14 +32,14 @@ public interface ILeaseService
     /// the host id and the <c>lease_&lt;guid&gt;</c> token the relay's exec paths use. Returns <c>null</c>
     /// when there is no such lease the caller can see (→ <c>404</c>, ownership is never revealed), and
     /// throws <see cref="Infrastructure.ApiException"/> <c>lease_not_ready</c> when the lease exists but is
-    /// not <c>active</c> — exec is only permitted against a ready lease.
+    /// not <c>active</c> -- exec is only permitted against a ready lease.
     /// </summary>
     Task<LeaseExecTarget?> ResolveExecTargetAsync(
         Guid consumerUserId, Guid leaseId, CancellationToken ct = default);
 
     /// <summary>
     /// Releases the caller's lease: sends <c>lease.release</c> over the tunnel and marks the row
-    /// <c>ended</c> (<c>released</c>). Idempotent and safe to retry — an already-ended lease returns
+    /// <c>ended</c> (<c>released</c>). Idempotent and safe to retry -- an already-ended lease returns
     /// unchanged, and a host with no live tunnel is treated as already released. Returns <c>null</c> if
     /// there is no such lease the caller can see.
     /// </summary>

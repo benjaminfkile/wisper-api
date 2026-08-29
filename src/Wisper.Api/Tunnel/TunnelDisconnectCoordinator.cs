@@ -15,9 +15,9 @@ namespace Wisper.Api.Tunnel;
 /// within the window cancels the timer and the first heartbeat's live-lease list drives the resume/end
 /// set-diff; if grace expires with no reconnect the still-suspended leases are ended
 /// (<c>host_disconnect</c>). It also drives host <b>presence</b> (<see cref="IHostPresence"/>, task #392):
-/// the host is flipped <c>offline</c> once the loss is durable — grace expired, or a close with no leases
-/// to protect — so a momentary blip or a superseding reconnect keeps it online. Every hook is
-/// exception-safe — a reconciliation or presence failure never disrupts the tunnel plumbing — and a host
+/// the host is flipped <c>offline</c> once the loss is durable -- grace expired, or a close with no leases
+/// to protect -- so a momentary blip or a superseding reconnect keeps it online. Every hook is
+/// exception-safe -- a reconciliation or presence failure never disrupts the tunnel plumbing -- and a host
 /// id that is not a Guid (the Phase-1 dev/no-DB harness) is a no-op.
 /// <para>
 /// The grace timer runs as a background task per host, cancellable by reconnect. <see
@@ -35,7 +35,7 @@ public sealed class TunnelDisconnectCoordinator
     private readonly IHostPresence? _presence;
     // Resolved lazily on first orphan teardown: constructor-injecting ITunnelRelay would form a DI cycle
     // (TunnelRelay itself takes an optional TunnelDisconnectCoordinator so it can route lease.ended frames
-    // back through reconciliation — task #56). The factory is invoked only when there is an orphan to
+    // back through reconciliation -- task #56). The factory is invoked only when there is an orphan to
     // tear down, so tests that never trigger a teardown pass null.
     private readonly Func<ITunnelRelay>? _tunnelRelayFactory;
     private readonly ConcurrentDictionary<Guid, GraceEntry> _grace = new();
@@ -84,7 +84,7 @@ public sealed class TunnelDisconnectCoordinator
             return Task.CompletedTask;
         }
 
-        // A new disconnect resets any pending post-grace state from a prior reconnect — the current
+        // A new disconnect resets any pending post-grace state from a prior reconnect -- the current
         // disconnect will manage the lease set from here on.
         _pendingPostGraceReconcile.TryRemove(host, out _);
 
@@ -138,7 +138,7 @@ public sealed class TunnelDisconnectCoordinator
         }
         catch (OperationCanceledException)
         {
-            return; // reconnected (or superseded) within grace — the reconnect path resolves the leases
+            return; // reconnected (or superseded) within grace -- the reconnect path resolves the leases
         }
 
         // Expire only if this exact entry is still current (not already resolved by a reconnect).
@@ -176,7 +176,7 @@ public sealed class TunnelDisconnectCoordinator
     }
 
     /// <summary>
-    /// Flip <paramref name="host"/> offline via the presence hook, if one is wired. Exception-safe — a
+    /// Flip <paramref name="host"/> offline via the presence hook, if one is wired. Exception-safe -- a
     /// presence failure never disrupts the grace/reconnect plumbing (mirrors the lease hooks). A no-op when
     /// no <see cref="IHostPresence"/> was supplied (the unit fixtures that only exercise lease reconciliation).
     /// </summary>
@@ -215,13 +215,13 @@ public sealed class TunnelDisconnectCoordinator
     /// On every heartbeat: reconciles the manager's lease state against what the agent actually runs
     /// (docs/TUNNEL.md §8). Three paths, each falling through to the continuous reconciliation step:
     /// <list type="bullet">
-    /// <item><b>Within grace</b> — set-diff the reported live leases against the host's <c>suspended</c> set
-    /// (resume the ones still present, end <c>container_lost</c> the ones gone). Returns early — the grace
+    /// <item><b>Within grace</b> -- set-diff the reported live leases against the host's <c>suspended</c> set
+    /// (resume the ones still present, end <c>container_lost</c> the ones gone). Returns early -- the grace
     /// path already yields a fully consistent active set.</item>
-    /// <item><b>Post-grace</b> — leases were already ended as <c>host_disconnect</c> when grace expired, but
+    /// <item><b>Post-grace</b> -- leases were already ended as <c>host_disconnect</c> when grace expired, but
     /// the containers kept running. Revive any live contracts that map to those ended leases so the manager
     /// count matches what the host actually has. Falls through to the continuous step.</item>
-    /// <item><b>Continuous (every beat)</b> — set-diff the reported set against the manager's <c>active</c>
+    /// <item><b>Continuous (every beat)</b> -- set-diff the reported set against the manager's <c>active</c>
     /// set for the host: end silently-dead containers as <c>container_lost</c>, revive live contracts that
     /// were ended as <c>host_disconnect</c>, flag true orphans. Zero writes in the steady-state common case
     /// (reported set == active set). A no-op for a non-Guid host id.</item>
@@ -233,18 +233,18 @@ public sealed class TunnelDisconnectCoordinator
 
     /// <summary>
     /// Connection-aware overload used by the live agent endpoint: runs the same reconciliation as the
-    /// string-id overload, then — for each reported lease the continuous set-diff flagged as
+    /// string-id overload, then -- for each reported lease the continuous set-diff flagged as
     /// <see cref="HeartbeatReconcileOutcome.TerminalOrphaned"/> (host-reported and the manager has an
-    /// actual terminal row that cannot be revived) — best-effort relays a <c>lease.release</c> back over
+    /// actual terminal row that cannot be revived) -- best-effort relays a <c>lease.release</c> back over
     /// <paramref name="connection"/> so the container is torn down immediately instead of pinning host
     /// capacity until wisp's TTL reaper fires (task #73). Reported ids the reconciler flagged as
-    /// <see cref="HeartbeatReconcileOutcome.UnknownReported"/> (no manager row at all — possibly a
+    /// <see cref="HeartbeatReconcileOutcome.UnknownReported"/> (no manager row at all -- possibly a
     /// mid-create where the row has not yet been inserted, task #75) are deliberately NOT torn down;
     /// wisp's TTL reaper is the backstop for any true garbage. The per-connection
     /// <see cref="TunnelConnection.TerminalTeardownRelayed"/> set dedupes so a repeated heartbeat that
     /// keeps reporting the same orphan does not spam relays or logs; a supersede/reconnect starts with
     /// an empty set and gets one fresh attempt per lease. Relay failures (host_offline,
-    /// upstream_timeout) are swallowed after logging — wisp's TTL reaper is the backstop.
+    /// upstream_timeout) are swallowed after logging -- wisp's TTL reaper is the backstop.
     /// </summary>
     public Task OnHeartbeatAsync(
         TunnelConnection connection, IReadOnlyCollection<Guid> liveLeaseIds, CancellationToken ct = default) =>
@@ -261,7 +261,7 @@ public sealed class TunnelDisconnectCoordinator
             return;
         }
 
-        // Primary path: reconnect within the grace window — the leases are still suspended and the agent
+        // Primary path: reconnect within the grace window -- the leases are still suspended and the agent
         // reported its live set, so we can set-diff and resume/end accordingly.
         if (_grace.TryRemove(host, out var entry))
         {
@@ -325,7 +325,7 @@ public sealed class TunnelDisconnectCoordinator
         }
 
         // Best-effort teardown of orphans (task #73): a host-reported lease the reconciler classified as
-        // TerminalOrphaned is a container running on the host that we can never bill or reason about —
+        // TerminalOrphaned is a container running on the host that we can never bill or reason about --
         // telling wisp to release it now frees the pinned capacity slot immediately instead of waiting
         // up to a full lease TTL for the local reaper. Only fires when we have a live tunnel
         // (connection + relay both wired); the string-id overload used by unit fixtures skips this. We
@@ -333,7 +333,7 @@ public sealed class TunnelDisconnectCoordinator
         // all, and LeaseService.CreateAsync provisions the container over the tunnel BEFORE inserting
         // the lease row, so a heartbeat landing in that window reports the fresh lease id while
         // GetByIdAsync still returns null (task #75). Before task #75, both buckets were relayed and
-        // that mid-create window killed the container in-flight — wisp's TTL reaper remains the backstop
+        // that mid-create window killed the container in-flight -- wisp's TTL reaper remains the backstop
         // for any true garbage id, and the next heartbeat's set-diff (once the row is inserted)
         // converges either to a happy active lease or to a container_lost. The per-connection dedupe
         // (TerminalTeardownRelayed) keeps a stable orphan from re-emitting a relay or a log line on
@@ -358,7 +358,7 @@ public sealed class TunnelDisconnectCoordinator
         {
             // Dedupe first: an orphan the host keeps reporting must NOT trigger a relay (or log line) on
             // every heartbeat. TryAdd returns false on the second+ observation of the same lease id on
-            // this connection lifetime. On failure we still mark it tried — retrying every beat is exactly
+            // this connection lifetime. On failure we still mark it tried -- retrying every beat is exactly
             // the spam the task calls out; the reconnect resets the set for one fresh attempt.
             if (!connection.TerminalTeardownRelayed.TryAdd(leaseId, 0))
             {
@@ -379,7 +379,7 @@ public sealed class TunnelDisconnectCoordinator
             }
             catch (ApiException ex)
             {
-                // host_offline / upstream_timeout — the tunnel is unhealthy right now. The TTL reaper on
+                // host_offline / upstream_timeout -- the tunnel is unhealthy right now. The TTL reaper on
                 // wisp remains the backstop, and a superseding reconnect will get a fresh attempt.
                 _logger.LogWarning(
                     "heartbeat teardown: host {HostId} relay for orphan {LeaseId} failed ({Code}: {Message});" +
@@ -400,10 +400,10 @@ public sealed class TunnelDisconnectCoordinator
     /// <summary>
     /// On an unsolicited <c>lease.ended</c> frame from the agent (docs/TUNNEL.md §5, §8): route into the
     /// reconciliation path so billing is finalized (TTL + last-healthy capped), the lease transitions to
-    /// <c>ended</c> with the mapped <paramref name="reason"/>, and the wallet hold is released — the same
+    /// <c>ended</c> with the mapped <paramref name="reason"/>, and the wallet hold is released -- the same
     /// three-step end path the heartbeat set-diff runs for a silently-vanished container, but driven by
     /// the host's explicit signal (so it fires up to a heartbeat sooner, and carries the correct
-    /// <c>expired</c> reason where the set-diff would say <c>container_lost</c>). Idempotent — an already-
+    /// <c>expired</c> reason where the set-diff would say <c>container_lost</c>). Idempotent -- an already-
     /// terminal lease is a no-op. Exception-safe: a reconciliation failure logs but never disrupts the
     /// tunnel plumbing (mirrors the heartbeat hook). A no-op for a non-Guid host id (the Phase-1 dev/no-DB
     /// harness).
@@ -437,7 +437,7 @@ public sealed class TunnelDisconnectCoordinator
     /// <summary>
     /// The set of host ids that currently hold an in-memory grace timer on THIS instance (task #55). The
     /// durable grace sweep (<see cref="Wisper.Api.Metering.SuspensionSweepService"/>) skips leases whose
-    /// host is in this set — the fast in-memory path is the source of truth while its timer is armed, and
+    /// host is in this set -- the fast in-memory path is the source of truth while its timer is armed, and
     /// the sweep is the durable backstop for leases whose grace timer was lost across a restart /
     /// scale-in / crash (multi-instance rule: cross-request state must live in shared storage). A snapshot,
     /// so a concurrent add/remove during the sweep pass does not throw.
@@ -445,7 +445,7 @@ public sealed class TunnelDisconnectCoordinator
     public IReadOnlySet<Guid> HostsUnderInProcessGrace() => _grace.Keys.ToHashSet();
 
     /// <summary>
-    /// Whether a post-grace reconciliation is pending for <paramref name="hostId"/> — the host reconnected
+    /// Whether a post-grace reconciliation is pending for <paramref name="hostId"/> -- the host reconnected
     /// after its grace window expired and the first heartbeat has not yet run the revival pass
     /// (diagnostics/tests).
     /// </summary>

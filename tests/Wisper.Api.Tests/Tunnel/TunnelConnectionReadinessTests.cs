@@ -26,7 +26,7 @@ public class TunnelConnectionReadinessTests
         Assert.True(connection.IsReady);
         Assert.True(await connection.WaitUntilReadyAsync(TimeSpan.FromSeconds(1), default));
 
-        // First result wins — a later MarkUnavailable cannot un-ready a ready tunnel.
+        // First result wins -- a later MarkUnavailable cannot un-ready a ready tunnel.
         connection.MarkUnavailable();
         Assert.True(connection.IsReady);
     }
@@ -37,7 +37,7 @@ public class TunnelConnectionReadinessTests
         var connection = NewConnection();
 
         // A caller already waiting on readiness unblocks immediately (false) when the handshake is
-        // abandoned — it does not wait out its deadline.
+        // abandoned -- it does not wait out its deadline.
         var waiting = connection.WaitUntilReadyAsync(TimeSpan.FromSeconds(30), default);
         connection.MarkUnavailable();
 

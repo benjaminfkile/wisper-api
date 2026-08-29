@@ -3,7 +3,7 @@ using Wisper.Api.Domain;
 namespace Wisper.Api.Persistence.Idempotency;
 
 /// <summary>
-/// Data access for <see cref="IdempotencyKey"/> rows — the replay/conflict/in-progress store behind the
+/// Data access for <see cref="IdempotencyKey"/> rows -- the replay/conflict/in-progress store behind the
 /// <c>Idempotency-Key</c> header (docs/DATA_MODEL.md §10, docs/API.md §9). The atomic
 /// <see cref="TryBeginAsync"/> is the lock: the first request inserts an
 /// <see cref="IdempotencyStatus.InProgress"/> row and wins; a concurrent or later request sees the

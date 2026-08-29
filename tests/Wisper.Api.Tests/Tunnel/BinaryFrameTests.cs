@@ -4,7 +4,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Tunnel;
 
 /// <summary>
-/// Wire-format tests for <see cref="BinaryFrame"/> — the 6-byte big-endian header
+/// Wire-format tests for <see cref="BinaryFrame"/> -- the 6-byte big-endian header
 /// + payload layout must stay byte-for-byte compatible with the Go agent
 /// (docs/TUNNEL.md §2).
 /// </summary>

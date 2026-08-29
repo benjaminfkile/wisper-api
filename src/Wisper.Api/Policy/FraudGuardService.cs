@@ -7,17 +7,17 @@ using Wisper.Api.Persistence.Leases;
 namespace Wisper.Api.Policy;
 
 /// <summary>
-/// The day-one fraud guards (docs/PAYMENTS.md §7, §13) — cheap, deterministic <c>platform_policy</c> checks
+/// The day-one fraud guards (docs/PAYMENTS.md §7, §13) -- cheap, deterministic <c>platform_policy</c> checks
 /// that make refunds/disputes/chargebacks rare, enforced <b>up front</b> at top-up and lease start (never an
-/// ML system — that would be theater on ~zero history). Three guards, all read from the active policy so an
+/// ML system -- that would be theater on ~zero history). Three guards, all read from the active policy so an
 /// unset limit (<c>null</c>) is simply "no limit":
 /// <list type="bullet">
-/// <item><b>first-top-up hold</b> — a fresh account's <i>first-ever</i> top-up is capped
+/// <item><b>first-top-up hold</b> -- a fresh account's <i>first-ever</i> top-up is capped
 /// (<see cref="PlatformPolicy.FirstTopupMaxCents"/>) until a payment materially clears the dispute window.</item>
-/// <item><b>new-account velocity</b> — while an account is younger than
+/// <item><b>new-account velocity</b> -- while an account is younger than
 /// <see cref="PlatformPolicy.NewAccountWindowHours"/>, its cumulative top-up per rolling 24h is capped
 /// (<see cref="PlatformPolicy.NewAccountMaxTopupCentsPerDay"/>).</item>
-/// <item><b>per-user spend cap</b> — a user's cumulative lease commitment per rolling 24h is capped
+/// <item><b>per-user spend cap</b> -- a user's cumulative lease commitment per rolling 24h is capped
 /// (<see cref="PlatformPolicy.MaxSpendCentsPerDay"/>), measured by the up-front lease holds that bound spend.</item>
 /// </list>
 /// The per-user <b>concurrency</b> cap (<see cref="PlatformPolicy.MaxConcurrentLeasesPerUser"/>) is the fourth
@@ -108,7 +108,7 @@ public sealed class FraudGuardService
     /// <summary>
     /// The per-user daily spend cap (docs/PAYMENTS.md §7), read from the active policy and enforced at lease
     /// start (from <see cref="WalletLeaseGate"/>). "Spend" is measured by the up-front lease holds
-    /// (<c>⌈ttl/60⌉·price</c>) — the amount a lease commits — so the cap bounds authorized spend before any
+    /// (<c>⌈ttl/60⌉·price</c>) -- the amount a lease commits -- so the cap bounds authorized spend before any
     /// compute runs. <paramref name="projectedHoldCents"/> is the hold the pending lease would place. Throws
     /// <see cref="ApiErrorCode.LimitExceeded"/> on a breach; no policy or an unset cap ⇒ allowed.
     /// </summary>

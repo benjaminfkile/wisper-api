@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// The isolation capability a host advertises — the sandbox levels its wisp can place a lease in and the
+/// The isolation capability a host advertises -- the sandbox levels its wisp can place a lease in and the
 /// level it defaults to (docs/TUNNEL.md §5, task #417). Levels are opaque strings mirrored from the agent's
 /// capability report (wire fields <c>isolation_levels</c> / <c>default_isolation</c>); the manager stores and
 /// surfaces them without interpreting each one, so a newer agent can advertise additional levels without a
@@ -10,7 +10,7 @@ namespace Wisper.Api.Domain;
 /// </summary>
 public static class HostIsolation
 {
-    /// <summary>The always-available baseline isolation level — the fallback for a host that reports none.</summary>
+    /// <summary>The always-available baseline isolation level -- the fallback for a host that reports none.</summary>
     public const string Shared = "shared";
 
     /// <summary>The container-sandboxed isolation level (stronger than <see cref="Shared"/>).</summary>
@@ -24,11 +24,11 @@ public static class HostIsolation
 
     /// <summary>
     /// The isolation levels a <b>lease request</b> may name, weakest → strongest (task #418):
-    /// <c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>. A request for anything else — <c>confidential</c>
-    /// or any unknown value — is rejected with a validation error, and an omitted request defaults to
+    /// <c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>. A request for anything else -- <c>confidential</c>
+    /// or any unknown value -- is rejected with a validation error, and an omitted request defaults to
     /// <see cref="Shared"/>. This ordering governs only the request dimension and the <c>min_isolation</c>
     /// policy ceiling; the levels a <i>host</i> advertises stay opaque (they may include values not listed
-    /// here, so a newer agent can offer more without a schema change — see <see cref="Normalize"/>).
+    /// here, so a newer agent can offer more without a schema change -- see <see cref="Normalize"/>).
     /// </summary>
     public static readonly IReadOnlyList<string> RequestLevels = new[] { Shared, Sandboxed, Vm };
 
@@ -61,7 +61,7 @@ public static class HostIsolation
     /// <summary>
     /// Normalizes an advertised capability to what is persisted/surfaced: trims each level, drops blanks,
     /// de-dupes ordinally while preserving order, and falls back to <c>["shared"]</c> when the result is
-    /// empty. The default is trimmed and forced to be one of the levels — an omitted/blank/unknown default
+    /// empty. The default is trimmed and forced to be one of the levels -- an omitted/blank/unknown default
     /// resolves to <see cref="Shared"/> when offered, else the first advertised level (task #417).
     /// </summary>
     public static (IReadOnlyList<string> Levels, string Default) Normalize(

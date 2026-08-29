@@ -14,7 +14,7 @@ namespace Wisper.Api.Billing;
 /// The consumer billing surface (docs/API.md §5, docs/PAYMENTS.md §3). It orchestrates the top-up
 /// <b>create</b> path (ensure a Stripe customer → create a PaymentIntent → return its <c>client_secret</c>)
 /// and the read paths (<b>wallet balance + usage summary</b> and the <b>paginated ledger view</b>), both
-/// derived from the double-entry ledger — the source of truth (docs/DATA_MODEL.md §7). Crucially it
+/// derived from the double-entry ledger -- the source of truth (docs/DATA_MODEL.md §7). Crucially it
 /// <b>never credits the wallet</b>: the credit is webhook-driven (<see cref="Payments.Handlers.TopupWebhookHandler"/>),
 /// so a client that confirms but never returns still gets its credit and a duplicate cannot double-credit
 /// (docs/PAYMENTS.md §3, §8). Everything depends on interfaces so the unit suite runs without Stripe/Postgres.
@@ -63,7 +63,7 @@ public sealed class BillingService
     /// Starts a wallet top-up (docs/PAYMENTS.md §3): validates the amount against
     /// <c>platform_policy.min_topup_cents</c>, ensures the caller has a Stripe customer (creating one on
     /// first use), then creates a PaymentIntent stamped with the caller's user id and keyed by
-    /// <paramref name="idempotencyKey"/>. Returns the <c>client_secret</c>. No ledger effect here — the
+    /// <paramref name="idempotencyKey"/>. Returns the <c>client_secret</c>. No ledger effect here -- the
     /// wallet is credited only on the webhook.
     /// </summary>
     public async Task<TopupResponse> TopupAsync(
@@ -80,7 +80,7 @@ public sealed class BillingService
                 new { field = "amount_cents" });
         }
 
-        // Enforce the minimum top-up (docs/PAYMENTS.md §3). Below the minimum is a 402 (docs/API.md §3 —
+        // Enforce the minimum top-up (docs/PAYMENTS.md §3). Below the minimum is a 402 (docs/API.md §3 --
         // "wallet can't cover a … top-up minimum"). No policy configured ⇒ no minimum.
         var minTopup = (await _policy.GetActiveAsync(ct))?.MinTopupCents ?? 0;
         if (amountCents < minTopup)
@@ -126,7 +126,7 @@ public sealed class BillingService
 
     /// <summary>
     /// Refunds unspent wallet credits (docs/API.md §5, docs/PAYMENTS.md §3, §7): validates the amount, checks
-    /// the wallet currently holds at least that much (so only <b>unspent</b> credits are refundable — refunding
+    /// the wallet currently holds at least that much (so only <b>unspent</b> credits are refundable -- refunding
     /// spent credits is a clawback question), issues a Stripe <b>Refund</b> against a top-up PaymentIntent
     /// (the named one, else the most recent), then posts the <c>refund</c> ledger txn (<c>user_wallet →
     /// platform_cash</c>) keyed by the Stripe <b>refund id</b>, so the <c>charge.refunded</c> webhook dedupes
@@ -140,8 +140,8 @@ public sealed class BillingService
 
     /// <summary>
     /// The admin manual refund (docs/API.md §8, <c>POST /v1/admin/refunds</c>): refunds unspent wallet credits
-    /// of <paramref name="targetUserId"/> exactly as the self-serve path does — same Stripe refund + same
-    /// <c>refund</c> ledger txn (<c>user_wallet → platform_cash</c>) keyed by the refund id — but recorded with
+    /// of <paramref name="targetUserId"/> exactly as the self-serve path does -- same Stripe refund + same
+    /// <c>refund</c> ledger txn (<c>user_wallet → platform_cash</c>) keyed by the refund id -- but recorded with
     /// the acting <paramref name="actorUserId"/> (admin) as the audit actor under <c>admin.refund</c>.
     /// </summary>
     public Task<RefundResponse> AdminRefundAsync(
@@ -176,7 +176,7 @@ public sealed class BillingService
             ?? throw new ApiException(ApiErrorCode.NotFound, "The account no longer exists.");
 
         // Only UNSPENT credits are refundable: the wallet must currently hold at least the refund amount
-        // (docs/PAYMENTS.md §3, §7). Refunding spent credits would drive the wallet negative — that is a
+        // (docs/PAYMENTS.md §3, §7). Refunding spent credits would drive the wallet negative -- that is a
         // clawback/admin-adjustment question, not a self-serve refund. Blocked with 402.
         var balance = await _ledger.GetWalletBalanceCentsAsync(userId, Currency, ct);
         if (balance < amountCents)
@@ -191,7 +191,7 @@ public sealed class BillingService
         var paymentIntentId = await ResolveRefundTargetAsync(userId, request.PaymentIntent, ct);
 
         // Issue the Stripe refund (idempotency key = the API key), then post the ledger effect keyed by the
-        // returned refund id — the same key the charge.refunded webhook uses, so they dedupe (docs/PAYMENTS.md §8).
+        // returned refund id -- the same key the charge.refunded webhook uses, so they dedupe (docs/PAYMENTS.md §8).
         var refund = await _stripe.CreateRefundAsync(
             new StripeRefundRequest(userId, paymentIntentId, amountCents, idempotencyKey), ct);
 
@@ -218,7 +218,7 @@ public sealed class BillingService
         catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
         {
             // Wallet drained between the balance check and the post (a rare race). The Stripe refund was
-            // already issued and is idempotent by refund id; the charge.refunded webhook is the backstop —
+            // already issued and is idempotent by refund id; the charge.refunded webhook is the backstop --
             // flag for reconciliation rather than silently drive the wallet negative.
             _logger.LogError(
                 ex, "refund {Refund} for user {User} could not post (wallet raced below balance); reconciliation required",
@@ -307,7 +307,7 @@ public sealed class BillingService
     /// <summary>The maximum page size a caller may request (docs/API.md §10).</summary>
     public static int MaxLimit => MaxPageLimit;
 
-    /// <summary>The <c>refund</c> ledger idempotency key — stable per Stripe refund id, shared with the webhook.</summary>
+    /// <summary>The <c>refund</c> ledger idempotency key -- stable per Stripe refund id, shared with the webhook.</summary>
     public static string RefundIdempotencyKey(string refundId) => $"refund:{refundId}";
 
     /// <summary>
@@ -360,7 +360,7 @@ public sealed class BillingService
         }
         catch (Exception ex)
         {
-            // A concurrent first top-up already linked a customer — reuse whichever is now persisted so we
+            // A concurrent first top-up already linked a customer -- reuse whichever is now persisted so we
             // never orphan the wallet from its customer. (The extra Stripe customer is harmless/idle.)
             var current = await _users.GetByIdAsync(user.Id, ct);
             if (!string.IsNullOrWhiteSpace(current?.StripeCustomerId))

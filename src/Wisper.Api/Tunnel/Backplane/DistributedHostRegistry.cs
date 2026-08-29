@@ -9,7 +9,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// and <b>capability publishing</b>: when a host connects here it records <c>host → thisInstance</c>
 /// in the shared <see cref="IHostPresenceStore"/> and serialises the <see cref="HostCapabilitySnapshot"/>
 /// into the shared <see cref="IHostCapabilityStore"/>, so any instance can resolve both facts without
-/// routing to the tunnel owner. On disconnect both records are cleared atomically in the background —
+/// routing to the tunnel owner. On disconnect both records are cleared atomically in the background --
 /// a dead tunnel never leaves a readable snapshot. <see cref="TryGet"/>/<see cref="Online"/> remain
 /// local-only (a remote host has no local <see cref="TunnelConnection"/> to hand back); routing to a
 /// remote host goes through <see cref="DistributedTunnelRelay"/>, not this registry.
@@ -43,7 +43,7 @@ public sealed class DistributedHostRegistry : IHostRegistry
 
         // Publish the capability snapshot so any instance can read it without routing to the tunnel
         // owner. Lifecycle is tied to presence: both are written here and cleared together on unregister
-        // — a stale capability can never outlive its tunnel (task #17).
+        // -- a stale capability can never outlive its tunnel (task #17).
         var snapshot = RegistryHostCapabilitySource.BuildSnapshot(connection.Capability);
         if (snapshot is not null)
         {
@@ -68,8 +68,8 @@ public sealed class DistributedHostRegistry : IHostRegistry
             {
                 await _presence.ClearOwnerAsync(hostId, _identity.InstanceId);
 
-                // Only clear the capability when no instance owns the host anymore. On a supersede —
-                // the host already re-registered on another instance — that instance has just written
+                // Only clear the capability when no instance owns the host anymore. On a supersede --
+                // the host already re-registered on another instance -- that instance has just written
                 // a fresh snapshot, and an unconditional delete here would strand the host with
                 // presence but no capability until its next reconnect (degraded os/effective fields
                 // and host_offline on images validation from non-owner instances).

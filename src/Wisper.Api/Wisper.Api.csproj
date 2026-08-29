@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <!-- The unit suite reaches internal seams (e.g. the uncapped MeteringService.FlushLeaseAsync primitive
-       that production paths must not call directly — task #60 keeps the shared TTL cap as the single
+       that production paths must not call directly (task #60 keeps the shared TTL cap as the single
        source of truth). Test-only, not shipped externally. -->
   <ItemGroup>
     <InternalsVisibleTo Include="Wisper.Api.Tests" />

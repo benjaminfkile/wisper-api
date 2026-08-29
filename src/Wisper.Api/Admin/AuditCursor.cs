@@ -4,7 +4,7 @@ namespace Wisper.Api.Admin;
 
 /// <summary>
 /// The opaque cursor that paginates the admin audit view (docs/API.md §8, §10). The <c>audit_log</c> id is a
-/// monotonic <c>bigint</c> identity, so a keyset over it (return only rows with a smaller id — older —
+/// monotonic <c>bigint</c> identity, so a keyset over it (return only rows with a smaller id -- older --
 /// newest first) can neither duplicate nor skip a row as new entries are appended during paging. The wire
 /// form is URL-safe Base64 of the last id on the page; clients treat it as opaque.
 /// </summary>

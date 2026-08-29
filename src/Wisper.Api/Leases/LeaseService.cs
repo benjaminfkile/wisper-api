@@ -14,9 +14,9 @@ namespace Wisper.Api.Leases;
 
 /// <summary>
 /// Default <see cref="ILeaseService"/> (docs/API.md §5, docs/DATA_MODEL.md §5). Create validates the
-/// requested image/network/TTL against the host's priced allow-list (docs/DATA_MODEL.md §4) — resources are
-/// no longer a request input, they are fixed by the offer's sized profile (task #570) — runs the wallet gate
-/// (docs/DATA_MODEL.md §8), then — and only then — sends <c>lease.create</c> down the host tunnel via the
+/// requested image/network/TTL against the host's priced allow-list (docs/DATA_MODEL.md §4) -- resources are
+/// no longer a request input, they are fixed by the offer's sized profile (task #570) -- runs the wallet gate
+/// (docs/DATA_MODEL.md §8), then -- and only then -- sends <c>lease.create</c> down the host tunnel via the
 /// relay and persists an immutable snapshot of what was booked (image, network, the provisioned profile). Wisper owns the
 /// id space (docs/TUNNEL.md §1): the relay-minted <c>lease_&lt;guid&gt;</c> id is the lease's primary key,
 /// so read/release address the same lease by that id on both the DB and the tunnel.
@@ -77,7 +77,7 @@ public sealed class LeaseService : ILeaseService
         var ttlSeconds = RequireTtl(request.TtlSeconds);
 
         // The image must be in this host's priced allow-list and offered to consumers; otherwise the
-        // request names something the host isn't selling (docs/API.md §3 — image_not_allowed).
+        // request names something the host isn't selling (docs/API.md §3 -- image_not_allowed).
         var image = await _images.GetByIdAsync(hostImageId, ct);
         if (image is null || image.HostId != hostId || !image.Enabled)
         {
@@ -121,14 +121,14 @@ public sealed class LeaseService : ILeaseService
 
         // Per-host admission control BEFORE the wallet gate posts a hold and before any tunnel frame (task #571):
         // if the host advertises a positive concurrent-contract ceiling and it is already reached, fail fast with
-        // at_capacity — no hold, no lease.create. wisp stays the authoritative enforcer (its own 409 surfaces as
+        // at_capacity -- no hold, no lease.create. wisp stays the authoritative enforcer (its own 409 surfaces as
         // at_capacity too, mapped by the relay); this is the cheap manager-side guard so full hosts do not churn.
         await EnforceHostCapacityAsync(capability, host, ct);
 
         // Fail fast on a host whose agent has self-reported "degraded" (task #62): the tunnel is up but the
         // agent cannot reach its local wisp, so every downstream lease.create would fail with a codeless
         // wisp error. Refuse admission with the same retryable host_offline the relay uses when the tunnel
-        // is genuinely gone — the state is transient (the next healthy heartbeat clears the flag) and the
+        // is genuinely gone -- the state is transient (the next healthy heartbeat clears the flag) and the
         // consumer can retry (or pick a different host from the catalog, which already hides this one).
         await EnforceHostNotDegradedAsync(host, ct);
 
@@ -152,7 +152,7 @@ public sealed class LeaseService : ILeaseService
             Image = image.ImageRef,
             Network = PgEnum.ToLabel(network),
             // The lease provisions exactly the offer's sized profile (task #570). cpus/memory_mb travel only
-            // when the offer pinned them — a NULL profile dimension serializes as 0, which the frame omits
+            // when the offer pinned them -- a NULL profile dimension serializes as 0, which the frame omits
             // (WhenWritingDefault), so wisp's own per-lease defaults/clamps apply. gpus is the offer's exact
             // count, likewise omitted when 0 (the existing omitempty wire discipline).
             Resources = new LeaseResources
@@ -186,7 +186,7 @@ public sealed class LeaseService : ILeaseService
         // the row exists violates ledger_transactions_lease_id_fkey against the real SQL store, 500s the
         // create, and leaks the host contract. hold_txn_id starts null (a valid state for the reverse FK
         // leases.hold_txn_id → ledger_transactions.id) and is stamped once the hold posts below. The balance/
-        // caps authorization ran above, before any tunnel frame, so the 402 gate is unaffected — only the
+        // caps authorization ran above, before any tunnel frame, so the 402 gate is unaffected -- only the
         // hold *posting* moves after persistence, not the *authorization check*.
         var now = _time.GetUtcNow();
         var lease = new Lease
@@ -202,8 +202,8 @@ public sealed class LeaseService : ILeaseService
             // Stamp the RESOLVED provisioned profile on the row so read/list surfaces (and the consumer, even
             // after the fact) see exactly what was booked, never an unknown size (task #578): the offer's sized
             // profile when it pinned one, else the host's advertised per-lease cap, else null (only when the host
-            // advertises no cap either — e.g. offline). The lease.create frame above is UNCHANGED (it still omits
-            // what the offer left null so wisp's own defaults keep applying) — this is bookkeeping, not provisioning.
+            // advertises no cap either -- e.g. offline). The lease.create frame above is UNCHANGED (it still omits
+            // what the offer left null so wisp's own defaults keep applying) -- this is bookkeeping, not provisioning.
             Cpus = resolvedResources.CpusForStamp,
             MemoryMb = resolvedResources.MemoryMb,
             Gpus = image.Gpus,
@@ -221,8 +221,8 @@ public sealed class LeaseService : ILeaseService
 
         // Earmark the hold now the lease ROW exists (docs/PAYMENTS.md §4): wallet → lease_holds. The meter
         // debits it per tick; the remainder is released at lease end. A free image places no hold. If the
-        // hold fails here — the wallet drained in the AuthorizeHold→PlaceHold race (→ 402), or any ledger
-        // error — the container is already provisioned on the host: tear that downstream contract down and
+        // hold fails here -- the wallet drained in the AuthorizeHold→PlaceHold race (→ 402), or any ledger
+        // error -- the container is already provisioned on the host: tear that downstream contract down and
         // mark the lease failed so no zombie contract rides out its TTL (task #540, docs/TUNNEL.md §8).
         Guid? holdTxnId;
         try
@@ -242,14 +242,14 @@ public sealed class LeaseService : ILeaseService
         }
 
         // Surface the host's advertised container OS on the 201, like the dev endpoint and LeaseView do
-        // (task #316) — read from the live capability, null-safe when offline/pre-os (surfacing only).
+        // (task #316) -- read from the live capability, null-safe when offline/pre-os (surfacing only).
         return new LeaseCreationResult(stored, holdCents, OsOf(host.Id));
     }
 
     /// <summary>
     /// Undoes a create that provisioned the container on the host but could not complete (the wallet hold
-    /// failed to post). It tears the downstream contract down over the tunnel — the same <c>lease.release</c>
-    /// teardown <see cref="ReleaseAsync"/> uses — so it does not ride out its TTL as a zombie contract
+    /// failed to post). It tears the downstream contract down over the tunnel -- the same <c>lease.release</c>
+    /// teardown <see cref="ReleaseAsync"/> uses -- so it does not ride out its TTL as a zombie contract
     /// (task #540, docs/TUNNEL.md §8), and marks the persisted lease row <c>failed</c>. Both steps are
     /// best-effort: a host that is already gone (<c>host_offline</c>) means the container is gone too, and a
     /// teardown error must never mask the original failure the caller is about to see re-thrown.
@@ -282,8 +282,8 @@ public sealed class LeaseService : ILeaseService
     /// <summary>
     /// Refuses a create on a host whose agent has self-reported <c>"degraded"</c> in <c>host.heartbeat</c>
     /// (task #62): the tunnel is up on some instance but the agent cannot reach its local wisp daemon, so
-    /// every downstream <c>lease.create</c> would fail with a codeless wisp error. Rejecting here — BEFORE
-    /// the wallet gate posts a hold and before any tunnel frame — surfaces the retryable
+    /// every downstream <c>lease.create</c> would fail with a codeless wisp error. Rejecting here -- BEFORE
+    /// the wallet gate posts a hold and before any tunnel frame -- surfaces the retryable
     /// <c>host_offline</c> (409) the consumer already handles for a gone tunnel, and keeps the hold ledger
     /// clean. The shared degraded set is authoritative across instances (docs/DESIGN.md §7); a subsequent
     /// healthy heartbeat clears the flag automatically.
@@ -305,7 +305,7 @@ public sealed class LeaseService : ILeaseService
     /// The per-host concurrent-contract admission gate (task #571). The host's live capability may advertise a
     /// contract ceiling (<c>capacity.max_contracts</c>); when it is positive and the host's non-terminal lease
     /// count has reached it, the create is refused with <c>at_capacity</c> (409) BEFORE the wallet gate posts a
-    /// hold and before any tunnel frame — no compute is provisioned and no money is earmarked. A host with no
+    /// hold and before any tunnel frame -- no compute is provisioned and no money is earmarked. A host with no
     /// live capability (offline) or no advertised ceiling is unlimited and passes through: wisp remains the
     /// authoritative enforcer (its own 409 also surfaces as <c>at_capacity</c>, mapped by the relay). The message
     /// names the <b>host</b> so it is distinguishable from the per-user concurrency cap that also uses this code.
@@ -372,17 +372,17 @@ public sealed class LeaseService : ILeaseService
         var lease = await OwnedLeaseOrNullAsync(consumerUserId, leaseId, ct);
         if (lease is null)
         {
-            // No such lease the caller can see — 404, never revealing another user's lease (docs/API.md §3).
+            // No such lease the caller can see -- 404, never revealing another user's lease (docs/API.md §3).
             return null;
         }
 
         // Exec/shell are only valid against a ready lease; anything not yet (or no longer) active is
-        // lease_not_ready (docs/API.md §7 — 409 unless active).
+        // lease_not_ready (docs/API.md §7 -- 409 unless active).
         if (lease.Status != LeaseStatus.Active)
         {
             throw new ApiException(
                 ApiErrorCode.LeaseNotReady,
-                "The lease is not ready — exec requires an active lease.",
+                "The lease is not ready -- exec requires an active lease.",
                 new { status = PgEnum.ToLabel(lease.Status) });
         }
 
@@ -410,7 +410,7 @@ public sealed class LeaseService : ILeaseService
         }
         catch (ApiException ex) when (ex.Code == ApiErrorCode.HostOffline)
         {
-            // No live tunnel means the container is already gone — there is nothing left to release, so
+            // No live tunnel means the container is already gone -- there is nothing left to release, so
             // marking the lease ended locally is the correct, retry-safe outcome (docs/TUNNEL.md §8).
         }
 
@@ -435,7 +435,7 @@ public sealed class LeaseService : ILeaseService
 
         if (ended is null)
         {
-            // Another end-driver won the race — surface whatever is now in the DB. The winner has
+            // Another end-driver won the race -- surface whatever is now in the DB. The winner has
             // already released the hold (ReleaseHoldAsync is idempotent by lease id but skipping it
             // avoids a spurious ledger post attempt).
             var current = await _leases.GetByIdAsync(lease.Id, ct);
@@ -450,13 +450,13 @@ public sealed class LeaseService : ILeaseService
 
     /// <summary>
     /// The host's advertised container OS from its live capability snapshot (docs/TUNNEL.md §5), or null
-    /// when it has no live tunnel or its agent advertised none — surfacing only, always null-safe (task #316).
+    /// when it has no live tunnel or its agent advertised none -- surfacing only, always null-safe (task #316).
     /// </summary>
     private string? OsOf(Guid hostId) => _capabilities.GetCapability(hostId)?.Os;
 
     /// <summary>
     /// Projects a lease into its read view, resolving both the host's live container OS (task #316) and its
-    /// advertised per-lease caps (task #578) from one capability read — so a NULL-stamped legacy row still
+    /// advertised per-lease caps (task #578) from one capability read -- so a NULL-stamped legacy row still
     /// surfaces an effective size instead of blank, and a new (resolved-and-stamped) row shows what it booked.
     /// </summary>
     private LeaseView ViewOf(Lease lease)
@@ -522,13 +522,13 @@ public sealed class LeaseService : ILeaseService
 
     /// <summary>
     /// Resolves and validates the lease's isolation level (task #418, docs/TUNNEL.md §5). An omitted/blank
-    /// request defaults to the target <paramref name="host"/>'s advertised <c>default_isolation</c> — the
+    /// request defaults to the target <paramref name="host"/>'s advertised <c>default_isolation</c> -- the
     /// level the host operator declared (wisp <c>limits.default_isolation</c>), which is always one of the
     /// host's advertised levels and falls back to <see cref="HostIsolation.Shared"/> for a host that declares
     /// none. A consumer who omits isolation therefore gets the tier the host chose to lead with, not a
     /// hardcoded weakest tier. <c>confidential</c> or any unknown value is rejected. The resolved level must
     /// clear the <c>platform_policy.min_isolation</c> floor (ordered <c>shared</c> &lt; <c>sandboxed</c> &lt;
-    /// <c>vm</c>) when one is configured, and — when the host advertises isolation levels — must be one the
+    /// <c>vm</c>) when one is configured, and -- when the host advertises isolation levels -- must be one the
     /// host can provide (fail fast). A host with no advertised levels recorded passes through: wisp re-validates
     /// as the real security boundary.
     /// </summary>
@@ -555,7 +555,7 @@ public sealed class LeaseService : ILeaseService
         }
 
         // When the host advertises isolation levels (task #417), the requested level must be one it can
-        // provide. A host with none recorded is allowed through — wisp is the real security boundary.
+        // provide. A host with none recorded is allowed through -- wisp is the real security boundary.
         if (host.IsolationLevels.Count > 0 &&
             !host.IsolationLevels.Contains(level, StringComparer.Ordinal))
         {
@@ -640,10 +640,10 @@ public sealed class LeaseService : ILeaseService
 
     /// <summary>
     /// Rejects a create request that still carries consumer-chosen resource knobs (task #570). An offer now
-    /// sells a fixed size (task #569), so the lease provisions exactly that profile — a <c>resources</c> object
+    /// sells a fixed size (task #569), so the lease provisions exactly that profile -- a <c>resources</c> object
     /// or a top-level <c>gpus</c> count no longer has any effect and is refused with <c>validation_error</c>
     /// rather than silently ignored, keeping the flat per-offer price honest in both directions. (<c>disk_gb</c>
-    /// is dropped from the product entirely — it was never enforced downstream — so it is simply not a field.)
+    /// is dropped from the product entirely -- it was never enforced downstream -- so it is simply not a field.)
     /// </summary>
     private static void RejectClientResourceKnobs(CreateLeaseRequest request)
     {
@@ -660,7 +660,7 @@ public sealed class LeaseService : ILeaseService
     /// Guards the create-time <c>env</c> map against wisp's own caps before it reaches the tunnel
     /// (docs/TUNNEL.md §5, §13): reject over <see cref="MaxEnvEntries"/> keys or over
     /// <see cref="MaxEnvSerializedBytes"/> of serialized payload. Env VALUES are secrets-in-transit, so the
-    /// error details carry only the count/size and the cap — never a key or value — and env is never logged.
+    /// error details carry only the count/size and the cap -- never a key or value -- and env is never logged.
     /// </summary>
     private static void ValidateEnv(Dictionary<string, string>? env)
     {

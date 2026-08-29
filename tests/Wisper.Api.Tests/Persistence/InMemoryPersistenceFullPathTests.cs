@@ -28,7 +28,7 @@ namespace Wisper.Api.Tests.Persistence;
 ///   <item><c>POST /v1/leases</c> with <c>env</c> places a 0-cent hold and carries the env to the tunnel frame.</item>
 /// </list>
 /// Only the tunnel-facing pieces (registry/capability/relay) and the wallet gate are faked, exactly as the
-/// existing lease/catalog integration tests do — the persistence layer is the real in-memory registration.
+/// existing lease/catalog integration tests do -- the persistence layer is the real in-memory registration.
 /// </summary>
 public class InMemoryPersistenceFullPathTests
 {
@@ -45,13 +45,13 @@ public class InMemoryPersistenceFullPathTests
 
         // Boot with NO connection-string override: the app registers the in-memory repositories app-wide
         // (the mode under test). Only the tunnel-facing doubles + the wallet gate are swapped, as the
-        // existing lease/catalog integration tests do — the repositories stay the real in-memory ones.
+        // existing lease/catalog integration tests do -- the repositories stay the real in-memory ones.
         public WebApplicationFactory<Program> Build() =>
             new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
-                // A single config API key with consumer+host scopes — the operator-bootstrap escape hatch
+                // A single config API key with consumer+host scopes -- the operator-bootstrap escape hatch
                 // that lets a self-hosted operator drive /v1 with no Postgres and no Cognito. The named
-                // subject must resolve to a real user (task #36) — the fixture seeds it below.
+                // subject must resolve to a real user (task #36) -- the fixture seeds it below.
                 builder.UseSetting($"Auth:ApiKeys:{ApiKey}:UserId", OperatorSub);
                 builder.UseSetting($"Auth:ApiKeys:{ApiKey}:Email", OperatorEmail);
                 builder.UseSetting($"Auth:ApiKeys:{ApiKey}:Scopes:0", "consumer");
@@ -91,7 +91,7 @@ public class InMemoryPersistenceFullPathTests
     {
         var fx = new Fixture();
         using var factory = fx.Build();
-        // Seed the operator's user in the in-memory store so the config API key's subject resolves —
+        // Seed the operator's user in the in-memory store so the config API key's subject resolves --
         // task #36 requires the config sub to name a real user (else 401), so the DB-less operator must
         // pre-provision this row. In production this would come from real user registration.
         await SeedOperator(factory.Services.GetRequiredService<IUserRepository>());
@@ -106,7 +106,7 @@ public class InMemoryPersistenceFullPathTests
         var hostId = registered.Id;
 
         // The real DB-backed validator resolves the freshly-issued agent token against the SAME in-memory
-        // host store — the loop the tunnel-only boot could never close without Postgres.
+        // host store -- the loop the tunnel-only boot could never close without Postgres.
         var validation = await factory.Services.GetRequiredService<IHostTokenValidator>()
             .ValidateAsync(registered.AgentToken);
         Assert.True(validation.Succeeded);
@@ -129,7 +129,7 @@ public class InMemoryPersistenceFullPathTests
         Assert.Equal(HttpStatusCode.OK, priced.StatusCode);
 
         // 3) The agent tunnel goes live: register presence, then drive the REAL presence flip the tunnel
-        //    handshake runs at hello.ack (task #392) — NOT a seeded status. A self-hosted operator (no
+        //    handshake runs at hello.ack (task #392) -- NOT a seeded status. A self-hosted operator (no
         //    Connect) with an all-zero-priced allow-list clears the earning gate, so the host row flips
         //    online on its own; the catalog then lists the host and its 0-priced image.
         fx.Registry.SetOnline(hostId);

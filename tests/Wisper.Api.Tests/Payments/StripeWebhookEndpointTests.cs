@@ -18,7 +18,7 @@ namespace Wisper.Api.Tests.Payments;
 /// Endpoint tests over the real app host for <c>POST /stripe/webhook</c> (docs/API.md §4,
 /// docs/PAYMENTS.md §8): unauthenticated, signature-verified, reading the exact raw body. The real
 /// signature verifier and Dapper event store are swapped for a fake verifier + in-memory store (Grunt has
-/// no Stripe/Postgres), so the wiring — route, raw-body read, dedupe, status → HTTP mapping — is exercised
+/// no Stripe/Postgres), so the wiring -- route, raw-body read, dedupe, status → HTTP mapping -- is exercised
 /// end-to-end without external services.
 /// </summary>
 public class StripeWebhookEndpointTests : IClassFixture<WebApplicationFactory<Program>>

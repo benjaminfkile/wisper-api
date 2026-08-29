@@ -23,7 +23,7 @@ namespace Wisper.Api.Tests.Leases;
 
 /// <summary>
 /// Task #46 regression suite (billing-integrity, live-bug report): the price stamped on the lease row at
-/// create time (<see cref="Lease.PriceCentsPerMin"/>) must be the ONLY rate ever applied to that lease —
+/// create time (<see cref="Lease.PriceCentsPerMin"/>) must be the ONLY rate ever applied to that lease --
 /// for the up-front hold, every metering tick, the running-cost display (<c>cost_cents_so_far</c>),
 /// revive re-holds, end-of-lease settlement, and host payout/earnings accrual. A host that reprices the
 /// underlying <c>host_images</c> row mid-lease must NOT be able to change what an already-open lease is
@@ -32,7 +32,7 @@ namespace Wisper.Api.Tests.Leases;
 /// This wires the REAL <see cref="LeaseService"/>, <see cref="MeteringService"/>, <see cref="WalletLeaseGate"/>,
 /// <see cref="LeaseReconciliationService"/> and <see cref="HostService"/> over the in-memory ledger + repos
 /// so the whole composition is proven end-to-end: an actual host PATCH on the image row cannot influence
-/// a live lease's ledger movement, wallet debit, cost_cents_so_far, or host earnings accrual — even across
+/// a live lease's ledger movement, wallet debit, cost_cents_so_far, or host earnings accrual -- even across
 /// a suspend / grace-expiry / post-grace revive.
 /// </para>
 /// </summary>
@@ -43,7 +43,7 @@ public class LeasePriceSnapshotTests
     // A 60¢/min lease is exactly 1¢/second so the arithmetic reads cleanly (charged cents == billable seconds).
     private const long SnapshotPricePerMin = 60;
 
-    // The malicious mid-lease reprice: 10000¢/min ($100/min) — the exact attack shape the bug report calls out.
+    // The malicious mid-lease reprice: 10000¢/min ($100/min) -- the exact attack shape the bug report calls out.
     private const long AttackPricePerMin = 10_000;
 
     private const int FeeBps = 1500; // 15% platform fee → readable 51/9 split on a 60¢ charge
@@ -110,7 +110,7 @@ public class LeasePriceSnapshotTests
         /// <summary>
         /// Seeds a host owned by <see cref="HostOwnerId"/>, a priced image in its allow-list, a generous live
         /// capability, the platform policy for the fee split, and a wallet top-up big enough for the biggest
-        /// hold the attack could require — so we can prove the attack does NOT drain even a well-funded wallet.
+        /// hold the attack could require -- so we can prove the attack does NOT drain even a well-funded wallet.
         /// </summary>
         public async Task SeedAsync()
         {
@@ -154,7 +154,7 @@ public class LeasePriceSnapshotTests
                 UpdatedAt = T0,
             });
 
-            // The live capability the PATCH revalidates against — the image ref must be in the allow-list.
+            // The live capability the PATCH revalidates against -- the image ref must be in the allow-list.
             Capabilities.Set(Host.Id, new HostCapabilitySnapshot(
                 Images: new[] { "reg/wisp-base:latest" },
                 Networks: new[] { NetworkMode.None, NetworkMode.Open },
@@ -186,7 +186,7 @@ public class LeasePriceSnapshotTests
             TtlSeconds: ttlSeconds,
             Userdata: null);
 
-        /// <summary>Mutates the image's price via the real host PATCH endpoint — the exact attack surface.</summary>
+        /// <summary>Mutates the image's price via the real host PATCH endpoint -- the exact attack surface.</summary>
         public Task RepriceImageAsync(long newPriceCentsPerMin) =>
             HostService.PatchImageAsync(
                 HostOwnerId, Host.Id, Image.Id,
@@ -233,7 +233,7 @@ public class LeasePriceSnapshotTests
     /// <summary>
     /// The core attack: create a priced lease, host raises the image price ×10000 mid-lease, meter and end the
     /// lease. Every posted <c>lease_charge</c>, the <c>cost_cents_so_far</c> display, the total wallet debit,
-    /// and the host earnings/platform revenue accrual MUST reflect only the create-time snapshot price — the
+    /// and the host earnings/platform revenue accrual MUST reflect only the create-time snapshot price -- the
     /// mid-lease reprice must have zero effect on this lease's ledger movement.
     /// </summary>
     [Fact]
@@ -262,7 +262,7 @@ public class LeasePriceSnapshotTests
         Assert.Equal(SnapshotPricePerMin, (await fx.ReloadAsync(leaseId))!.PriceCentsPerMin);
 
         // 4) Meter another 60s tick AFTER the reprice: it MUST still charge only 60¢ (snapshot price), NOT
-        // 10000¢. This is the whole load-bearing assertion of the bug — a live tick after a mid-lease reprice
+        // 10000¢. This is the whole load-bearing assertion of the bug -- a live tick after a mid-lease reprice
         // charges the snapshot, not the current image price.
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         Assert.Equal(1, await fx.Meter.RunTickAsync());
@@ -294,7 +294,7 @@ public class LeasePriceSnapshotTests
         // - lease_holds is fully unwound (hold 180¢ − charged 150¢ = 30¢ remainder returned to the wallet).
         Assert.Equal(0, await fx.HoldsCentsAsync());
 
-        // - The double-entry ledger is still balanced and no account was driven negative — a leaked live-price
+        // - The double-entry ledger is still balanced and no account was driven negative -- a leaked live-price
         // charge would either overdraw lease_holds or drop the wallet through zero long before the release.
         foreach (var recon in await fx.Ledger.ReconcileAsync())
         {
@@ -307,7 +307,7 @@ public class LeasePriceSnapshotTests
     /// The revive-path variant (docs/TUNNEL.md §8): create a lease, drop the host and end it as
     /// <c>host_disconnect</c>, host reprices while the lease is ended, then host reconnects post-grace and
     /// the reconciler revives the lease. The revival re-hold, subsequent metering ticks, and the eventual
-    /// release must all still use the original snapshot price — the mid-outage reprice must not sneak in
+    /// release must all still use the original snapshot price -- the mid-outage reprice must not sneak in
     /// through the ended→active revival path either.
     /// </summary>
     [Fact]
@@ -351,7 +351,7 @@ public class LeasePriceSnapshotTests
 
         var revived = await fx.ReloadAsync(leaseId);
         Assert.Equal(LeaseStatus.Active, revived!.Status);
-        // The snapshot survives revive — the reprice must NOT touch the lease row's price.
+        // The snapshot survives revive -- the reprice must NOT touch the lease row's price.
         Assert.Equal(SnapshotPricePerMin, revived.PriceCentsPerMin);
 
         // The revive re-hold covers the REMAINING billable time at the SNAPSHOT price, not the live price:
@@ -365,7 +365,7 @@ public class LeasePriceSnapshotTests
         Assert.Equal(120, await fx.CostCentsSoFarViewAsync(leaseId)); // 2 minutes total @ snapshot = 120¢
 
         // Release: total metered runtime is 120s of billable, so the ledger has moved 120¢ from the wallet
-        // to earnings + revenue — not 60 100¢. The revive-generation hold_release returns the 480¢ remainder
+        // to earnings + revenue -- not 60 100¢. The revive-generation hold_release returns the 480¢ remainder
         // (revive hold 540¢ − 60¢ charged post-revive), so lease_holds is again zero.
         await fx.LeaseService.ReleaseAsync(fx.ConsumerId, leaseId);
         Assert.Equal(0, await fx.HoldsCentsAsync());
@@ -384,7 +384,7 @@ public class LeasePriceSnapshotTests
     /// <see cref="MeteringService.ChargeCentsFor"/> to consult the current image row, the API-shape guarantee
     /// stays that a fresh <see cref="Lease.PriceCentsPerMin"/> read after a reprice still yields the snapshot.
     /// This pins the leases-repository update discipline: <see cref="ILeaseRepository.UpdateAsync"/> and
-    /// <see cref="ILeaseRepository.TransitionStateAsync"/> must not touch <c>price_cents_per_min</c> — a
+    /// <see cref="ILeaseRepository.TransitionStateAsync"/> must not touch <c>price_cents_per_min</c> -- a
     /// reprice on the host image + any transition on the lease must leave the lease price snapshot exactly
     /// as stored on create.
     /// </summary>
@@ -402,7 +402,7 @@ public class LeasePriceSnapshotTests
         // Force through every write path a running lease might take: an UpdateAsync with a tampered price,
         // and a TransitionStateAsync. Neither must mutate the price column on the leases row.
         var loaded = await fx.ReloadAsync(leaseId);
-        // Try to sneak an attacker price through UpdateAsync — the repo contract must ignore it.
+        // Try to sneak an attacker price through UpdateAsync -- the repo contract must ignore it.
         await fx.Leases.UpdateAsync(loaded! with { PriceCentsPerMin = AttackPricePerMin });
         Assert.Equal(SnapshotPricePerMin, (await fx.ReloadAsync(leaseId))!.PriceCentsPerMin);
 

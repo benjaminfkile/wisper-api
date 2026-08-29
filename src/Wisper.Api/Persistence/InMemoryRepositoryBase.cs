@@ -7,7 +7,7 @@ namespace Wisper.Api.Persistence;
 /// real Dapper repositories cannot run here). Provides a thread-safe, key-indexed store plus the
 /// common lookups a concrete double needs; the double implements its entity-specific
 /// <see cref="IRepository"/> interface in terms of these helpers. Semantics deliberately mirror the
-/// SQL side — <see cref="Insert"/> rejects a duplicate key the way a primary-key constraint would.
+/// SQL side -- <see cref="Insert"/> rejects a duplicate key the way a primary-key constraint would.
 /// </summary>
 /// <typeparam name="TId">The entity's identity type.</typeparam>
 /// <typeparam name="TEntity">The stored entity type.</typeparam>

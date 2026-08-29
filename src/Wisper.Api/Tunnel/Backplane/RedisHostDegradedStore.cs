@@ -5,7 +5,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// <summary>
 /// Redis <see cref="IHostDegradedStore"/>: one string key per degraded host, <c>{prefix}:degraded:{hostId}</c>,
 /// carrying a native Redis TTL (<see cref="BackplaneOptions.DegradedTtlSeconds"/>) that every degraded
-/// heartbeat refreshes (task #65). The per-key model — rather than a single set — is what gives us
+/// heartbeat refreshes (task #65). The per-key model -- rather than a single set -- is what gives us
 /// per-host expiration: an instance that crashes with a degraded host in-flight (the Redis-mode
 /// disconnect handler never runs) cannot leave a stuck-degraded entry behind forever, while a live
 /// degraded host that keeps heartbeating never flaps healthy from TTL alone because its TTL is reset
@@ -14,7 +14,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// <para><c>SetDegradedAsync</c> maps to <c>SET {key} 1 EX ttl</c> (atomic set + TTL reset),
 /// <c>ClearDegradedAsync</c> to <c>DEL</c>, <c>IsDegradedAsync</c> to <c>EXISTS</c> (Redis expires
 /// missing keys automatically, so no client-side clock check is needed), and <c>SnapshotAsync</c> to
-/// <c>SCAN MATCH {prefix}:degraded:*</c>. Verified against a real Redis separately — Grunt tests the
+/// <c>SCAN MATCH {prefix}:degraded:*</c>. Verified against a real Redis separately -- Grunt tests the
 /// in-memory store.</para>
 /// </summary>
 public sealed class RedisHostDegradedStore : IHostDegradedStore
@@ -30,7 +30,7 @@ public sealed class RedisHostDegradedStore : IHostDegradedStore
     private readonly TimeSpan _ttl;
 
     /// <summary>
-    /// Production constructor — reuses the backplane's <paramref name="multiplexer"/> to write, delete,
+    /// Production constructor -- reuses the backplane's <paramref name="multiplexer"/> to write, delete,
     /// probe, and scan the per-host degraded keys. TTL is <see cref="BackplaneOptions.DegradedTtlSeconds"/>.
     /// </summary>
     public RedisHostDegradedStore(IConnectionMultiplexer multiplexer, BackplaneOptions options)
@@ -68,7 +68,7 @@ public sealed class RedisHostDegradedStore : IHostDegradedStore
     }
 
     /// <summary>
-    /// Test constructor — closes over an in-memory backing so two <see cref="RedisHostDegradedStore"/>
+    /// Test constructor -- closes over an in-memory backing so two <see cref="RedisHostDegradedStore"/>
     /// instances built on the same shared structure behave as two instances sharing one Redis. TTL
     /// enforcement is the caller's responsibility (typically evaluated against a fake time provider).
     /// </summary>

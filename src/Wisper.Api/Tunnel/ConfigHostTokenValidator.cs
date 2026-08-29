@@ -9,7 +9,7 @@ namespace Wisper.Api.Tunnel;
 /// Config-backed <see cref="IHostTokenValidator"/>: the allowed tokens and their host ids come from
 /// <see cref="TunnelOptions.HostTokens"/>. Comparison is constant-time
 /// (<see cref="CryptographicOperations.FixedTimeEquals"/>). If no tokens are configured it <b>fails
-/// closed</b> — every connection is rejected. It is no longer the primary validator: the DB-backed
+/// closed</b> -- every connection is rejected. It is no longer the primary validator: the DB-backed
 /// <see cref="DbHostTokenValidator"/> resolves tokens against the <c>hosts</c> table and delegates here
 /// only as a dev/bootstrap fallback for a DB-less boot.
 /// <para>

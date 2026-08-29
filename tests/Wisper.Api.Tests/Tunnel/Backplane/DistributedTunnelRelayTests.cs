@@ -12,7 +12,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Tunnel.Backplane;
 
 /// <summary>
-/// The core P8.1 behaviour, driven entirely over the in-process <see cref="LoopbackTunnelBackplane"/> —
+/// The core P8.1 behaviour, driven entirely over the in-process <see cref="LoopbackTunnelBackplane"/> --
 /// no Redis (docs/DESIGN.md §7, docs/TUNNEL.md §11). Two simulated manager instances (A and B) share one
 /// loopback + one presence store. A host's tunnel is "pinned" to instance A (A owns the socket); a
 /// consumer call landing on instance B must be routed to A over the backplane with a correlation id, run

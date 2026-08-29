@@ -5,14 +5,14 @@ namespace Wisper.Api.Auth;
 
 /// <summary>
 /// The single source of the become-a-host role signal (docs/API.md §184, §2): whether the authenticated
-/// caller owns at least one host. Becoming a host is additive — the moment a consumer registers a host they
-/// <b>are</b> a host — so both the <c>host</c> gate (<see cref="WisperAuthFilter"/>) and <c>GET /v1/me</c>
+/// caller owns at least one host. Becoming a host is additive -- the moment a consumer registers a host they
+/// <b>are</b> a host -- so both the <c>host</c> gate (<see cref="WisperAuthFilter"/>) and <c>GET /v1/me</c>
 /// derive the <c>host</c> role from this ownership signal, making the new role effective on the caller's
 /// <b>current</b> token with no re-login even before the Cognito <c>host</c> group lands on the next token.
 /// Routing both callers through one helper keeps them in agreement.
 /// <para>
 /// The signal is <b>JWT-only</b>: an api-key principal authorizes purely by its explicit stored scopes
-/// (docs/API.md §2), never by Cognito groups or ownership, so this helper returns <c>false</c> for one — its
+/// (docs/API.md §2), never by Cognito groups or ownership, so this helper returns <c>false</c> for one -- its
 /// host access is scope-driven either way. The answer is resolved <b>at most once per request</b> and cached
 /// on <see cref="HttpContext.Items"/>, so multiple host gates in a single request never re-query the repo.
 /// </para>
@@ -26,7 +26,7 @@ public static class HostRoleDerivation
     private const string OwnsHostItemKey = "wisper.auth.owns-host";
 
     /// <summary>
-    /// Whether the caller owns ≥1 host — the additive become-a-host signal (docs/API.md §184). Reads
+    /// Whether the caller owns ≥1 host -- the additive become-a-host signal (docs/API.md §184). Reads
     /// <see cref="HttpContext.User"/>: an api-key principal is <c>false</c> (scopes-only, docs/API.md §2); a JWT
     /// caller resolves to its persisted <c>users</c> row (bootstrapping it if needed) and is <c>true</c> when it
     /// owns any host. Cached on <see cref="HttpContext.Items"/> so it costs a single repo query per request.

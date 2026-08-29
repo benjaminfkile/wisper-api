@@ -94,7 +94,7 @@ public class DistributedHostRegistryTests
         await registry.RegisterAsync(conn);
 
         // The host reconnected onto inst-B, which wrote presence AND a fresh capability snapshot.
-        // inst-A's late unregister must clear neither — an unconditional capability delete would
+        // inst-A's late unregister must clear neither -- an unconditional capability delete would
         // strand the host with presence but no capability until its next reconnect.
         await presence.SetOwnerAsync("host-1", "inst-B");
         await capabilities.SetAsync("host-1", Snapshot());

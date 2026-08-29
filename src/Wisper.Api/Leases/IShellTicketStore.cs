@@ -6,7 +6,7 @@ namespace Wisper.Api.Leases;
 /// must never land in a URL, so the JWT-authenticated <c>POST /v1/leases/:id/shell-ticket</c> mints a
 /// short-lived, single-use ticket bound to <c>(user, lease)</c>; the handshake presents it in the query
 /// and Wisper redeems it exactly once before bridging to the tunnel shell. The store is the sole authority
-/// on single-use, expiry, and the lease binding — the endpoint layer re-checks ownership/ready state
+/// on single-use, expiry, and the lease binding -- the endpoint layer re-checks ownership/ready state
 /// against the redeemed user.
 /// </summary>
 public interface IShellTicketStore

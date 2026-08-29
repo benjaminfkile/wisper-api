@@ -2,7 +2,7 @@ namespace Wisper.Api.Payments;
 
 /// <summary>
 /// Stripe configuration (docs/PAYMENTS.md §1, §10), bound from the <see cref="SectionName"/> section. Keys
-/// live in a secrets manager per environment and are supplied here as config — <b>never</b> in code. The
+/// live in a secrets manager per environment and are supplied here as config -- <b>never</b> in code. The
 /// <c>wisper_dev</c> environment carries Stripe <b>test</b> keys, <c>wisper_prod</c> carries <b>live</b>
 /// keys, each with its own webhook endpoint and signing secret. When unset the wrapper and the webhook
 /// verifier <b>fail closed</b>, so a Grunt boot with no Stripe configured cannot silently accept traffic.
@@ -26,13 +26,13 @@ public sealed class StripeOptions
     public string? WebhookSigningSecret { get; set; }
 
     /// <summary>
-    /// The signature-freshness tolerance in seconds — the maximum accepted age of the timestamp inside
+    /// The signature-freshness tolerance in seconds -- the maximum accepted age of the timestamp inside
     /// <c>Stripe-Signature</c> (Stripe's default is 300s). Guards against replay of an old signed body.
     /// </summary>
     public long WebhookToleranceSeconds { get; set; } = 300;
 
     /// <summary>
-    /// Where Stripe sends the host when a Connect Account Link expires or is revisited before completion —
+    /// Where Stripe sends the host when a Connect Account Link expires or is revisited before completion --
     /// the app re-mints a fresh link (docs/PAYMENTS.md §5). Bound per env to the host dashboard URL.
     /// </summary>
     public string? ConnectRefreshUrl { get; set; }

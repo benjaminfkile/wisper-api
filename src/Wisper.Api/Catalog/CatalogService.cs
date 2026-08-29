@@ -12,7 +12,7 @@ namespace Wisper.Api.Catalog;
 /// Default <see cref="ICatalogService"/>: joins the persisted <c>host_images</c> allow-list
 /// (docs/DATA_MODEL.md §4) with the live tunnel registry (docs/TUNNEL.md §3) to produce the consumer
 /// catalog (docs/API.md §5). A host is only catalogued while its agent tunnel is live in the
-/// <see cref="IHostRegistry"/> — the registry is authoritative for presence, so the DB online subset is
+/// <see cref="IHostRegistry"/> -- the registry is authoritative for presence, so the DB online subset is
 /// re-confirmed against it. Hosts are ordered by the stable descending <c>(created_at, id)</c> key and
 /// paginated with an opaque cursor (§10); only priced, <b>enabled</b> images that survive the
 /// requested filters are emitted, and a host contributing no such image is dropped from the page.
@@ -51,7 +51,7 @@ public sealed class CatalogService : ICatalogService
         // One presence-store snapshot covers all candidates (one Redis round-trip for N hosts); the local
         // registry is the fast path so a same-instance tunnel costs no I/O at all. The degraded snapshot
         // (task #62) is a second cheap round-trip that filters out hosts whose agent has reported wisp as
-        // unreachable — they stay live in presence but must not be placed on.
+        // unreachable -- they stay live in presence but must not be placed on.
         var candidates = await _hosts.ListOnlineAsync(ct);
         var presenceSnapshot = await PresenceSnapshotAsync(ct);
         var degradedSnapshot = await DegradedSnapshotAsync(ct);
@@ -99,7 +99,7 @@ public sealed class CatalogService : ICatalogService
     public async Task<HostDetail?> GetHostAsync(Guid hostId, CancellationToken ct = default)
     {
         // Suspended (and missing) hosts are not catalog-visible; a consumer never learns they exist
-        // (docs/API.md §3 — ownership/visibility failures return 404, not 403).
+        // (docs/API.md §3 -- ownership/visibility failures return 404, not 403).
         if (await _hosts.GetByIdAsync(hostId, ct) is not { } host || host.Status == HostStatus.Suspended)
         {
             return null;
@@ -118,7 +118,7 @@ public sealed class CatalogService : ICatalogService
     /// The host's live admission state for the catalog badge (task #571): when its live capability advertises a
     /// positive concurrent-contract ceiling, returns (its non-terminal lease count, that ceiling); otherwise
     /// (offline or unlimited) returns (null, null) so the surfaces omit the counts and never badge it full. The
-    /// per-host lease count is only queried when there is a ceiling to compare against — an unlimited host costs
+    /// per-host lease count is only queried when there is a ceiling to compare against -- an unlimited host costs
     /// no extra read.
     /// </summary>
     private async Task<(int? Active, int? Max)> CapacityOf(
@@ -154,7 +154,7 @@ public sealed class CatalogService : ICatalogService
 
     /// <summary>
     /// True when the host advertises the requested opaque GPU class (exact ordinal match against its
-    /// persisted <c>gpu_classes</c>), or when no class filter is set — a host-level filter, mirroring the
+    /// persisted <c>gpu_classes</c>), or when no class filter is set -- a host-level filter, mirroring the
     /// stored capability without interpreting it (task #523).
     /// </summary>
     private static bool MatchesGpuClass(Host host, string? gpuClass) =>
@@ -171,7 +171,7 @@ public sealed class CatalogService : ICatalogService
     }
 
     /// <summary>
-    /// True when the host's agent has self-reported <c>"degraded"</c> — a host in this state has a live
+    /// True when the host's agent has self-reported <c>"degraded"</c> -- a host in this state has a live
     /// tunnel but its local wisp is unreachable, so it must be excluded from new lease placement even
     /// though presence still shows it online (task #62).
     /// </summary>
@@ -180,7 +180,7 @@ public sealed class CatalogService : ICatalogService
 
     /// <summary>
     /// Single-host async liveness for GetHostAsync: local registry fast path, then presence store, then
-    /// the degraded set — a degraded host surfaces as <c>online: false</c> on the detail page so the
+    /// the degraded set -- a degraded host surfaces as <c>online: false</c> on the detail page so the
     /// consumer's "book this host" view is honest about placement being blocked (task #62).
     /// </summary>
     private async Task<bool> IsLiveAsync(Guid hostId, CancellationToken ct)
@@ -213,7 +213,7 @@ public sealed class CatalogService : ICatalogService
     private static bool After(Host host, CatalogCursor? cursor) =>
         cursor is null || CatalogCursor.Compare(host.CreatedAt, host.Id, cursor.CreatedAt, cursor.Id) > 0;
 
-    /// <summary>The stable descending page order — newest <c>created_at</c> first, ties broken by larger id.</summary>
+    /// <summary>The stable descending page order -- newest <c>created_at</c> first, ties broken by larger id.</summary>
     private static readonly IComparer<Host> HostPageOrder =
         Comparer<Host>.Create((a, b) => CatalogCursor.Compare(a.CreatedAt, a.Id, b.CreatedAt, b.Id));
 }

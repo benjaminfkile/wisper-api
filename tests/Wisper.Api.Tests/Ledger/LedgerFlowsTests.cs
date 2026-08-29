@@ -8,7 +8,7 @@ namespace Wisper.Api.Tests.Ledger;
 /// <summary>
 /// The §8 money flows as balanced-transaction builders (docs/DATA_MODEL.md §8). Each builder must emit
 /// <c>Σ debit = Σ credit</c> with the right side per account, and posting the whole lease lifecycle
-/// through the ledger must leave every account where §8 says it should — the hold fully drained, host
+/// through the ledger must leave every account where §8 says it should -- the hold fully drained, host
 /// earnings and platform revenue split by the fee, and the unused remainder back in the wallet.
 /// </summary>
 public class LedgerFlowsTests
@@ -181,7 +181,7 @@ public class LedgerFlowsTests
         await svc.PostAsync(LedgerFlows.LeaseCharge(holds, earnings, revenue, lease, 1000, 150));
         Assert.Equal(0, await svc.GetBalanceAsync(wallet));
 
-        // The disputed top-up is clawed back — the wallet goes negative (a genuine debt, docs/PAYMENTS.md §7).
+        // The disputed top-up is clawed back -- the wallet goes negative (a genuine debt, docs/PAYMENTS.md §7).
         await svc.PostAsync(LedgerFlows.Chargeback(wallet, cash, 1000, "evt_dispute"));
 
         Assert.Equal(-1000, await svc.GetBalanceAsync(wallet));

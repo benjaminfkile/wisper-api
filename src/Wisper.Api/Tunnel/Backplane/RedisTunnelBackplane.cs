@@ -5,7 +5,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// <summary>
 /// StackExchange.Redis <see cref="ITunnelBackplane"/>: publishes/subscribes over Redis pub/sub, the
 /// routing fabric that lets any instance drive any host's tunnel (docs/DESIGN.md §7). Exercised against
-/// a real Redis in a separate integration environment — Grunt builds and unit-tests against the
+/// a real Redis in a separate integration environment -- Grunt builds and unit-tests against the
 /// <see cref="LoopbackTunnelBackplane"/> instead, so this class only needs to be correct and compile.
 /// </summary>
 public sealed class RedisTunnelBackplane : ITunnelBackplane

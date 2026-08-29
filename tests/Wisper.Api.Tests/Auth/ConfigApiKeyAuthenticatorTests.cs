@@ -10,7 +10,7 @@ namespace Wisper.Api.Tests.Auth;
 /// <summary>
 /// Unit tests for <see cref="ConfigApiKeyAuthenticator"/> (docs/API.md §2): the dev/bootstrap allow-list
 /// resolves a raw key to its owner + scopes, <b>fails closed</b> when the map is empty (the production
-/// default), and — since a config sub is authoritative only when it names a real user — fails closed with
+/// default), and -- since a config sub is authoritative only when it names a real user -- fails closed with
 /// a 401 (never a downstream 500) when the sub does not map to an active user. On a DB-less bootstrap the
 /// authenticator seeds the <c>users</c> row from the grant's <c>Email</c> on first sight (idempotent,
 /// task #185) so a fresh in-memory boot can drive the whole flow with one key. Mirrors
@@ -86,7 +86,7 @@ public class ConfigApiKeyAuthenticatorTests
     }
 
     [Theory]
-    [InlineData("wck_live_dev-a ")] // trailing space — not a byte-for-byte match
+    [InlineData("wck_live_dev-a ")] // trailing space -- not a byte-for-byte match
     [InlineData("WCK_LIVE_DEV-A")]  // wrong case
     [InlineData("wck_live_unknown")]
     public async Task Unknown_key_fails_closed(string key)

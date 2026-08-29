@@ -23,14 +23,14 @@ namespace Wisper.Api.Tests.Persistence;
 /// The regression that would have caught task #540: the paid-lease create driven end-to-end against the
 /// <b>real</b> Postgres-backed <see cref="LedgerStore"/> + <see cref="LeaseRepository"/> on a throwaway
 /// server (<see cref="EphemeralPostgres"/>), rather than the in-memory doubles the rest of the suite uses.
-/// The bug — posting the wallet hold (which carries <c>lease_id</c>, FK → <c>leases.id</c>) <i>before</i> the
-/// lease row is persisted — is invisible in-memory (no FK) and only trips
+/// The bug -- posting the wallet hold (which carries <c>lease_id</c>, FK → <c>leases.id</c>) <i>before</i> the
+/// lease row is persisted -- is invisible in-memory (no FK) and only trips
 /// <c>ledger_transactions_lease_id_fkey</c> against SQL. These tests assert (a) the reordered create posts
 /// the hold and persists both the lease row and the ledger transaction, and (b) the store really does
 /// enforce that FK, so the pre-fix ordering would have failed with the exact <c>23503</c> from the report.
 /// <para>
 /// These stand up a real server, so they are gated behind an explicit <c>WISPER_RUN_PG_TESTS</c> opt-in
-/// (task #558). When it is unset — the default, including normal CI — the fixture reports unavailable and each
+/// (task #558). When it is unset -- the default, including normal CI -- the fixture reports unavailable and each
 /// test is reported <b>skipped</b> (a visible <c>[SkippableFact]</c> skip, not a hidden no-op), so the suite
 /// stays deterministically green regardless of whatever Postgres the runner happens to ship. Set
 /// <c>WISPER_RUN_PG_TESTS=1</c> to run the regression for real (this repo ships PostgreSQL 15); see
@@ -71,7 +71,7 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         Assert.Equal(LeaseStatus.Active, stored!.Status);
         Assert.NotNull(stored.HoldTxnId);
 
-        // The lease_hold ledger transaction exists, is keyed by the lease id, and matches the row's pointer —
+        // The lease_hold ledger transaction exists, is keyed by the lease id, and matches the row's pointer --
         // the FK it carries (lease_id → leases.id) was satisfied because the row was persisted first.
         var holdTxn = await env.LedgerStore.FindTransactionByIdempotencyKeyAsync(
             WalletLeaseGate.HoldIdempotencyKey(created.Lease.Id));
@@ -98,7 +98,7 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         var holds = await env.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
 
         // The pre-fix ordering: place a hold for a lease id that has no leases row yet. The hold's
-        // ledger_transactions.lease_id FK → leases.id trips immediately (23503) — the raw PostgresException
+        // ledger_transactions.lease_id FK → leases.id trips immediately (23503) -- the raw PostgresException
         // the report saw. This is exactly what the reorder (persist the row first) now avoids.
         var ghostLeaseId = Guid.NewGuid();
         var draft = LedgerFlows.LeaseHold(
@@ -108,7 +108,7 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         var ex = await Assert.ThrowsAsync<PostgresException>(() => env.Ledger.PostAsync(draft));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, ex.SqlState); // 23503
 
-        // And nothing was persisted — no orphan transaction lingering under that idempotency key.
+        // And nothing was persisted -- no orphan transaction lingering under that idempotency key.
         Assert.Null(await env.LedgerStore.FindTransactionByIdempotencyKeyAsync(
             WalletLeaseGate.HoldIdempotencyKey(ghostLeaseId)));
     }

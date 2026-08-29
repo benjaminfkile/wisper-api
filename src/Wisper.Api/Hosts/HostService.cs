@@ -71,16 +71,16 @@ public sealed class HostService
     /// <summary>
     /// Registers a new wisp host for the caller (docs/API.md §6): mints an agent token, stores only its hash +
     /// prefix, and returns the clear token <b>once</b> along with the <c>manager_ws</c> the agent dials. The
-    /// host starts <c>offline</c> — pricing/earning stay inert until Connect is enabled and the agent connects.
+    /// host starts <c>offline</c> -- pricing/earning stay inert until Connect is enabled and the agent connects.
     /// Becoming a host is additive (docs/API.md §184, docs/DESIGN.md §199): on success the caller gains the
-    /// <c>host</c> group so their next token carries it. The grant is best-effort — a transient failure is
+    /// <c>host</c> group so their next token carries it. The grant is best-effort -- a transient failure is
     /// logged loudly but never fails registration, because the live session already reflects the new role
     /// (<c>GET /v1/me</c> treats owning ≥1 host as implying <c>host</c>) and the next login reconciles the
     /// group from the persisted host row.
     /// </summary>
     /// <param name="ownerCognitoSub">
     /// The caller's Cognito subject to add to the <c>host</c> group, or <c>null</c> to skip the grant (api-key
-    /// principals, whose roles come from explicit scopes rather than Cognito groups — docs/API.md §2).
+    /// principals, whose roles come from explicit scopes rather than Cognito groups -- docs/API.md §2).
     /// </param>
     public async Task<HostRegisteredResponse> RegisterAsync(
         Guid ownerUserId, RegisterHostRequest request, string? ownerCognitoSub = null,
@@ -114,8 +114,8 @@ public sealed class HostService
 
     /// <summary>
     /// Best-effort grant of the <c>host</c> group on first host action (docs/API.md §184). The host row is
-    /// already committed, so a transient group-write failure is logged loudly and swallowed — never propagated
-    /// — leaving the persisted host to reconcile the role on the next login while the current session is
+    /// already committed, so a transient group-write failure is logged loudly and swallowed -- never propagated
+    /// -- leaving the persisted host to reconcile the role on the next login while the current session is
     /// covered by the owns-a-host role projection on <c>GET /v1/me</c>.
     /// </summary>
     private async Task GrantHostRoleAsync(Guid ownerUserId, string? ownerCognitoSub, CancellationToken ct)
@@ -240,7 +240,7 @@ public sealed class HostService
 
             // A new entry defaults enabled; an update keeps the stored flag unless overridden. Charging a
             // non-Connect-enabled owner's image is rejected here so the online gate stays consistent (§6).
-            // Capability validation (live tunnel + allow-list) is skipped for disabled entries — disabling is
+            // Capability validation (live tunnel + allow-list) is skipped for disabled entries -- disabling is
             // always safe; the owner may need to retract a stale offer the host no longer supports (docs/API.md §6).
             var enabled = entry.Enabled
                 ?? (existingByRef.TryGetValue(imageRef, out var current) ? current.Enabled : true);
@@ -336,7 +336,7 @@ public sealed class HostService
     /// Patches one priced image's price/enable/limits/networks (docs/API.md §6, <c>PATCH …/images/:imageId</c>).
     /// When the effective result is enabled the entry is re-validated live against the host's advertised capability
     /// and a host with no live tunnel is <c>host_offline</c>. A patch whose effective result is disabled skips
-    /// both the live-tunnel gate and capability membership — disabling is always safe (the owner may need to
+    /// both the live-tunnel gate and capability membership -- disabling is always safe (the owner may need to
     /// retract a stale offer the host no longer supports). Omitted fields keep their stored value; the image ref is immutable.
     /// </summary>
     public async Task<HostImageView> PatchImageAsync(
@@ -363,7 +363,7 @@ public sealed class HostService
         var enabled = request.Enabled ?? image.Enabled;
 
         // Capability validation (live tunnel required + allow-list membership) only when the effective
-        // result is enabled. Disabling is always safe — the owner may need to retract a stale offer even
+        // result is enabled. Disabling is always safe -- the owner may need to retract a stale offer even
         // when the host is offline or the image is no longer in the wisp allow-list (docs/API.md §6).
         if (enabled)
         {
@@ -487,7 +487,7 @@ public sealed class HostService
     /// and within the host limit, every network a subset the host permits, and each legacy resource ceiling
     /// within the host's advertised ceiling. The sized offer's fixed profile (task #569) is validated too:
     /// <c>cpus</c>/<c>memory_mb</c> must be positive when present, and <c>gpus</c> is the exact whole-device
-    /// GPU count — <c>&gt;= 0</c> and within the host's advertised GPU count (the reject-don't-clamp discipline
+    /// GPU count -- <c>&gt;= 0</c> and within the host's advertised GPU count (the reject-don't-clamp discipline
     /// carried over from the old <c>max_gpus</c> ceiling, task #522).
     /// </summary>
     private static void ValidateAgainstCapability(
@@ -603,7 +603,7 @@ public sealed class HostService
         // The sized offer's fixed cpu/memory profile (task #569): a present value is the exact per-lease
         // provisioning and must be positive. NULL means "the host's own per-lease policy default applies
         // downstream" (§4), so it is left unvalidated here. When present, an offer must also not exceed the
-        // host's advertised per-lease cap (wisp limits.max_cpus/max_memory_mb) — offer honesty (task #583): a
+        // host's advertised per-lease cap (wisp limits.max_cpus/max_memory_mb) -- offer honesty (task #583): a
         // host must never over-promise resources it will silently clamp at provision time. Reject, never clamp,
         // the same discipline as the GPU count and the legacy max_* ceilings. A host that advertises no cap for
         // a dimension (0) imposes no bound on it.
@@ -643,7 +643,7 @@ public sealed class HostService
 
         // GPU is priced into the offer (task #522/#569): gpus is the EXACT whole-device count this sized offer
         // provisions, and it may not exceed the host's advertised GPU device count. Unlike the cpu/mem/pids
-        // checks there is no "advertised 0 means unlimited/unknown" escape — 0 devices genuinely means no GPU,
+        // checks there is no "advertised 0 means unlimited/unknown" escape -- 0 devices genuinely means no GPU,
         // so a host with no GPU rejects any offer above 0. The default (0) always passes on a GPU-less host.
         // Reject, never clamp (the discipline carried over from the old max_gpus ceiling).
         if (gpus < 0)

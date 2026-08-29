@@ -104,7 +104,7 @@ public class HostEndpointsTests
     public async Task Register_succeeds_for_a_plain_consumer_and_grants_the_host_role()
     {
         // Becoming a host is additive (docs/API.md §184, docs/DESIGN.md §199): the register call requires only
-        // the implicit consumer floor — a plain consumer (no host group) must succeed, and on success gains
+        // the implicit consumer floor -- a plain consumer (no host group) must succeed, and on success gains
         // the host group. This is the live bug fix: this call used to return 403.
         var fx = new Fixture();
         fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
@@ -142,7 +142,7 @@ public class HostEndpointsTests
     {
         // The live bug after #560: the caller's current token was minted before the host-group add, so it lacks
         // cognito:groups=host and host-gated endpoints 403 until re-login. The host gate now honors DB
-        // ownership, so GET /v1/hosts/mine succeeds on the pre-existing token — no re-login. (fx.Validator keeps
+        // ownership, so GET /v1/hosts/mine succeeds on the pre-existing token -- no re-login. (fx.Validator keeps
         // returning the same groupless consumer principal for every request, i.e. the token never refreshes.)
         var fx = new Fixture();
         fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
@@ -167,7 +167,7 @@ public class HostEndpointsTests
     [Fact]
     public async Task Consumer_owning_no_host_is_forbidden_on_the_host_gate()
     {
-        // A consumer who owns no host still fails the host gate (403) — ownership is the only additive signal.
+        // A consumer who owns no host still fails the host gate (403) -- ownership is the only additive signal.
         var fx = new Fixture();
         fx.Validator.Principal = WisperPrincipal.Create("consumer-sub", "c@example.com", Array.Empty<string>());
         using var factory = fx.Build();
@@ -214,7 +214,7 @@ public class HostEndpointsTests
         Assert.Single(mine!.Data);
         Assert.Equal(registered!.Id, mine.Data[0].Id);
         Assert.False(mine.Data[0].Online);
-        // A freshly registered host advertises no GPU yet — the summary surfaces the empty defaults (#521).
+        // A freshly registered host advertises no GPU yet -- the summary surfaces the empty defaults (#521).
         Assert.Empty(mine.Data[0].GpuClasses);
         Assert.Equal(0, mine.Data[0].GpuCount);
         Assert.Equal("usd", mine.Earnings.Currency);

@@ -41,7 +41,7 @@ public class InMemoryStripeEventRepositoryTests
         var repo = new InMemoryStripeEventRepository();
         await repo.TryInsertReceivedAsync(NewEvent("evt_1", "account.updated"));
 
-        // A re-delivery — even with a different type/payload — must not overwrite the stored row.
+        // A re-delivery -- even with a different type/payload -- must not overwrite the stored row.
         var second = await repo.TryInsertReceivedAsync(NewEvent("evt_1", "transfer.created"));
 
         Assert.False(second);

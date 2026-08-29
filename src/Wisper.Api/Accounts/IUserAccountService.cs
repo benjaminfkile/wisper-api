@@ -8,7 +8,7 @@ namespace Wisper.Api.Accounts;
 /// Cognito principal into a persisted <see cref="User"/> row, creating it on first sight
 /// (<b>bootstrap</b>) and applying the mutable profile fields <c>PATCH /v1/me</c> exposes. Identity
 /// lives in Cognito; this row mirrors it (docs/DATA_MODEL.md §3), so bootstrap is keyed on the
-/// <c>sub</c> claim and is idempotent — the second and later calls just re-read the same row.
+/// <c>sub</c> claim and is idempotent -- the second and later calls just re-read the same row.
 /// </summary>
 public interface IUserAccountService
 {

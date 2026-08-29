@@ -15,7 +15,7 @@ public sealed class PersistenceOptions
 
     /// <summary>
     /// When <c>true</c> (the default) and a database is configured, the DbUp migration runner
-    /// applies any pending embedded scripts at startup. Idempotent — already-applied scripts are
+    /// applies any pending embedded scripts at startup. Idempotent -- already-applied scripts are
     /// skipped. Has no effect when no connection string is set (the app still boots for the tunnel).
     /// </summary>
     public bool RunMigrationsAtStartup { get; set; } = true;

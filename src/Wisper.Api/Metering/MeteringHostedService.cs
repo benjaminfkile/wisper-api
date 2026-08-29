@@ -9,7 +9,7 @@ namespace Wisper.Api.Metering;
 /// The background flush loop that drives <see cref="MeteringService"/> on a fixed tick (docs/DATA_MODEL.md
 /// §14, default 60s). Each tick reloads the active leases and flushes accrued lease-minutes; a tick that
 /// throws is logged and the loop continues, so one bad flush never stops metering. The loop is a no-op on
-/// a DB-less boot (the tunnel needs no database) or when disabled by config — the meter's working set
+/// a DB-less boot (the tunnel needs no database) or when disabled by config -- the meter's working set
 /// lives in Postgres.
 /// </summary>
 public sealed class MeteringHostedService : BackgroundService
@@ -38,13 +38,13 @@ public sealed class MeteringHostedService : BackgroundService
     {
         if (!_options.Enabled)
         {
-            _logger.LogInformation("metering disabled by config — background flush loop not started");
+            _logger.LogInformation("metering disabled by config -- background flush loop not started");
             return;
         }
 
         if (!_db.IsConfigured)
         {
-            _logger.LogInformation("no database configured — metering flush loop not started (tunnel-only boot)");
+            _logger.LogInformation("no database configured -- metering flush loop not started (tunnel-only boot)");
             return;
         }
 
@@ -68,7 +68,7 @@ public sealed class MeteringHostedService : BackgroundService
             }
             catch (Exception ex)
             {
-                // A single failed tick (e.g. a transient DB error) must not stop metering — the watermark
+                // A single failed tick (e.g. a transient DB error) must not stop metering -- the watermark
                 // is durable, so the next tick simply resumes and re-bills the un-flushed interval (§14).
                 _logger.LogError(ex, "metering tick failed; will retry on the next tick");
             }

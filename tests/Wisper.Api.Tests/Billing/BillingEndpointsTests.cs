@@ -24,7 +24,7 @@ namespace Wisper.Api.Tests.Billing;
 /// Integration tests over the real app host for the consumer billing surface (docs/API.md §5,
 /// docs/PAYMENTS.md §3): the consumer gate, the required <c>Idempotency-Key</c> on top-up and its replay,
 /// the <c>client_secret</c> shape, balance + usage, the paginated ledger view, and the end-to-end
-/// exactly-once credit — <c>topup</c> creates a PaymentIntent (no credit) and only the
+/// exactly-once credit -- <c>topup</c> creates a PaymentIntent (no credit) and only the
 /// <c>payment_intent.succeeded</c> webhook credits the wallet, once. All externals are in-memory doubles.
 /// </summary>
 public class BillingEndpointsTests

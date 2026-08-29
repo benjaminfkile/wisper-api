@@ -31,7 +31,7 @@ public class ApiKeyTokenTests
         var secret = issued.Token["wck_live_".Length..];
         Assert.Equal("wck_live_" + secret[..4], issued.TokenPrefix);
 
-        // The prefix is a non-secret display fragment — it must not reveal the full secret.
+        // The prefix is a non-secret display fragment -- it must not reveal the full secret.
         Assert.DoesNotContain(secret, issued.TokenPrefix);
     }
 

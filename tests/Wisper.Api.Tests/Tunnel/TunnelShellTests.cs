@@ -135,7 +135,7 @@ public class TunnelShellTests
 
         // Wait for the shell to open so the agent has the sid; then push trailing PTY output and end the
         // stream the way a PTY exit does (stream.closed). The consumer must still receive that trailing
-        // output AND a clean 1000 close — not an abrupt 1006 from a mid-drain teardown.
+        // output AND a clean 1000 close -- not an abrupt 1006 from a mid-drain teardown.
         var open = await agent.WaitForControlAsync(FrameTypes.ShellOpen, ct);
         var sid = open.GetProperty("sid").GetUInt32();
 
@@ -176,7 +176,7 @@ public class TunnelShellTests
         await stream.WriteAsync(Channels.Stdin, new byte[6]);
         Assert.Equal(0, stream.SendWindow);
 
-        // A further send blocks at 0 — nothing new is written until credit arrives.
+        // A further send blocks at 0 -- nothing new is written until credit arrives.
         var blocked = stream.WriteAsync(Channels.Stdin, new byte[3]);
         var finishedFirst = await Task.WhenAny(blocked, Task.Delay(200));
         Assert.NotSame(blocked, finishedFirst);
@@ -381,7 +381,7 @@ public class TunnelShellTests
             _control.Writer.TryWrite(element);
         }
 
-        /// <summary>Pushes a stdout (ch 1) binary frame on <paramref name="sid"/> — PTY output A→W.</summary>
+        /// <summary>Pushes a stdout (ch 1) binary frame on <paramref name="sid"/> -- PTY output A→W.</summary>
         public Task SendStdoutAsync(uint sid, byte[] data, CancellationToken ct) =>
             _socket.SendAsync(
                 new BinaryFrame(Channels.Stdout, sid, data).Encode(), WebSocketMessageType.Binary, true, ct);

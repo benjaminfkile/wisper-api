@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 namespace Wisper.Api.Auth;
 
 /// <summary>
-/// The real <see cref="IUserRoleGranter"/> — grants the <c>host</c> role by adding the user to the Cognito
+/// The real <see cref="IUserRoleGranter"/> -- grants the <c>host</c> role by adding the user to the Cognito
 /// <c>host</c> group via <c>AdminAddUserToGroup</c> (docs/API.md §184, docs/DESIGN.md §199). The write is
 /// idempotent: Cognito treats adding an already-member user as a success, so re-registering a host is a no-op.
 /// It runs only when a user pool is configured (<see cref="CognitoAuthOptions.UserPoolId"/>); the DI wiring
@@ -42,7 +42,7 @@ public sealed class CognitoUserRoleGranter : IUserRoleGranter
             return;
         }
 
-        // AdminAddUserToGroup is idempotent — an already-member user succeeds — so the first host action adds
+        // AdminAddUserToGroup is idempotent -- an already-member user succeeds -- so the first host action adds
         // the group and every later one is a harmless no-op (docs/API.md §184). The username is the Cognito
         // subject we authenticated the caller as.
         await _cognito.AdminAddUserToGroupAsync(

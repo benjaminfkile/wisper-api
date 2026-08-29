@@ -48,7 +48,7 @@ public class InMemoryLeaseUsageRepositoryTests
         var lease = Guid.NewGuid();
 
         var first = await repo.AppendAsync(NewUsage(lease, T0, amount: 120));
-        // A retried flush for the same interval — even with different figures — is a no-op.
+        // A retried flush for the same interval -- even with different figures -- is a no-op.
         var retry = await repo.AppendAsync(NewUsage(lease, T0, amount: 999) with { Id = Guid.NewGuid() });
 
         Assert.Equal(first.Id, retry.Id);

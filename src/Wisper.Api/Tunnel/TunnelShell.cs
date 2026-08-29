@@ -5,7 +5,7 @@ namespace Wisper.Api.Tunnel;
 
 /// <summary>
 /// A duplex handle over an open shell <c>sid</c> (docs/TUNNEL.md §6): consumer keystrokes go in
-/// as <c>stdin</c> (ch 0) binary frames — flow-controlled — and agent PTY output arrives on
+/// as <c>stdin</c> (ch 0) binary frames -- flow-controlled -- and agent PTY output arrives on
 /// <see cref="Output"/> as <c>stdout</c> (ch 1). The consumer grants credit back with
 /// <see cref="AckOutputDrainedAsync"/> as it writes bytes out. Returned by
 /// <see cref="ITunnelRelay.OpenShellAsync"/>.
@@ -93,7 +93,7 @@ internal sealed class TunnelShell : ITunnelShell
             }
             catch
             {
-                // Best effort — the host may already be gone.
+                // Best effort -- the host may already be gone.
             }
         }
 

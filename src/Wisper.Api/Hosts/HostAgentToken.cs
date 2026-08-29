@@ -8,8 +8,8 @@ namespace Wisper.Api.Hosts;
 /// short non-secret prefix are stored (docs/DATA_MODEL.md §4). Because the token carries full CSPRNG
 /// entropy, a plain <see cref="SHA256"/> digest is the right at-rest form: it is deterministic (so a
 /// presented token resolves to its host by an indexed hash lookup, docs/TUNNEL.md §13) and preimage-resistant,
-/// which a salted password hash (argon2/bcrypt) — designed for low-entropy secrets and non-deterministic by
-/// design — could not provide for an O(1) lookup.
+/// which a salted password hash (argon2/bcrypt) -- designed for low-entropy secrets and non-deterministic by
+/// design -- could not provide for an O(1) lookup.
 /// </summary>
 public static class HostAgentToken
 {

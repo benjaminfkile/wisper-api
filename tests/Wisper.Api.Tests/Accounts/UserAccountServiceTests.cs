@@ -12,7 +12,7 @@ namespace Wisper.Api.Tests.Accounts;
 /// <summary>
 /// Unit tests for <see cref="UserAccountService"/> (docs/API.md §2, §5, P3.2): first-sight bootstrap
 /// from the JWT claims, its idempotency, and the mutable-profile <c>PATCH</c> path. Uses the in-memory
-/// users repository and a fixed clock — no Postgres, no crypto.
+/// users repository and a fixed clock -- no Postgres, no crypto.
 /// </summary>
 public class UserAccountServiceTests
 {
@@ -60,7 +60,7 @@ public class UserAccountServiceTests
         var second = await service.BootstrapAsync(principal);
 
         Assert.Equal(first.Id, second.Id);
-        // The email lookup resolves to that same single row — no duplicate was inserted.
+        // The email lookup resolves to that same single row -- no duplicate was inserted.
         Assert.Equal(first.Id, (await users.GetByEmailAsync("a@b.com"))!.Id);
     }
 
@@ -70,7 +70,7 @@ public class UserAccountServiceTests
         var (service, users) = NewService();
 
         var first = await service.BootstrapAsync(Principal(sub: "cognito-1", email: "old@b.com"));
-        // Same subject, different email claim — still the same account, not a second row.
+        // Same subject, different email claim -- still the same account, not a second row.
         var second = await service.BootstrapAsync(Principal(sub: "cognito-1", email: "new@b.com"));
 
         Assert.Equal(first.Id, second.Id);
@@ -109,7 +109,7 @@ public class UserAccountServiceTests
         var (service, users) = NewService();
         var principal = Principal(sub: "cognito-1", email: "seed@b.com");
 
-        // No prior bootstrap call — PATCH must materialize the row, then apply the change.
+        // No prior bootstrap call -- PATCH must materialize the row, then apply the change.
         var updated = await service.UpdateProfileAsync(
             principal, new ProfileUpdate { Email = "changed@b.com" });
 
@@ -163,7 +163,7 @@ public class UserAccountServiceTests
     public async Task Bootstrap_without_a_subject_claim_is_unauthenticated()
     {
         var (service, _) = NewService();
-        // A bare identity with only an email claim — no subject.
+        // A bare identity with only an email claim -- no subject.
         var identity = new ClaimsIdentity(WisperPrincipal.AuthenticationType);
         identity.AddClaim(new Claim(WisperPrincipal.EmailClaimType, "a@b.com"));
         var principal = new ClaimsPrincipal(identity);

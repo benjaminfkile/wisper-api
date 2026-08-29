@@ -1,4 +1,4 @@
-# Multi-stage build for the Wisper API — deploys as a container image behind an
+# Multi-stage build for the Wisper API -- deploys as a container image behind an
 # API gateway / load balancer. Pinned to .NET 8 (see global.json).
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build

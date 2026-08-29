@@ -28,7 +28,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>top-up</b> — a consumer funds their wallet (docs/DATA_MODEL.md §8; on Stripe
+    /// <b>top-up</b> -- a consumer funds their wallet (docs/DATA_MODEL.md §8; on Stripe
     /// <c>payment_intent.succeeded</c>). Debit <c>platform_cash</c> the net cash and <c>stripe_fees</c> the
     /// processor fee the platform absorbs; credit <c>user_wallet</c> the gross. Keyed by the Stripe event id.
     /// </summary>
@@ -68,7 +68,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>lease_hold</b> — earmark the estimated max out of the wallet at <c>POST /leases</c>
+    /// <b>lease_hold</b> -- earmark the estimated max out of the wallet at <c>POST /leases</c>
     /// (docs/DATA_MODEL.md §8). Debit <c>user_wallet</c>, credit <c>lease_holds</c>. The non-negative
     /// wallet guard (§7d) is the hard gate: an unaffordable hold fails and no compute is provisioned.
     /// </summary>
@@ -97,7 +97,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>lease_charge</b> — bill a metered tick out of the hold (docs/DATA_MODEL.md §8). Debit
+    /// <b>lease_charge</b> -- bill a metered tick out of the hold (docs/DATA_MODEL.md §8). Debit
     /// <c>lease_holds</c> the charge; credit <c>host_earnings</c> the payout and <c>platform_revenue</c> the
     /// fee, split by <see cref="SplitFee"/> from <c>platform_policy.fee_bps</c> (§11). Because the hold
     /// covered the whole lease, the hold can never be exhausted mid-run.
@@ -142,7 +142,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>hold_release</b> — return the unused remainder of a hold to the wallet at lease end
+    /// <b>hold_release</b> -- return the unused remainder of a hold to the wallet at lease end
     /// (docs/DATA_MODEL.md §8). Debit <c>lease_holds</c>, credit <c>user_wallet</c>.
     /// </summary>
     public static TransactionDraft HoldRelease(
@@ -170,7 +170,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>payout</b> — pay accrued host earnings out via a Stripe Connect transfer (docs/DATA_MODEL.md §8,
+    /// <b>payout</b> -- pay accrued host earnings out via a Stripe Connect transfer (docs/DATA_MODEL.md §8,
     /// docs/PAYMENTS.md §6). Debit <c>host_earnings</c>, credit <c>platform_cash</c> (money leaves the
     /// platform). Keyed by the <c>payouts.id</c> so a retried run can't double-pay.
     /// </summary>
@@ -200,7 +200,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>refund</b> — reverse a top-up of unspent wallet credits (docs/DATA_MODEL.md §8, docs/PAYMENTS.md
+    /// <b>refund</b> -- reverse a top-up of unspent wallet credits (docs/DATA_MODEL.md §8, docs/PAYMENTS.md
     /// §3, §7). Debit <c>user_wallet</c> the gross; credit <c>platform_cash</c> the net cash and
     /// <c>stripe_fees</c> the fee. Requires wallet funds (§7d); a shortfall is a clawback policy question.
     /// </summary>
@@ -240,7 +240,7 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>adjustment</b> — the <b>only</b> hand-correction of money (docs/DATA_MODEL.md §7, §12): an admin
+    /// <b>adjustment</b> -- the <b>only</b> hand-correction of money (docs/DATA_MODEL.md §7, §12): an admin
     /// posts a balanced two-legged transaction moving <paramref name="amountCents"/> from
     /// <paramref name="debitAccountId"/> to <paramref name="creditAccountId"/>. A single debit + single
     /// credit of the same amount balances by construction (<c>Σ debit = Σ credit</c>) regardless of the two
@@ -279,14 +279,14 @@ public static class LedgerFlows
     }
 
     /// <summary>
-    /// <b>chargeback</b> — a consumer disputes a top-up and the card network claws the money back
+    /// <b>chargeback</b> -- a consumer disputes a top-up and the card network claws the money back
     /// (docs/DATA_MODEL.md §8, docs/PAYMENTS.md §7, on Stripe <c>charge.dispute.created</c>). Debit
     /// <c>user_wallet</c> the disputed gross (the consumer loses those credits) and credit
     /// <c>platform_cash</c> the same (the money left the platform to the network). This is the <b>one</b>
-    /// documented case a wallet may go <b>negative</b> — a genuine debt, when the consumer already spent the
+    /// documented case a wallet may go <b>negative</b> -- a genuine debt, when the consumer already spent the
     /// credits (the ledger's non-negative guard makes an explicit exception for <see cref="LedgerTxnKind.Chargeback"/>).
     /// Keyed by the Stripe event id so a re-delivered dispute is a no-op. The platform absorbs already-paid
-    /// host earnings (§7) — no host clawback is posted here.
+    /// host earnings (§7) -- no host clawback is posted here.
     /// </summary>
     public static TransactionDraft Chargeback(
         Guid walletAccountId,

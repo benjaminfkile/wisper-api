@@ -1,7 +1,7 @@
 namespace Wisper.Api.Tests.TestSupport;
 
 /// <summary>
-/// A minimal controllable <see cref="TimeProvider"/> for unit tests — the clock the TTL/versioning/
+/// A minimal controllable <see cref="TimeProvider"/> for unit tests -- the clock the TTL/versioning/
 /// timestamp logic reads is fixed and advanceable, so tests are deterministic without wall-clock sleeps.
 /// </summary>
 public sealed class FakeTimeProvider : TimeProvider

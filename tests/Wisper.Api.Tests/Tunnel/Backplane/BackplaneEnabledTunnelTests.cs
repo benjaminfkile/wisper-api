@@ -12,11 +12,11 @@ using Xunit;
 namespace Wisper.Api.Tests.Tunnel.Backplane;
 
 /// <summary>
-/// Boots the whole app with the multi-instance backplane <b>enabled</b> (loopback fabric — no Redis) and
+/// Boots the whole app with the multi-instance backplane <b>enabled</b> (loopback fabric -- no Redis) and
 /// drives a lease through it end-to-end with a fake agent (docs/DESIGN.md §7, P8.1). This proves the
 /// config toggle wires the distributed registry + relay in place of the in-memory pair with no DI cycle,
 /// that a connecting host records presence, and that a consumer call resolves the owner (this single
-/// instance) and drives the physical socket locally — the same happy path the single-instance suite
+/// instance) and drives the physical socket locally -- the same happy path the single-instance suite
 /// covers, but through <see cref="DistributedTunnelRelay"/>/<see cref="DistributedHostRegistry"/>.
 /// </summary>
 public class BackplaneEnabledTunnelTests

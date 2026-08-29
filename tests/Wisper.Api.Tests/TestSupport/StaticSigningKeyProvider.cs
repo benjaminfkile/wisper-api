@@ -4,7 +4,7 @@ using Wisper.Api.Auth;
 namespace Wisper.Api.Tests.TestSupport;
 
 /// <summary>
-/// An <see cref="ISigningKeyProvider"/> backed by a fixed set of keys — so the real
+/// An <see cref="ISigningKeyProvider"/> backed by a fixed set of keys -- so the real
 /// <see cref="Wisper.Api.Auth.CognitoJwtValidator"/> signature/issuer/audience/expiry checks
 /// run without a JWKS network round-trip. Configure <see cref="Throw"/> to simulate an
 /// unreachable JWKS endpoint.

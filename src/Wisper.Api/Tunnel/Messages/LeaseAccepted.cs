@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>lease.accepted</c> (A→W) — the agent called wisp <c>POST /contracts</c> and got a
+/// <c>lease.accepted</c> (A→W) -- the agent called wisp <c>POST /contracts</c> and got a
 /// contract back; provisioning is underway (docs/TUNNEL.md §5). Echoes the request
 /// <c>rid</c> (inherited) so Wisper can correlate it with the <c>lease.create</c>.
 /// </summary>

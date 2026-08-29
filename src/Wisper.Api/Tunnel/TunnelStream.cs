@@ -25,11 +25,11 @@ public interface ITunnelStreamSink
 /// One multiplexed byte stream over a tunnel <c>sid</c> (docs/TUNNEL.md §6, §9) with per-stream
 /// credit flow control on <b>both</b> directions:
 /// <list type="bullet">
-/// <item><b>Send window</b> — the bytes this side may still send before the peer grants more.
+/// <item><b>Send window</b> -- the bytes this side may still send before the peer grants more.
 /// Initialised to the peer's implied initial window; decremented by every binary frame sent;
 /// at 0 the sender <i>blocks</i> (backpressure) until a <c>stream.credit</c> replenishes it.
-/// Bytes are never dropped — the producer is slowed.</item>
-/// <item><b>Receive accounting</b> — inbound bytes are enqueued for a downstream drain; as they
+/// Bytes are never dropped -- the producer is slowed.</item>
+/// <item><b>Receive accounting</b> -- inbound bytes are enqueued for a downstream drain; as they
 /// drain (<see cref="AckDrainedAsync"/>) a batched <c>stream.credit</c> is emitted to replenish
 /// the peer's window. If the peer sends past the window it was granted the stream is closed with
 /// <c>stream.closed{reason:"flow_violation"}</c> (overflow is a protocol fault, §9).</item>
@@ -92,7 +92,7 @@ public sealed class TunnelStream : ITunnelStreamSink, IAsyncDisposable
     /// <summary>The Wisper-allocated stream id (docs/TUNNEL.md §2).</summary>
     public uint Sid => _sid;
 
-    /// <summary>The current send window in bytes — how many more bytes may be sent before blocking.</summary>
+    /// <summary>The current send window in bytes -- how many more bytes may be sent before blocking.</summary>
     public long SendWindow
     {
         get { lock (_sendLock) { return _sendWindow; } }
@@ -240,7 +240,7 @@ public sealed class TunnelStream : ITunnelStreamSink, IAsyncDisposable
 
     /// <summary>
     /// Closes the stream locally (e.g. a consumer disconnect handled by the shell). Does not emit
-    /// <c>stream.closed</c> — the caller sends <c>stream.close</c> to the agent when appropriate.
+    /// <c>stream.closed</c> -- the caller sends <c>stream.close</c> to the agent when appropriate.
     /// </summary>
     public Task CloseAsync(string reason, CancellationToken ct = default) =>
         CloseInternalAsync(reason, notifyPeer: false, ct);

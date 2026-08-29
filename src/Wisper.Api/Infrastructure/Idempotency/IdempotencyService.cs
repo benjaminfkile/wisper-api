@@ -4,7 +4,7 @@ using Wisper.Api.Persistence.Idempotency;
 namespace Wisper.Api.Infrastructure.Idempotency;
 
 /// <summary>
-/// The reusable helper behind the <c>Idempotency-Key</c> header (docs/API.md §9, docs/DATA_MODEL.md §10) —
+/// The reusable helper behind the <c>Idempotency-Key</c> header (docs/API.md §9, docs/DATA_MODEL.md §10) --
 /// the replay / conflict / in-progress-lock logic a money-mutating endpoint (top-up, <c>POST /leases</c>,
 /// payout trigger) wraps its work in, so a client retry is always safe. It is deliberately transport-free
 /// (no <see cref="HttpContext"/>) so it is unit-testable without Postgres or auth; the endpoint layer
@@ -16,7 +16,7 @@ namespace Wisper.Api.Infrastructure.Idempotency;
 /// lock) via <see cref="IIdempotencyKeyRepository.TryBeginAsync"/> and gets <see cref="IdempotencyOutcome.Began"/>;
 /// a retry with the <b>same</b> body replays the stored response once the first completed, or blocks with an
 /// in-progress <c>409</c> while it is still running; a retry with a <b>different</b> body under the same key
-/// is a <c>409</c> conflict. Rows are TTL'd — an expired record is swept and the lock retaken.
+/// is a <c>409</c> conflict. Rows are TTL'd -- an expired record is swept and the lock retaken.
 /// </remarks>
 public sealed class IdempotencyService
 {
@@ -82,7 +82,7 @@ public sealed class IdempotencyService
 
     /// <summary>
     /// Releases the in-progress lock for <paramref name="key"/> without storing a response, so a request
-    /// that <b>failed</b> after <see cref="BeginAsync"/> doesn't wedge the key until its TTL — the client
+    /// that <b>failed</b> after <see cref="BeginAsync"/> doesn't wedge the key until its TTL -- the client
     /// can retry the same key. Used only on the error path; a successful op calls <see cref="CompleteAsync"/>.
     /// </summary>
     public Task<bool> AbandonAsync(string key, CancellationToken ct = default) =>

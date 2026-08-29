@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>lease.ended</c> (A→W, <b>unsolicited</b>) — wisp's local reaper/TTL ended the lease
+/// <c>lease.ended</c> (A→W, <b>unsolicited</b>) -- wisp's local reaper/TTL ended the lease
 /// on the host (docs/TUNNEL.md §5). Carries no <c>rid</c>; correlated by <c>leaseId</c>.
 /// </summary>
 public record LeaseEnded : ControlEnvelope

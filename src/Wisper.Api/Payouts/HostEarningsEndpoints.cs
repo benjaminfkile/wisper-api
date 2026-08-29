@@ -10,7 +10,7 @@ namespace Wisper.Api.Payouts;
 /// <summary>
 /// The host earnings + payout surface (docs/API.md §6, docs/PAYMENTS.md §6): <c>GET /v1/earnings</c> (accrued
 /// + paid), <c>GET /v1/earnings/payouts</c> (payout history → Stripe transfer ids), and <c>POST /v1/payouts</c>
-/// (on-demand payout of accrued earnings — <c>Idempotency-Key</c> required, <c>connect_incomplete</c> → 403).
+/// (on-demand payout of accrued earnings -- <c>Idempotency-Key</c> required, <c>connect_incomplete</c> → 403).
 /// All are host-gated (§6) and bootstrap the caller's <c>users</c> row so earnings are scoped to a persisted
 /// account. The scheduled run pays the same hosts on a cadence via <see cref="PayoutHostedService"/>.
 /// </summary>
@@ -53,7 +53,7 @@ public static class HostEarningsEndpoints
         IdempotencyService idempotency,
         CancellationToken ct)
     {
-        // The Idempotency-Key is REQUIRED — a payout moves money, so a retry must never create a second
+        // The Idempotency-Key is REQUIRED -- a payout moves money, so a retry must never create a second
         // transfer (docs/API.md §6, §9, docs/PAYMENTS.md §6).
         var key = http.Request.Headers[IdempotencyKeyHeader].ToString();
         if (string.IsNullOrWhiteSpace(key))

@@ -6,8 +6,8 @@ namespace Wisper.Api.Persistence.Audit;
 /// <summary>
 /// Dapper + explicit-SQL <see cref="IAuditLogRepository"/> over Postgres (docs/DATA_MODEL.md §12). <c>id</c>
 /// is a DB identity (server-assigned on insert); <c>meta</c> is <c>jsonb</c>, written with a <c>::jsonb</c>
-/// cast and read via <c>::text</c>. The table is append-only — an immutability trigger blocks UPDATE/DELETE
-/// — so no mutator is offered. Not exercised by the unit suite (Grunt has no Postgres); the in-memory
+/// cast and read via <c>::text</c>. The table is append-only -- an immutability trigger blocks UPDATE/DELETE
+/// -- so no mutator is offered. Not exercised by the unit suite (Grunt has no Postgres); the in-memory
 /// double is.
 /// </summary>
 public sealed class AuditLogRepository : RepositoryBase, IAuditLogRepository

@@ -204,7 +204,7 @@ public sealed class DistributedTunnelRelay : ITunnelRelay, IHostedService, IAsyn
     }
 
     // The frame router and connection-closed hooks only ever concern a physical socket on THIS
-    // instance, so they are pure local concerns — delegate to the local relay.
+    // instance, so they are pure local concerns -- delegate to the local relay.
     public Task RouteAgentFrameAsync(
         TunnelConnection connection, string type, ReadOnlyMemory<byte> payload, CancellationToken ct) =>
         _local.RouteAgentFrameAsync(connection, type, payload, ct);
@@ -221,7 +221,7 @@ public sealed class DistributedTunnelRelay : ITunnelRelay, IHostedService, IAsyn
     private async Task<string?> ResolveOwnerAsync(string hostId, CancellationToken ct)
     {
         // Fast path + correctness floor: the local registry is the authority for sockets physically here,
-        // so if the tunnel is on this instance, drive it locally without a presence round-trip — and
+        // so if the tunnel is on this instance, drive it locally without a presence round-trip -- and
         // regardless of any presence-write lag (the socket is here now).
         if (_registry.TryGet(hostId, out _))
         {

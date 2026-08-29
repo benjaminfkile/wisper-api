@@ -4,7 +4,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
-/// The P6.6 fraud-guard migration must be embedded, discovered in order after the §9–§12 infra, and add the
+/// The P6.6 fraud-guard migration must be embedded, discovered in order after the §9-§12 infra, and add the
 /// four NULL-able <c>platform_policy</c> columns the billing paths read (docs/PAYMENTS.md §7): the first-top-up
 /// hold, the new-account window + top-up velocity, and the per-user daily spend cap. Grunt has no Postgres, so
 /// this asserts the migration <b>content</b> the DbUp runner will apply rather than a live schema.

@@ -7,7 +7,7 @@ namespace Wisper.Api.Audit;
 /// <summary>
 /// Records admin/policy/money-sensitive actions to the append-only audit log (docs/DATA_MODEL.md §12). The
 /// admin and billing surfaces (P6/P7) call <see cref="RecordAsync"/> whenever they suspend a host, publish
-/// a policy, trigger a payout, or post a ledger adjustment — the trail every such action leaves. The
+/// a policy, trigger a payout, or post a ledger adjustment -- the trail every such action leaves. The
 /// optional <c>meta</c> (before/after, amounts, reason) is serialized to the <c>jsonb</c> column.
 /// </summary>
 public sealed class AuditService
@@ -53,7 +53,7 @@ public sealed class AuditService
     }
 
     /// <summary>
-    /// Reads a page of the audit trail for the admin audit view (docs/API.md §8) — entries matching
+    /// Reads a page of the audit trail for the admin audit view (docs/API.md §8) -- entries matching
     /// <paramref name="query"/>'s optional actor/target/action filters, newest first, keyset-paginated.
     /// </summary>
     public Task<IReadOnlyList<AuditLogEntry>> QueryAsync(

@@ -100,7 +100,7 @@ public class InMemoryLeaseRepositoryTests
         Assert.Equal(T0.AddSeconds(70), ticked.LastMeteredAt);
         Assert.Equal(T0.AddSeconds(10), ticked.StartedAt); // unchanged (null arg keeps column)
 
-        // suspend then resume — no timeline change while suspended
+        // suspend then resume -- no timeline change while suspended
         var suspended = await repo.TransitionStateAsync(created.Id, LeaseStatus.Suspended);
         Assert.Equal(LeaseStatus.Suspended, suspended!.Status);
         Assert.Equal(60, suspended.BillableSeconds);

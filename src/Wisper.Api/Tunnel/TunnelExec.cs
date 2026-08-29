@@ -83,7 +83,7 @@ internal sealed class TunnelExec : ITunnelExec, ITunnelStreamSink
     /// Accounts an inbound output frame via the inner <see cref="TunnelStream"/> (flow control) and
     /// re-emits the accepted bytes tagged with <see cref="BinaryFrame.Channel"/>. The connection's
     /// receive loop dispatches frames one at a time and awaits this, so the byte the inner stream
-    /// just enqueued is exactly the one drained here — no interleaving with another frame.
+    /// just enqueued is exactly the one drained here -- no interleaving with another frame.
     /// </summary>
     public async ValueTask OnBinaryAsync(BinaryFrame frame, CancellationToken ct)
     {
@@ -143,7 +143,7 @@ internal sealed class TunnelExec : ITunnelExec, ITunnelStreamSink
             }
             catch
             {
-                // Best effort — the host may already be gone.
+                // Best effort -- the host may already be gone.
             }
         }
 

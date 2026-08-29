@@ -6,7 +6,7 @@ using Wisper.Api.Tunnel.Messages;
 namespace Wisper.Api.Tunnel;
 
 /// <summary>
-/// DEV-ONLY, money-free lease drive endpoints — a Phase-1 test harness for exercising the
+/// DEV-ONLY, money-free lease drive endpoints -- a Phase-1 test harness for exercising the
 /// tunnel relay end-to-end before accounts/billing exist. There is <b>no</b> auth, no wallet
 /// gate, and no idempotency here; the caller names the target host directly. These are gated
 /// behind <see cref="TunnelOptions.EnableDevEndpoints"/> (off by default) and are replaced by
@@ -51,7 +51,7 @@ public static class DevLeaseEndpoints
         // Surface the target host's advertised container OS ("linux"|"windows"), read from the live
         // hello capability the tunnel registry tracks for this dev host id (a plain string like
         // 'dev-host-1', so we key the registry directly rather than by Guid). Null when the host has no
-        // live tunnel or its (older) agent advertised no os — surfacing only, back-compatible (task #316).
+        // live tunnel or its (older) agent advertised no os -- surfacing only, back-compatible (task #316).
         var os = registry.TryGet(request.HostId, out var connection) ? connection?.Capability?.Os : null;
         return Results.Json(
             new { leaseId = lease.LeaseId, wispContractId = lease.WispContractId, status = lease.Status, os },
@@ -82,7 +82,7 @@ public static class DevLeaseEndpoints
     private static async Task<IResult> ReleaseAsync(
         string leaseId, HttpContext context, ITunnelRelay relay, CancellationToken ct)
     {
-        // hostId may come from the query string or a JSON body — support both for the harness.
+        // hostId may come from the query string or a JSON body -- support both for the harness.
         var hostId = context.Request.Query["hostId"].ToString();
         if (string.IsNullOrEmpty(hostId) && (context.Request.ContentLength ?? 0) > 0)
         {

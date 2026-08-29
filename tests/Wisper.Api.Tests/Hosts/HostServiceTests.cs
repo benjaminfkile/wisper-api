@@ -173,7 +173,7 @@ public class HostServiceTests
     [Fact]
     public async Task Register_skips_the_grant_when_no_subject_is_supplied()
     {
-        // An api-key principal (no Cognito subject to grant) or a DB-less path passes no subject — the grant
+        // An api-key principal (no Cognito subject to grant) or a DB-less path passes no subject -- the grant
         // is skipped and registration still succeeds.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -187,7 +187,7 @@ public class HostServiceTests
     [Fact]
     public async Task Register_still_succeeds_when_the_grant_fails()
     {
-        // The host row is already committed, so a transient group-write failure is logged and swallowed — it
+        // The host row is already committed, so a transient group-write failure is logged and swallowed -- it
         // must never fail registration (the role reconciles on the next login / from owned hosts).
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -207,7 +207,7 @@ public class HostServiceTests
         var owner = Guid.NewGuid();
         var online = await fx.SeedHostAsync(owner);
         var offline = await fx.SeedHostAsync(owner);
-        await fx.SeedHostAsync(Guid.NewGuid()); // another owner's host — must not appear
+        await fx.SeedHostAsync(Guid.NewGuid()); // another owner's host -- must not appear
         fx.Registry.SetOnline(online.Id);
 
         var result = await fx.Service.ListMineAsync(owner);
@@ -459,7 +459,7 @@ public class HostServiceTests
     [Fact]
     public async Task ReplaceImages_rejects_any_gpu_offer_on_a_gpu_less_host()
     {
-        // A host advertising 0 GPU devices genuinely has none — there is no "0 means unlimited" escape here,
+        // A host advertising 0 GPU devices genuinely has none -- there is no "0 means unlimited" escape here,
         // so any offer above 0 is rejected (unlike the cpu/mem/pid ceilings, where 0 means unadvertised).
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -572,8 +572,8 @@ public class HostServiceTests
     [Fact]
     public async Task ReplaceImages_rejects_cpus_over_the_host_per_lease_cap()
     {
-        // Offer honesty (task #583): a host must not over-promise. The live gap — an offer of 4 cpus on a host
-        // whose wisp per-lease cap is 2 — is rejected with the field AND the cap in details, never clamped.
+        // Offer honesty (task #583): a host must not over-promise. The live gap -- an offer of 4 cpus on a host
+        // whose wisp per-lease cap is 2 -- is rejected with the field AND the cap in details, never clamped.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
         var host = await fx.SeedHostAsync(owner);
@@ -670,7 +670,7 @@ public class HostServiceTests
             })));
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
-        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // whole list rejected — nothing persisted
+        Assert.Empty(await fx.Images.ListByHostAsync(host.Id)); // whole list rejected -- nothing persisted
     }
 
     [Fact]
@@ -816,7 +816,7 @@ public class HostServiceTests
     [Fact]
     public async Task ReplaceImages_accepts_a_zero_price_for_a_free_self_hosted_image()
     {
-        // price 0 is a valid price (>= 0) so a self-hosted operator can list their own box at cost — the
+        // price 0 is a valid price (>= 0) so a self-hosted operator can list their own box at cost -- the
         // wallet gate then places a 0-cent hold and needs no funding (docs/PAYMENTS.md §4, docs/API.md §6).
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -954,7 +954,7 @@ public class HostServiceTests
     public async Task PatchImage_disable_succeeds_when_image_absent_from_capability()
     {
         // AC63: PATCH {enabled:false} must succeed even when the image is no longer in the live
-        // wisp capability — that is exactly the case where the owner needs to retract the stale offer.
+        // wisp capability -- that is exactly the case where the owner needs to retract the stale offer.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
         var host = await fx.SeedHostAsync(owner);
@@ -965,7 +965,7 @@ public class HostServiceTests
         }));
         var imageId = (await fx.Images.ListByHostAsync(host.Id))[0].Id;
 
-        // Host now advertises ubuntu:24.04 only — alpine:latest is absent from the capability.
+        // Host now advertises ubuntu:24.04 only -- alpine:latest is absent from the capability.
         fx.Capabilities.Set(host.Id, fx.Capability("ubuntu:24.04"));
 
         var patched = await fx.Service.PatchImageAsync(
@@ -979,7 +979,7 @@ public class HostServiceTests
     [Fact]
     public async Task PatchImage_disable_succeeds_when_host_offline()
     {
-        // AC64: PATCH {enabled:false} must not require a live tunnel — disabling is safe even when
+        // AC64: PATCH {enabled:false} must not require a live tunnel -- disabling is safe even when
         // the host has gone offline entirely.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -1003,7 +1003,7 @@ public class HostServiceTests
     [Fact]
     public async Task PatchImage_enable_still_requires_live_capability()
     {
-        // AC65: enabling must still validate against the live capability — the safe-disable
+        // AC65: enabling must still validate against the live capability -- the safe-disable
         // exemption must not weaken the enable gate.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -1035,7 +1035,7 @@ public class HostServiceTests
     [Fact]
     public async Task PatchImage_disabled_row_price_change_skips_capability_check()
     {
-        // AC67: a price change on an already-disabled row must not require capability membership —
+        // AC67: a price change on an already-disabled row must not require capability membership --
         // the row cannot reach the catalog until re-enabled (which re-validates), so the check is
         // unnecessary friction.
         var fx = new Fixture();
@@ -1048,7 +1048,7 @@ public class HostServiceTests
         }));
         var imageId = (await fx.Images.ListByHostAsync(host.Id, enabledOnly: false))[0].Id;
 
-        fx.Capabilities.Clear(host.Id); // host goes offline — price change must still succeed
+        fx.Capabilities.Clear(host.Id); // host goes offline -- price change must still succeed
 
         var patched = await fx.Service.PatchImageAsync(
             owner, host.Id, imageId,
@@ -1061,12 +1061,12 @@ public class HostServiceTests
     [Fact]
     public async Task ReplaceImages_disabled_entry_exempt_from_capability_check()
     {
-        // AC66: a PUT entry with enabled:false must not fail capability-membership validation —
+        // AC66: a PUT entry with enabled:false must not fail capability-membership validation --
         // the same safe-disable principle as PATCH.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
         var host = await fx.SeedHostAsync(owner);
-        // Capability only allows ubuntu:24.04 — alpine:latest is absent.
+        // Capability only allows ubuntu:24.04 -- alpine:latest is absent.
         fx.Capabilities.Set(host.Id, fx.Capability("ubuntu:24.04"));
 
         var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
@@ -1081,7 +1081,7 @@ public class HostServiceTests
     public async Task ReplaceImages_disabled_entry_succeeds_when_host_offline()
     {
         // Corollary of AC64/AC66: a PUT list composed entirely of disabled entries must not
-        // require a live tunnel — no enabled entry triggers the capability gate.
+        // require a live tunnel -- no enabled entry triggers the capability gate.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
         var host = await fx.SeedHostAsync(owner);
@@ -1164,7 +1164,7 @@ public class HostServiceTests
             CreatedAt = T0,
         });
 
-        // Replace with ubuntu only — wisp-base:1 is omitted.
+        // Replace with ubuntu only -- wisp-base:1 is omitted.
         var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
         {
             new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),
@@ -1192,7 +1192,7 @@ public class HostServiceTests
     [Fact]
     public async Task ReplaceImages_dropping_image_with_active_lease_disables_it_not_deletes()
     {
-        // AC58/AC61: an image with an active lease must also be soft-disabled — the active lease must
+        // AC58/AC61: an image with an active lease must also be soft-disabled -- the active lease must
         // keep its FK target and continue unaffected.
         var fx = new Fixture();
         var owner = Guid.NewGuid();
@@ -1222,7 +1222,7 @@ public class HostServiceTests
             CreatedAt = T0,
         });
 
-        // Replace with ubuntu only — wisp-base:1 omitted.
+        // Replace with ubuntu only -- wisp-base:1 omitted.
         var result = await fx.Service.ReplaceImagesAsync(owner, host.Id, new ReplaceImagesRequest(new[]
         {
             new ImageUpsert("ubuntu:24.04", 7, new[] { "none" }, 3600, null, null, null, true),

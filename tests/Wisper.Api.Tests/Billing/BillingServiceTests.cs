@@ -21,7 +21,7 @@ namespace Wisper.Api.Tests.Billing;
 /// in-memory ledger + repositories and a fake Stripe gateway (Grunt has no Stripe/Postgres). Covers: top-up
 /// creates a PaymentIntent (and a customer on first use) with the caller's user id + the API idempotency key
 /// and returns the client_secret without touching the wallet; the minimum-top-up gate; and the balance/usage
-/// + ledger-view reads deriving from the ledger — where the wallet is credited only via the webhook handler.
+/// + ledger-view reads deriving from the ledger -- where the wallet is credited only via the webhook handler.
 /// </summary>
 public class BillingServiceTests
 {

@@ -243,7 +243,7 @@ internal sealed class RemoteTunnelExec : ITunnelExec
         }
         catch
         {
-            // Best effort — the owning instance may already be gone.
+            // Best effort -- the owning instance may already be gone.
         }
 
         Finish(reason);
@@ -365,7 +365,7 @@ internal sealed class RemoteTunnelShell : ITunnelShell
         }
         catch
         {
-            // Best effort — the owning instance may already be gone.
+            // Best effort -- the owning instance may already be gone.
         }
 
         Finish(reason);

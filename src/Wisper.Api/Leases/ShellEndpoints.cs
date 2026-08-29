@@ -9,7 +9,7 @@ namespace Wisper.Api.Leases;
 /// The browser-safe interactive shell surface (docs/API.md §2, §7): the JWT-authenticated
 /// <c>POST /v1/leases/:id/shell-ticket</c> that mints a single-use, short-TTL, <c>(user, lease)</c>-bound
 /// ticket, and the raw <c>WS /v1/leases/:id/shell?ticket=…</c> that redeems it exactly once and bridges
-/// the consumer socket to a tunnel shell stream. The JWT never appears in a URL — the ticket does, and it
+/// the consumer socket to a tunnel shell stream. The JWT never appears in a URL -- the ticket does, and it
 /// is single-use and short-lived (docs/API.md §2). The WS bridge itself is the shared <see cref="ShellBridge"/>
 /// the dev harness uses, so the binary-PTY + <c>{t:resize}</c> framing and the per-stream credit flow
 /// control (docs/TUNNEL.md §9) are a straight passthrough.
@@ -22,8 +22,8 @@ public static class ShellEndpoints
     {
         // Minting is a normal JWT-authenticated consumer call.
         endpoints.MapPost("/v1/leases/{id}/shell-ticket", MintTicketAsync).RequireConsumer();
-        // The WS handshake is authenticated by the ticket, NOT the JWT — a browser can't set a header on
-        // it — so it carries no role gate; redemption below is the auth.
+        // The WS handshake is authenticated by the ticket, NOT the JWT -- a browser can't set a header on
+        // it -- so it carries no role gate; redemption below is the auth.
         endpoints.MapGet("/v1/leases/{id}/shell", OpenShellAsync);
     }
 
@@ -129,7 +129,7 @@ public static class ShellEndpoints
         }
         catch (ApiException ex)
         {
-            // host_offline / upstream_timeout etc. — the shell never opened; the socket is already accepted,
+            // host_offline / upstream_timeout etc. -- the shell never opened; the socket is already accepted,
             // so report a server-side WS error close (1011) carrying the typed code.
             logger.LogInformation(
                 "shell: open failed for lease {LeaseId} on host {HostId}: {Code}",

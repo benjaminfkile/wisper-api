@@ -19,7 +19,7 @@ public interface IHostRepository : IRepository
 
     /// <summary>
     /// The admin host search (docs/API.md §8, <c>GET /v1/admin/hosts</c>): a page of hosts, newest first,
-    /// optionally narrowed by <paramref name="query"/> — a name/label substring (case-insensitive) or an
+    /// optionally narrowed by <paramref name="query"/> -- a name/label substring (case-insensitive) or an
     /// exact host id. A blank query lists all. <paramref name="limit"/>/<paramref name="offset"/> paginate.
     /// </summary>
     Task<IReadOnlyList<Host>> SearchAsync(
@@ -28,7 +28,7 @@ public interface IHostRepository : IRepository
     /// <summary>The total number of registered hosts (docs/API.md §8 overview counts).</summary>
     Task<int> CountAsync(CancellationToken ct = default);
 
-    /// <summary>The online hosts — the consumer catalog set (docs/DATA_MODEL.md §4, §13).</summary>
+    /// <summary>The online hosts -- the consumer catalog set (docs/DATA_MODEL.md §4, §13).</summary>
     Task<IReadOnlyList<Host>> ListOnlineAsync(CancellationToken ct = default);
 
     /// <summary>Gets the host whose stored token hash equals <paramref name="agentTokenHash"/>, or <c>null</c>.</summary>
@@ -46,7 +46,7 @@ public interface IHostRepository : IRepository
     /// <summary>
     /// Transitions a host's presence: sets <paramref name="status"/>, optionally stamps
     /// <paramref name="lastSeenAt"/> (when non-null), and bumps <c>updated_at</c>. Returns the stored
-    /// row, or <c>null</c> if no such host — the narrow write the tunnel lifecycle uses.
+    /// row, or <c>null</c> if no such host -- the narrow write the tunnel lifecycle uses.
     /// </summary>
     Task<Host?> SetOnlineStateAsync(
         Guid id, HostStatus status, DateTimeOffset? lastSeenAt, DateTimeOffset updatedAt,
@@ -54,7 +54,7 @@ public interface IHostRepository : IRepository
 
     /// <summary>
     /// Persists the host's advertised isolation capability (<c>isolation_levels</c> + <c>default_isolation</c>,
-    /// task #417) and bumps <c>updated_at</c> — the narrow write the tunnel lifecycle uses when an agent
+    /// task #417) and bumps <c>updated_at</c> -- the narrow write the tunnel lifecycle uses when an agent
     /// (re)advertises. <paramref name="isolationLevels"/>/<paramref name="defaultIsolation"/> are expected
     /// already normalized (see <see cref="Wisper.Api.Domain.HostIsolation.Normalize"/>). Returns the stored
     /// row, or <c>null</c> if no such host. Presence columns are left untouched.
@@ -65,7 +65,7 @@ public interface IHostRepository : IRepository
 
     /// <summary>
     /// Persists the host's advertised GPU capability (<c>gpu_classes</c> + <c>gpu_count</c>, task #521) and
-    /// bumps <c>updated_at</c> — the narrow write the tunnel lifecycle uses when an agent (re)advertises,
+    /// bumps <c>updated_at</c> -- the narrow write the tunnel lifecycle uses when an agent (re)advertises,
     /// mirroring <see cref="SetAdvertisedIsolationAsync"/>. <paramref name="gpuClasses"/> is expected already
     /// normalized (distinct, see <see cref="Wisper.Api.Domain.HostGpu.NormalizeClasses"/>) and
     /// <paramref name="gpuCount"/> is the total advertised devices. Returns the stored row, or <c>null</c> if

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>shell.open</c> (W→A) — Wisper asks the agent to open an interactive PTY shell in the
+/// <c>shell.open</c> (W→A) -- Wisper asks the agent to open an interactive PTY shell in the
 /// lease; the agent opens wisp <c>WS /contracts/:id/shell</c> and pipes bytes onto the
 /// stream (docs/TUNNEL.md §5, §6, §10). Wisper owns the id space, so it carries the
 /// server-assigned <c>rid</c> and <c>sid</c> (both inherited). The agent replies

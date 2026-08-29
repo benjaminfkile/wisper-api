@@ -6,7 +6,7 @@ namespace Wisper.Api.Tests.Persistence;
 /// <summary>
 /// Exercises the shared in-memory test-double base (<see cref="InMemoryRepositoryBase{TId,TEntity}"/>)
 /// through a sample repository double, the way real entity doubles (users, hosts, …) will use it so
-/// the unit suite can run without a live database. Semantics must mirror the SQL side — notably a
+/// the unit suite can run without a live database. Semantics must mirror the SQL side -- notably a
 /// duplicate key is rejected like a primary-key constraint.
 /// </summary>
 public class InMemoryRepositoryBaseTests

@@ -8,7 +8,7 @@ namespace Wisper.Api.Admin;
 
 /// <summary>
 /// Response of <c>GET /v1/admin/overview</c> (docs/API.md §8): platform revenue (the accrued
-/// <c>platform_revenue</c> ledger balance — the source of truth, docs/DATA_MODEL.md §7), the live active-lease
+/// <c>platform_revenue</c> ledger balance -- the source of truth, docs/DATA_MODEL.md §7), the live active-lease
 /// count, host/consumer counts, a coarse health flag, and the last ledger reconciliation pass (§7e;
 /// non-zero drift means the balance cache has diverged from the journal and an operator should page).
 /// </summary>
@@ -22,7 +22,8 @@ public sealed record AdminOverviewResponse(
     [property: JsonPropertyName("online_host_count")] int OnlineHostCount,
     [property: JsonPropertyName("user_count")] int UserCount,
     [property: JsonPropertyName("health")] string Health,
-    [property: JsonPropertyName("ledger_reconcile")] LedgerReconcileView LedgerReconcile);
+    [property: JsonPropertyName("ledger_reconcile")] LedgerReconcileView LedgerReconcile,
+    [property: JsonPropertyName("platform_policy")] PlatformPolicyHealthView PlatformPolicy);
 
 /// <summary>
 /// The most recent ledger reconciliation pass on the admin overview (docs/API.md §8, docs/DATA_MODEL.md
@@ -42,7 +43,25 @@ public sealed record LedgerReconcileView(
 }
 
 /// <summary>
-/// A platform policy version on the wire (docs/API.md §8, docs/DATA_MODEL.md §11) — the admin-tunable fee,
+/// Platform-policy health on the admin overview (docs/API.md §8, task #206): whether an active
+/// <c>platform_policy</c> row currently resolves, plus process-local counters of how often the metering
+/// flush had to fall back (stale: no active row but a version exists; missing: no row at all). A non-zero
+/// <see cref="FallbackCount"/> flips the overview's <c>health</c> to <c>policy_fallback</c> so an
+/// operator sees the incident without waiting for the next log line. Counters are per-instance; a fleet
+/// alert should aggregate across instances.
+/// </summary>
+public sealed record PlatformPolicyHealthView(
+    [property: JsonPropertyName("active")] bool Active,
+    [property: JsonPropertyName("fallback_count")] long FallbackCount,
+    [property: JsonPropertyName("last_fallback_at")] DateTimeOffset? LastFallbackAt,
+    [property: JsonPropertyName("last_fallback_policy_id")] Guid? LastFallbackPolicyId)
+{
+    /// <summary>The healthy default (an active policy resolves; no fallbacks recorded on this instance).</summary>
+    public static PlatformPolicyHealthView Healthy { get; } = new(true, 0, null, null);
+}
+
+/// <summary>
+/// A platform policy version on the wire (docs/API.md §8, docs/DATA_MODEL.md §11) -- the admin-tunable fee,
 /// caps, minimum top-up, and fraud guards, plus when it took effect and who authored it.
 /// </summary>
 public sealed record PolicyView(
@@ -75,7 +94,7 @@ public sealed record PolicyView(
         policy.CreatedBy);
 }
 
-/// <summary>Response of <c>GET /v1/admin/policy</c> — the version in force now plus the full version history.</summary>
+/// <summary>Response of <c>GET /v1/admin/policy</c> -- the version in force now plus the full version history.</summary>
 public sealed record PolicyHistoryResponse(
     [property: JsonPropertyName("active")] PolicyView? Active,
     [property: JsonPropertyName("versions")] IReadOnlyList<PolicyView> Versions);
@@ -83,7 +102,7 @@ public sealed record PolicyHistoryResponse(
 /// <summary>
 /// Body of <c>PUT /v1/admin/policy</c> (docs/API.md §8, docs/DATA_MODEL.md §11): the fields of a <b>new</b>
 /// versioned policy row. <c>fee_bps</c> is required (0..10000); the rest default to unset/unlimited. The row
-/// is append-only — publishing never edits an existing version — and takes effect immediately unless
+/// is append-only -- publishing never edits an existing version -- and takes effect immediately unless
 /// <c>effective_from</c> schedules it.
 /// </summary>
 public sealed record PolicyUpdateRequest(
@@ -98,7 +117,7 @@ public sealed record PolicyUpdateRequest(
     [property: JsonPropertyName("max_spend_cents_per_day")] long? MaxSpendCentsPerDay = null,
     [property: JsonPropertyName("effective_from")] DateTimeOffset? EffectiveFrom = null);
 
-/// <summary>A user as the admin sees it (docs/API.md §8) — identity, status, and payment linkage flags.</summary>
+/// <summary>A user as the admin sees it (docs/API.md §8) -- identity, status, and payment linkage flags.</summary>
 public sealed record UserAdminView(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("email")] string Email,
@@ -190,7 +209,7 @@ public sealed record AdjustmentRequest(
     [property: JsonPropertyName("amount_cents")] long? AmountCents,
     [property: JsonPropertyName("reason")] string? Reason = null);
 
-/// <summary>Response of <c>POST /v1/admin/adjustments</c> — the posted txn and the two accounts' new balances.</summary>
+/// <summary>Response of <c>POST /v1/admin/adjustments</c> -- the posted txn and the two accounts' new balances.</summary>
 public sealed record AdjustmentResponse(
     [property: JsonPropertyName("transaction_id")] Guid TransactionId,
     [property: JsonPropertyName("amount_cents")] long AmountCents,
@@ -253,7 +272,7 @@ public sealed record LedgerEntryView(
 }
 
 /// <summary>
-/// Response of <c>GET /v1/admin/ledger/accounts/:id</c> (docs/API.md §8) — the account plus its journal
+/// Response of <c>GET /v1/admin/ledger/accounts/:id</c> (docs/API.md §8) -- the account plus its journal
 /// entries, newest first, for read-only forensics.
 /// </summary>
 public sealed record LedgerAccountForensicsResponse(
@@ -285,7 +304,7 @@ public sealed record LedgerAccountListView(
 }
 
 /// <summary>
-/// A lease as the admin sees it (docs/API.md §8, task #57) — identity, owner and host, current lifecycle
+/// A lease as the admin sees it (docs/API.md §8, task #57) -- identity, owner and host, current lifecycle
 /// state, TTL/price snapshot and the metering timeline. The admin listing surfaces the <c>active +
 /// suspended</c> set so an operator can find stuck leases (suspended older than X, active past TTL)
 /// without SQL; <see cref="ExpiresAt"/> lets the caller/UI compute "past TTL" from the returned row.

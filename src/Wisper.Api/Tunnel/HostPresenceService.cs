@@ -10,14 +10,14 @@ namespace Wisper.Api.Tunnel;
 /// Drives a host's persisted presence (<c>host_status</c>) from the tunnel lifecycle (docs/TUNNEL.md §3, §8).
 /// The tunnel registry is authoritative for <i>liveness</i>, but the catalog reads the DB-online subset
 /// re-confirmed against the registry (<see cref="Wisper.Api.Catalog.CatalogService"/>), so nothing appears
-/// until the row itself flips <see cref="HostStatus.Online"/> — the wiring this service supplies:
+/// until the row itself flips <see cref="HostStatus.Online"/> -- the wiring this service supplies:
 /// <list type="bullet">
 /// <item><b>Ready → online</b> (<see cref="GoOnlineIfEligibleAsync"/>): when the handshake completes, flip
 /// the host online <b>if</b> it clears the earning gate (<see cref="ConnectGate.CanHostGoOnline"/>): owner
 /// Connect-enabled, or every enabled image is zero-priced (task #386, #392). An admin-suspended host never
 /// flips online here (docs/API.md §8).</item>
 /// <item><b>Tunnel lost → offline</b> (<see cref="GoOfflineAsync"/>): the tunnel coordinator calls this once
-/// the loss is durable — grace expired, or the tunnel closed with no leases to protect (docs/TUNNEL.md §8) —
+/// the loss is durable -- grace expired, or the tunnel closed with no leases to protect (docs/TUNNEL.md §8) --
 /// stamping last-seen at last-healthy. A momentary blip or a superseding reconnect never reaches here, so
 /// the host stays online across those.</item>
 /// </list>
@@ -101,7 +101,7 @@ public sealed class HostPresenceService : IHostPresence
     {
         if (!Guid.TryParse(hostId, out var id))
         {
-            return; // dev/no-DB tunnel host id — no row to flip
+            return; // dev/no-DB tunnel host id -- no row to flip
         }
 
         if (await _hosts.GetByIdAsync(id, ct) is not { } host)
@@ -114,7 +114,7 @@ public sealed class HostPresenceService : IHostPresence
         // tunnel stays up and suspension is enforced solely by this gate refusing to flip the row online.
         if (host.Status == HostStatus.Suspended)
         {
-            _logger.LogInformation("host {HostId} tunnel ready but suspended — staying offline", id);
+            _logger.LogInformation("host {HostId} tunnel ready but suspended -- staying offline", id);
             return;
         }
 
@@ -131,7 +131,7 @@ public sealed class HostPresenceService : IHostPresence
         }
 
         // Persist the advertised GPU capability from this hello the same way (task #521). A null gpuClasses is
-        // an absent gpu block (an older agent) — leave the persisted GPU as-is rather than nulling it; a
+        // an absent gpu block (an older agent) -- leave the persisted GPU as-is rather than nulling it; a
         // present-but-empty list is a GPU-aware agent reporting no devices, which resets to []/0.
         if (gpuClasses is not null)
         {
@@ -147,7 +147,7 @@ public sealed class HostPresenceService : IHostPresence
             // A priced host whose owner has not completed Connect: the agent may connect and test, but the
             // host stays offline (and out of the catalog) until Connect is enabled (docs/PAYMENTS.md §5).
             _logger.LogInformation(
-                "host {HostId} tunnel ready but earning-gated (connect {Status}) — staying offline",
+                "host {HostId} tunnel ready but earning-gated (connect {Status}) -- staying offline",
                 id, PgEnum.ToLabel(connectStatus));
             return;
         }
@@ -181,7 +181,7 @@ public sealed class HostPresenceService : IHostPresence
     {
         if (!Guid.TryParse(hostId, out var id))
         {
-            return; // dev/no-DB tunnel host id — no row to refresh
+            return; // dev/no-DB tunnel host id -- no row to refresh
         }
 
         // An absent isolation list is "no update, keep last known" (task #191): an agent cannot legitimately
@@ -201,7 +201,7 @@ public sealed class HostPresenceService : IHostPresence
         var (levels, def) = HostIsolation.Normalize(isolationLevels, defaultIsolation);
         if (def == host.DefaultIsolation && levels.SequenceEqual(host.IsolationLevels, StringComparer.Ordinal))
         {
-            return; // no change — avoid a pointless write (and updated_at churn) every heartbeat
+            return; // no change -- avoid a pointless write (and updated_at churn) every heartbeat
         }
 
         await _hosts.SetAdvertisedIsolationAsync(id, levels, def, _time.GetUtcNow(), ct);
@@ -217,7 +217,7 @@ public sealed class HostPresenceService : IHostPresence
     {
         if (!Guid.TryParse(hostId, out var id))
         {
-            return; // dev/no-DB tunnel host id — no row to refresh
+            return; // dev/no-DB tunnel host id -- no row to refresh
         }
 
         // Never resurrect GPU on a suspended host, and a missing host has nothing to refresh.
@@ -230,7 +230,7 @@ public sealed class HostPresenceService : IHostPresence
         var count = Math.Max(0, gpuCount);
         if (count == host.GpuCount && classes.SequenceEqual(host.GpuClasses, StringComparer.Ordinal))
         {
-            return; // no change — avoid a pointless write (and updated_at churn) every heartbeat
+            return; // no change -- avoid a pointless write (and updated_at churn) every heartbeat
         }
 
         await _hosts.SetAdvertisedGpuAsync(id, classes, count, _time.GetUtcNow(), ct);

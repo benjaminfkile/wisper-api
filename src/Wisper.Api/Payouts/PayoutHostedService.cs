@@ -37,13 +37,13 @@ public sealed class PayoutHostedService : BackgroundService
     {
         if (!_options.Enabled)
         {
-            _logger.LogInformation("payouts disabled by config — scheduled payout loop not started");
+            _logger.LogInformation("payouts disabled by config -- scheduled payout loop not started");
             return;
         }
 
         if (!_db.IsConfigured)
         {
-            _logger.LogInformation("no database configured — payout loop not started (tunnel-only boot)");
+            _logger.LogInformation("no database configured -- payout loop not started (tunnel-only boot)");
             return;
         }
 
@@ -68,7 +68,7 @@ public sealed class PayoutHostedService : BackgroundService
             }
             catch (Exception ex)
             {
-                // A failed run must not stop payouts — earnings are durable in the ledger and the next run
+                // A failed run must not stop payouts -- earnings are durable in the ledger and the next run
                 // retries every eligible host (docs/PAYMENTS.md §6).
                 _logger.LogError(ex, "payout run failed; will retry on the next tick");
             }

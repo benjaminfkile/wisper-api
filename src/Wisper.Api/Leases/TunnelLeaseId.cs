@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Wisper.Api.Leases;
 
 /// <summary>
-/// The external/tunnel form of a lease id — the <c>lease_&lt;32-hex&gt;</c> token clients see in
+/// The external/tunnel form of a lease id -- the <c>lease_&lt;32-hex&gt;</c> token clients see in
 /// <c>docs/API.md §5</c> and the agent sees on the tunnel (docs/TUNNEL.md §1, Wisper owns the id space).
 /// It is a lossless rendering of the lease's <see cref="System.Guid"/> primary key, so the same value
 /// addresses the DB row (<c>GET /v1/leases/:id</c>) and the running container over the tunnel

@@ -12,8 +12,8 @@ using Xunit;
 namespace Wisper.Api.Tests.Leases;
 
 /// <summary>
-/// Unit tests for <see cref="WalletLeaseGate"/> — the real wallet-hold lifecycle (docs/PAYMENTS.md §4,
-/// docs/DATA_MODEL.md §8) — against the in-memory ledger (Grunt has no Postgres): the balance hard gate,
+/// Unit tests for <see cref="WalletLeaseGate"/> -- the real wallet-hold lifecycle (docs/PAYMENTS.md §4,
+/// docs/DATA_MODEL.md §8) -- against the in-memory ledger (Grunt has no Postgres): the balance hard gate,
 /// the per-user concurrency cap, the <c>lease_hold</c> earmark, and the <c>hold_release</c> remainder at
 /// lease end. The invariants under test: a hold gates on balance; charges debit the hold; release returns
 /// exactly the unused remainder; and because the hold covers the whole max lease, it can never be
@@ -88,7 +88,7 @@ public class WalletLeaseGateTests
             });
         }
 
-        /// <summary>Bills <paramref name="amountCents"/> out of the hold (host earnings, no fee) — the meter's effect.</summary>
+        /// <summary>Bills <paramref name="amountCents"/> out of the hold (host earnings, no fee) -- the meter's effect.</summary>
         public async Task ChargeAsync(Guid leaseId, long amountCents)
         {
             var holds = await Ledger.GetOrCreateAccountAsync(LedgerAccountKind.LeaseHolds, null);
@@ -164,7 +164,7 @@ public class WalletLeaseGateTests
         await fx.PublishCapAsync(cap: 2);
         await fx.FundWalletAsync(1000);
         await fx.SeedLeaseAsync(LeaseStatus.Active);
-        await fx.SeedLeaseAsync(LeaseStatus.Ended); // terminal — does not count against the cap
+        await fx.SeedLeaseAsync(LeaseStatus.Ended); // terminal -- does not count against the cap
 
         var decision = await fx.Gate.AuthorizeHoldAsync(fx.ConsumerId, holdCents: 300, "usd");
 
@@ -285,11 +285,11 @@ public class WalletLeaseGateTests
         var lease = await fx.SeedLeaseAsync(price: 5, ttlSeconds: 3600, billableSeconds: 3600);
         await fx.Gate.PlaceHoldAsync(fx.ConsumerId, lease.Id, holdCents: 300, "usd");
 
-        // Billing every second of the max lease debits exactly the whole hold — never more.
+        // Billing every second of the max lease debits exactly the whole hold -- never more.
         await fx.ChargeAsync(lease.Id, amountCents: 300);
         Assert.Equal(0, await fx.HoldsCentsAsync());
 
-        // Any attempt to bill beyond the hold is rejected by the non-negative guard (§7d) — the hold can
+        // Any attempt to bill beyond the hold is rejected by the non-negative guard (§7d) -- the hold can
         // never go negative, so "insufficient funds mid-lease" cannot happen in this model.
         var overdraw = await Assert.ThrowsAsync<LedgerException>(() => fx.ChargeAsync(lease.Id, amountCents: 1));
         Assert.Equal(LedgerViolation.HoldOverdrawn, overdraw.Reason);

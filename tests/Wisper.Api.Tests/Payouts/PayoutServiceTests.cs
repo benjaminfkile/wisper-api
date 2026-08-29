@@ -219,7 +219,7 @@ public class PayoutServiceTests
         await fx.AccrueEarningsAsync(host.Id, 500);
 
         Assert.Equal(1, await fx.Service.RunScheduledPayoutsAsync());
-        // Nothing left to pay — the balance is zero, below the minimum.
+        // Nothing left to pay -- the balance is zero, below the minimum.
         Assert.Equal(0, await fx.Service.RunScheduledPayoutsAsync());
 
         Assert.Single(await fx.Payouts.ListByHostAsync(host.Id));

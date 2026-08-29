@@ -41,7 +41,7 @@ public sealed record CatalogQuery
 /// <summary>
 /// Reads the consumer catalog (docs/API.md §5): online hosts and their priced, enabled images. The
 /// online set is the join of the persisted <c>host_images</c> allow-list with the <b>live</b> tunnel
-/// registry (docs/TUNNEL.md §3) — a host whose row still reads online but whose agent tunnel has
+/// registry (docs/TUNNEL.md §3) -- a host whose row still reads online but whose agent tunnel has
 /// dropped is excluded, because the registry is authoritative for presence.
 /// </summary>
 public interface ICatalogService
@@ -50,7 +50,7 @@ public interface ICatalogService
     Task<CatalogPage> ListAsync(CatalogQuery query, CancellationToken ct = default);
 
     /// <summary>
-    /// The public detail of one host — identity, live online state, and enabled priced images — or
+    /// The public detail of one host -- identity, live online state, and enabled priced images -- or
     /// <c>null</c> when there is no such catalog-visible host (surfaced as <c>404 not_found</c>).
     /// </summary>
     Task<HostDetail?> GetHostAsync(Guid hostId, CancellationToken ct = default);

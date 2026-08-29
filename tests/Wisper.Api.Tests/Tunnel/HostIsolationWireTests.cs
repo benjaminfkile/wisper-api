@@ -8,7 +8,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// The host's advertised isolation capability on the tunnel wire (task #417): the snake_case fields
 /// <c>isolation_levels</c> / <c>default_isolation</c> are parsed off the <c>hello.capability</c> and off a
 /// <c>host.heartbeat</c> that re-advertises. An older agent that omits them leaves the list empty and the
-/// default null — the manager normalizes that to <c>["shared"]</c>/<c>"shared"</c> downstream.
+/// default null -- the manager normalizes that to <c>["shared"]</c>/<c>"shared"</c> downstream.
 /// </summary>
 public class HostIsolationWireTests
 {

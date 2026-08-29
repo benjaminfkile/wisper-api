@@ -11,7 +11,7 @@ public sealed class TunnelOptions
 
     /// <summary>
     /// The public agent-tunnel WebSocket URL handed to a host at registration/rotation as
-    /// <c>manager_ws</c> (docs/API.md §6 — the <c>wss://&lt;wisper-host&gt;/agent</c> the agent dials).
+    /// <c>manager_ws</c> (docs/API.md §6 -- the <c>wss://&lt;wisper-host&gt;/agent</c> the agent dials).
     /// Deployment config; the default is a sensible local value.
     /// </summary>
     public string ManagerWebSocketUrl { get; set; } = "wss://localhost/agent";
@@ -48,7 +48,7 @@ public sealed class TunnelOptions
     /// <c>hello.ack</c> sent, docs/TUNNEL.md §3) before failing with <c>host_offline</c>. This closes
     /// the connection-readiness race: a create arriving in the brief window while a freshly-connected
     /// agent is still completing its hello handshake waits this long for readiness instead of racing to
-    /// a spurious <c>host_offline</c>. Kept short — the handshake is milliseconds — so a genuinely
+    /// a spurious <c>host_offline</c>. Kept short -- the handshake is milliseconds -- so a genuinely
     /// offline host still fails fast with a retryable 409.
     /// </summary>
     public int HostReadinessTimeoutMs { get; set; } = 2000;
@@ -56,7 +56,7 @@ public sealed class TunnelOptions
     /// <summary>
     /// When <c>true</c>, maps the money-free, DEV-ONLY lease drive endpoints
     /// (<c>POST /dev/leases</c>, <c>POST /dev/leases/{id}/exec</c>, <c>DELETE /dev/leases/{id}</c>)
-    /// used as a Phase-1 test harness. Off by default — these have no auth/accounts/billing
+    /// used as a Phase-1 test harness. Off by default -- these have no auth/accounts/billing
     /// and are replaced by the real <c>/v1/leases</c> surface once accounts land.
     /// </summary>
     public bool EnableDevEndpoints { get; set; }

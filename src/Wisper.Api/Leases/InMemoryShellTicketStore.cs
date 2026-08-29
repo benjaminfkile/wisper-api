@@ -6,7 +6,7 @@ namespace Wisper.Api.Leases;
 /// <summary>
 /// In-memory <see cref="IShellTicketStore"/> (docs/API.md §7): a process-local map of opaque
 /// <c>tkt_&lt;random&gt;</c> tokens to their <c>(user, lease, expiry)</c> binding. Tickets are single-use
-/// (redemption removes them) and short-lived (~30s). This is deliberately non-durable for now — a shell
+/// (redemption removes them) and short-lived (~30s). This is deliberately non-durable for now -- a shell
 /// ticket only needs to survive the seconds between minting and the WS handshake on the same instance; a
 /// Redis-backed store lands with the multi-instance backplane (docs/API.md §7, P8.1). Tokens are 256 bits
 /// of CSPRNG entropy, so they are unguessable and safe to carry in a URL.

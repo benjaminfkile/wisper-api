@@ -12,7 +12,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// parsed off the hello, and the live capability the registry tracks (<see cref="RegistryHostCapabilitySource"/>)
 /// surfaces the concurrent-contract ceiling as <see cref="HostCapabilitySnapshot.MaxContracts"/>. Only the ceiling
 /// drives a manager decision (the fast-fail); the resource totals are informational. An older agent that omits the
-/// block leaves it <c>null</c> and surfaces as unlimited (<c>0</c>) — it never faults.
+/// block leaves it <c>null</c> and surfaces as unlimited (<c>0</c>) -- it never faults.
 /// </summary>
 public class HostCapacityWireTests
 {

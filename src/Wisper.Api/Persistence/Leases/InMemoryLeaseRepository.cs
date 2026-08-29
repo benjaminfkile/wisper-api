@@ -106,7 +106,7 @@ public sealed class InMemoryLeaseRepository : InMemoryRepositoryBase<Guid, Lease
 
         // suspended_at is only meaningful while status = 'suspended' (task #55): a transition to any other
         // status auto-clears it; a transition into suspended sets it (or keeps the existing value when the
-        // caller passes null — idempotent re-suspend keeps the original moment).
+        // caller passes null -- idempotent re-suspend keeps the original moment).
         var nextSuspendedAt = status == LeaseStatus.Suspended
             ? suspendedAt ?? lease.SuspendedAt
             : (DateTimeOffset?)null;

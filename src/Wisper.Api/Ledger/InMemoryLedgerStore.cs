@@ -8,7 +8,7 @@ namespace Wisper.Api.Ledger;
 /// mirror of the SQL side: <see cref="PostAsync"/> is atomic under a single lock (mirroring "one DB
 /// transaction", §14), dedupes on the idempotency key (the <c>ledger_transactions.idempotency_key</c>
 /// unique constraint), maintains each account's <see cref="LedgerAccount.BalanceCents"/> by its normal
-/// side (§7c), and enforces the non-negative guard on the earmarked liabilities (§7d) — with the one
+/// side (§7c), and enforces the non-negative guard on the earmarked liabilities (§7d) -- with the one
 /// documented exception that a <c>chargeback</c> may drive a wallet negative (docs/PAYMENTS.md §7).
 /// </summary>
 public sealed class InMemoryLedgerStore : ILedgerStore
@@ -25,7 +25,7 @@ public sealed class InMemoryLedgerStore : ILedgerStore
     {
         lock (_gate)
         {
-            // Pinned by (kind, owner_user_id) — the wallet/earnings/platform singletons (docs/DATA_MODEL.md §8).
+            // Pinned by (kind, owner_user_id) -- the wallet/earnings/platform singletons (docs/DATA_MODEL.md §8).
             var existing = _accounts.Values.FirstOrDefault(a => a.Kind == kind && a.OwnerUserId == ownerUserId);
             if (existing is not null)
             {
@@ -149,7 +149,7 @@ public sealed class InMemoryLedgerStore : ILedgerStore
 
         lock (_gate)
         {
-            // Idempotent replay — a duplicate webhook/retry returns the existing txn, posts nothing (§8).
+            // Idempotent replay -- a duplicate webhook/retry returns the existing txn, posts nothing (§8).
             if (draft.IdempotencyKey is { } key && _byIdempotencyKey.TryGetValue(key, out var postedId))
             {
                 var existingTxn = _transactions[postedId];

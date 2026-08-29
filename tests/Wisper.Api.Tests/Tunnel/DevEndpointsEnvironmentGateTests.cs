@@ -13,7 +13,7 @@ namespace Wisper.Api.Tests.Tunnel;
 
 /// <summary>
 /// The DEV-ONLY <c>/dev/leases*</c> and <c>/dev/leases/{id}/shell</c> harness is money-free and
-/// unauthenticated — the caller names the target hostId directly. It must be structurally
+/// unauthenticated -- the caller names the target hostId directly. It must be structurally
 /// unreachable in any deployed environment, so mapping is gated on
 /// <see cref="IHostEnvironment.IsDevelopment"/> in addition to the <c>Tunnel:EnableDevEndpoints</c>
 /// flag. A deployed container runs as Production (Dockerfile sets no ASPNETCORE_ENVIRONMENT), so

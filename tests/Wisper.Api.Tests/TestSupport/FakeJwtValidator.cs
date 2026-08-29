@@ -4,7 +4,7 @@ using Wisper.Api.Auth;
 namespace Wisper.Api.Tests.TestSupport;
 
 /// <summary>
-/// A test <see cref="IJwtValidator"/> that returns a preset outcome — lets the role-gating
+/// A test <see cref="IJwtValidator"/> that returns a preset outcome -- lets the role-gating
 /// filter be tested independently of any crypto. By default it authenticates a plain
 /// consumer; configure <see cref="Principal"/>/<see cref="Fail"/> to vary the result.
 /// </summary>

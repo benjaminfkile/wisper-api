@@ -41,13 +41,13 @@ public static class MeEndpoints
     }
 }
 
-/// <summary>Body of <c>PATCH /v1/me</c> — the mutable profile fields (all optional).</summary>
+/// <summary>Body of <c>PATCH /v1/me</c> -- the mutable profile fields (all optional).</summary>
 public sealed record MeUpdateRequest(
     [property: JsonPropertyName("email")] string? Email);
 
 /// <summary>
 /// Wire shape of <c>GET/PATCH /v1/me</c> (docs/API.md §5): identity + additive roles + Connect status.
-/// Billing linkage (Stripe ids) is deliberately omitted — it surfaces on the billing endpoints (§5).
+/// Billing linkage (Stripe ids) is deliberately omitted -- it surfaces on the billing endpoints (§5).
 /// </summary>
 public sealed record MeResponse(
     [property: JsonPropertyName("id")] Guid Id,
@@ -62,7 +62,7 @@ public sealed record MeResponse(
     /// <summary>
     /// Projects a stored <see cref="User"/> plus the caller's roles into the wire shape. When
     /// <paramref name="ownsHost"/> is true the <c>host</c> role is added even if the principal's token does not
-    /// yet carry the group (docs/API.md §184) — becoming a host is additive and takes effect the moment a host
+    /// yet carry the group (docs/API.md §184) -- becoming a host is additive and takes effect the moment a host
     /// is owned, without waiting for a token refresh.
     /// </summary>
     public static MeResponse From(User user, ClaimsPrincipal principal, bool ownsHost = false) => new(
