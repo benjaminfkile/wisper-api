@@ -40,8 +40,13 @@ public sealed class PolicyFallbackStore : RepositoryBase, IPolicyFallbackStore
     public async Task<PolicyFallbackAggregate> GetAggregateAsync(CancellationToken ct = default)
     {
         // Two round-trips: (1) read the ack watermark from operational_state (single row, id = 1);
-        // (2) aggregate billing_incidents over rows after the watermark. The '-infinity' fallback
-        // means "no ack yet, count every row"; COALESCE keeps the WHERE clause a single expression.
+        // (2) aggregate billing_incidents over rows after the watermark. The 'epoch' fallback means
+        // "no ack yet, count every row" (any real occurred_at is > 1970-01-01); COALESCE keeps the
+        // WHERE clause a single expression. The watermark is read through an AckRow projection: a
+        // scalar Dapper read of DateTimeOffset? over a timestamptz column trips Convert.ChangeType
+        // (Npgsql hands back a DateTime, and Dapper's scalar path cannot cross-cast to
+        // DateTimeOffset), so every row read here goes through a typed row class like every other
+        // repository does.
         const string ackSql = "SELECT policy_fallback_ack_at FROM operational_state WHERE id = 1";
         const string aggSql = """
             SELECT COUNT(*)                                              AS count,
@@ -60,8 +65,9 @@ public sealed class PolicyFallbackStore : RepositoryBase, IPolicyFallbackStore
             """;
 
         await using var conn = await OpenConnectionAsync(ct);
-        var ackAt = await conn.QuerySingleOrDefaultAsync<DateTimeOffset?>(
+        var ackRow = await conn.QuerySingleOrDefaultAsync<AckRow>(
             new CommandDefinition(ackSql, cancellationToken: ct));
+        var ackAt = ackRow?.PolicyFallbackAckAt;
         var row = await conn.QuerySingleAsync<AggregateRow>(new CommandDefinition(
             aggSql, new { AckAt = ackAt }, cancellationToken: ct));
 
@@ -90,5 +96,11 @@ public sealed class PolicyFallbackStore : RepositoryBase, IPolicyFallbackStore
         public long Count { get; init; }
         public DateTimeOffset? LastAt { get; init; }
         public Guid? LastPolicyId { get; init; }
+    }
+
+    /// <summary>Dapper projection of the single operational_state row for the ack watermark.</summary>
+    private sealed class AckRow
+    {
+        public DateTimeOffset? PolicyFallbackAckAt { get; init; }
     }
 }
