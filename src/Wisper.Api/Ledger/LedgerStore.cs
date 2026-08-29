@@ -86,6 +86,40 @@ public sealed class LedgerStore : RepositoryBase, ILedgerStore
         return rows.Select(r => r.ToEntity()).ToList();
     }
 
+    public async Task<IReadOnlyList<LedgerAccount>> SearchAccountsAsync(
+        LedgerAccountKind? kind,
+        Guid? ownerUserId,
+        string currency,
+        int limit,
+        int offset,
+        CancellationToken ct = default)
+    {
+        // Optional filters coalesce with NULL sentinels; the ORDER BY (created_at, id) matches the
+        // in-memory store so paging is stable across implementations (task #194).
+        const string sql = $"""
+            SELECT {AccountColumns} FROM ledger_accounts
+             WHERE currency = @Currency
+               AND (@Kind IS NULL OR kind = @Kind::ledger_account_kind)
+               AND (@OwnerUserId IS NULL OR owner_user_id = @OwnerUserId)
+             ORDER BY created_at, id
+             LIMIT @limit OFFSET @offset
+            """;
+
+        await using var conn = await OpenConnectionAsync(ct);
+        var rows = await conn.QueryAsync<AccountRow>(new CommandDefinition(
+            sql,
+            new
+            {
+                Currency = currency,
+                Kind = kind is { } k ? PgEnum.ToSnakeLabel(k) : null,
+                OwnerUserId = ownerUserId,
+                limit = Math.Max(0, limit),
+                offset = Math.Max(0, offset),
+            },
+            cancellationToken: ct));
+        return rows.Select(r => r.ToEntity()).ToList();
+    }
+
     public async Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
         string idempotencyKey, CancellationToken ct = default)
     {

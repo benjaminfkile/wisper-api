@@ -694,4 +694,107 @@ public class AdminServiceTests
         Assert.DoesNotContain(freshActive.Id, pastIds);
         Assert.DoesNotContain(suspended.Id, pastIds);
     }
+
+    // ---- admin ledger-account listing (task #194) ------------------------------------------------
+
+    [Fact]
+    public async Task List_ledger_accounts_filters_by_kind()
+    {
+        // An operator finding the platform_revenue singleton (the credit-side of an adjustment) must be
+        // able to narrow the listing to one kind and skip past every user wallet.
+        var fx = new Fixture();
+        var alice = await fx.SeedUserAsync("alice@example.com");
+        var bob = await fx.SeedUserAsync("bob@example.com");
+        // Force both user wallets to exist.
+        _ = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, alice);
+        _ = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, bob);
+        var revenue = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformRevenue, null);
+
+        var page = await fx.Service.ListLedgerAccountsAsync(
+            LedgerAccountKind.PlatformRevenue, ownerUserId: null, limit: 50, offset: 0);
+
+        var row = Assert.Single(page.Data);
+        Assert.Equal(revenue.Id, row.Id);
+        Assert.Equal("platform_revenue", row.Kind);
+        Assert.Null(row.OwnerUserId);
+        Assert.Null(row.OwnerEmail);
+        Assert.Equal("usd", row.Currency);
+        Assert.Null(page.NextOffset);
+    }
+
+    [Fact]
+    public async Task List_ledger_accounts_filters_by_owner_user_id_and_joins_email()
+    {
+        // Finding Alice's wallet by her user id: the row's owner_user_id and owner_email must both be
+        // populated, and Bob's wallet must not appear.
+        var fx = new Fixture();
+        var alice = await fx.SeedUserAsync("alice@example.com");
+        var bob = await fx.SeedUserAsync("bob@example.com");
+        var aliceWallet = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, alice);
+        _ = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, bob);
+        _ = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformRevenue, null);
+        // Fund Alice so the joined balance carries a non-zero value the listing can display.
+        await fx.FundWalletAsync(alice, 750);
+
+        var page = await fx.Service.ListLedgerAccountsAsync(
+            kind: null, ownerUserId: alice, limit: 50, offset: 0);
+
+        var row = Assert.Single(page.Data);
+        Assert.Equal(aliceWallet.Id, row.Id);
+        Assert.Equal("user_wallet", row.Kind);
+        Assert.Equal(alice, row.OwnerUserId);
+        Assert.Equal("alice@example.com", row.OwnerEmail);
+        Assert.Equal(750, row.BalanceCents);
+    }
+
+    [Fact]
+    public async Task List_ledger_accounts_paginates_with_next_offset_and_stops_at_last_page()
+    {
+        // Paging discipline: over-fetch one to know whether another page exists; the last page reports
+        // next_offset = null. Order is stable (created_at, id) so paging never dupes or skips.
+        var fx = new Fixture();
+        for (var i = 0; i < 3; i++)
+        {
+            var user = await fx.SeedUserAsync($"consumer{i}@example.com");
+            _ = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, user);
+        }
+
+        // Page 1: two wallets, more to come.
+        var page1 = await fx.Service.ListLedgerAccountsAsync(
+            LedgerAccountKind.UserWallet, ownerUserId: null, limit: 2, offset: 0);
+        Assert.Equal(2, page1.Data.Count);
+        Assert.Equal(2, page1.NextOffset);
+
+        // Page 2: the last wallet, next_offset null → done.
+        var page2 = await fx.Service.ListLedgerAccountsAsync(
+            LedgerAccountKind.UserWallet, ownerUserId: null, limit: 2, offset: 2);
+        Assert.Single(page2.Data);
+        Assert.Null(page2.NextOffset);
+
+        // No duplicated ids across the two pages.
+        var seen = new HashSet<Guid>(page1.Data.Select(a => a.Id));
+        foreach (var row in page2.Data)
+        {
+            Assert.True(seen.Add(row.Id));
+        }
+    }
+
+    [Fact]
+    public async Task List_ledger_accounts_returns_platform_singletons_with_null_owner_email()
+    {
+        // The two platform singletons (owner NULL) needed to build an adjustment appear on an unfiltered
+        // listing and carry null owner_user_id + owner_email.
+        var fx = new Fixture();
+        var cash = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformCash, null);
+        var revenue = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.PlatformRevenue, null);
+
+        var page = await fx.Service.ListLedgerAccountsAsync(
+            kind: null, ownerUserId: null, limit: 50, offset: 0);
+
+        Assert.Equal(2, page.Data.Count);
+        Assert.All(page.Data, a => Assert.Null(a.OwnerUserId));
+        Assert.All(page.Data, a => Assert.Null(a.OwnerEmail));
+        Assert.Contains(page.Data, a => a.Id == cash.Id);
+        Assert.Contains(page.Data, a => a.Id == revenue.Id);
+    }
 }

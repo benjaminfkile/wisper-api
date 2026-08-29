@@ -74,6 +74,29 @@ public sealed class InMemoryLedgerStore : ILedgerStore
         }
     }
 
+    public Task<IReadOnlyList<LedgerAccount>> SearchAccountsAsync(
+        LedgerAccountKind? kind,
+        Guid? ownerUserId,
+        string currency,
+        int limit,
+        int offset,
+        CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            var list = _accounts.Values
+                .Where(a => a.Currency == currency)
+                .Where(a => kind is not { } k || a.Kind == k)
+                .Where(a => ownerUserId is not { } o || a.OwnerUserId == o)
+                .OrderBy(a => a.CreatedAt)
+                .ThenBy(a => a.Id)
+                .Skip(Math.Max(0, offset))
+                .Take(Math.Max(0, limit))
+                .ToList();
+            return Task.FromResult<IReadOnlyList<LedgerAccount>>(list);
+        }
+    }
+
     public Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
         string idempotencyKey, CancellationToken ct = default)
     {

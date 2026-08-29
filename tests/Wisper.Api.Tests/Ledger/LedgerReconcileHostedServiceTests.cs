@@ -222,6 +222,11 @@ public class LedgerReconcileHostedServiceTests
             LedgerAccountKind kind, string currency = "usd", CancellationToken ct = default) =>
             throw new NotSupportedException();
 
+        public Task<IReadOnlyList<LedgerAccount>> SearchAccountsAsync(
+            LedgerAccountKind? kind, Guid? ownerUserId, string currency, int limit, int offset,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
         public Task<LedgerTransaction?> FindTransactionByIdempotencyKeyAsync(
             string idempotencyKey, CancellationToken ct = default) =>
             throw new NotSupportedException();

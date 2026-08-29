@@ -246,6 +246,30 @@ public sealed record LedgerAccountForensicsResponse(
     [property: JsonPropertyName("entries")] IReadOnlyList<LedgerEntryView> Entries);
 
 /// <summary>
+/// One ledger account row on the admin listing (docs/API.md §8, <c>GET /v1/admin/ledger/accounts</c>,
+/// task #194): identity + normal-side bucket, the owning user (id and joined email when present, both
+/// <c>null</c> for platform singletons), currency, and maintained balance. This is the shape an operator
+/// needs to find the two account ids <c>POST /v1/admin/adjustments</c> requires without opening the database.
+/// </summary>
+public sealed record LedgerAccountListView(
+    [property: JsonPropertyName("id")] Guid Id,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("owner_user_id")] Guid? OwnerUserId,
+    [property: JsonPropertyName("owner_email")] string? OwnerEmail,
+    [property: JsonPropertyName("currency")] string Currency,
+    [property: JsonPropertyName("balance_cents")] long BalanceCents)
+{
+    /// <summary>Projects a <see cref="LedgerAccount"/> to its listing view, folding in the joined email.</summary>
+    public static LedgerAccountListView From(LedgerAccount account, string? ownerEmail) => new(
+        account.Id,
+        PgEnum.ToSnakeLabel(account.Kind),
+        account.OwnerUserId,
+        ownerEmail,
+        account.Currency,
+        account.BalanceCents);
+}
+
+/// <summary>
 /// A lease as the admin sees it (docs/API.md §8, task #57) — identity, owner and host, current lifecycle
 /// state, TTL/price snapshot and the metering timeline. The admin listing surfaces the <c>active +
 /// suspended</c> set so an operator can find stuck leases (suspended older than X, active past TTL)

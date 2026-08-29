@@ -43,6 +43,7 @@ public static class AdminEndpoints
         admin.MapPost("/refunds", RefundAsync);
         admin.MapPost("/adjustments", AdjustAsync);
         admin.MapGet("/audit", GetAuditAsync);
+        admin.MapGet("/ledger/accounts", ListLedgerAccountsAsync);
         admin.MapGet("/ledger/accounts/{id}", GetLedgerAccountAsync);
         admin.MapGet("/leases", ListLeasesAsync);
         admin.MapPost("/leases/{id}/end", ForceEndLeaseAsync);
@@ -197,6 +198,16 @@ public static class AdminEndpoints
         var accountId = RequireId(id, "ledger account");
         await accounts.BootstrapAsync(http.User, ct);
         return Results.Json(await admin.GetLedgerAccountAsync(accountId, ct));
+    }
+
+    private static async Task<IResult> ListLedgerAccountsAsync(
+        HttpContext http, AdminService admin, IUserAccountService accounts, CancellationToken ct)
+    {
+        await accounts.BootstrapAsync(http.User, ct);
+        var (limit, offset) = ParsePaging(http.Request.Query);
+        var kind = ParseLedgerAccountKind(http.Request.Query["kind"].ToString());
+        var ownerUserId = ParseGuid(http.Request.Query["owner_user_id"], "owner_user_id");
+        return Results.Json(await admin.ListLedgerAccountsAsync(kind, ownerUserId, limit, offset, ct));
     }
 
     private static async Task<IResult> ListLeasesAsync(
@@ -376,6 +387,36 @@ public static class AdminEndpoints
         }
 
         return status;
+    }
+
+    /// <summary>
+    /// Parses the optional <c>kind</c> query for the admin ledger-account listing (task #194): a blank
+    /// value means "any kind", any other value is validated against <see cref="LedgerAccountKind"/> in its
+    /// snake_case wire form (<c>user_wallet</c>, <c>platform_revenue</c>, …) so a typo is a
+    /// <c>validation_error</c> rather than a silent match-nothing.
+    /// </summary>
+    private static LedgerAccountKind? ParseLedgerAccountKind(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        try
+        {
+            var kind = PgEnum.ParseSnake<LedgerAccountKind>(value.Trim());
+            if (Enum.IsDefined(kind))
+            {
+                return kind;
+            }
+        }
+        catch (ArgumentException)
+        {
+            // fall through to the typed validation_error below
+        }
+
+        throw new ApiException(
+            ApiErrorCode.ValidationError, "Unknown 'kind'.", new { field = "kind" });
     }
 
     /// <summary>

@@ -117,6 +117,20 @@ public sealed class LedgerService
         _store.ListAccountsByKindAsync(kind, currency, ct);
 
     /// <summary>
+    /// A page of ledger accounts (docs/API.md §8, <c>GET /v1/admin/ledger/accounts</c>, task #194),
+    /// narrowed by optional <paramref name="kind"/> / <paramref name="ownerUserId"/> filters. Backs the
+    /// admin listing an operator uses to find the two account ids <c>POST /v1/admin/adjustments</c> needs.
+    /// </summary>
+    public Task<IReadOnlyList<LedgerAccount>> SearchAccountsAsync(
+        LedgerAccountKind? kind,
+        Guid? ownerUserId,
+        string currency,
+        int limit,
+        int offset,
+        CancellationToken ct = default) =>
+        _store.SearchAccountsAsync(kind, ownerUserId, currency, limit, offset, ct);
+
+    /// <summary>
     /// The consumer's wallet statement (docs/API.md §5) — every transaction that touched their
     /// <c>user_wallet</c> (top-ups, holds, releases, refunds, chargebacks), each with the signed amount it
     /// moved, newest-first. Backs <c>GET /v1/billing/transactions</c>; the endpoint paginates it.
