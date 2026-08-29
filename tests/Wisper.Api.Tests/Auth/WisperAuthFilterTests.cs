@@ -315,6 +315,12 @@ internal sealed class CountingHostRepository : IHostRepository
         Guid id, IReadOnlyList<string> gpuClasses, int gpuCount, DateTimeOffset updatedAt, CancellationToken ct = default) =>
         _inner.SetAdvertisedGpuAsync(id, gpuClasses, gpuCount, updatedAt, ct);
 
+    public Task<Host?> SetAdvertisedVersionsAndCapacityAsync(
+        Guid id, string? wispVersion, string? agentVersion, int? maxLeases, int? maxStreams,
+        DateTimeOffset updatedAt, CancellationToken ct = default) =>
+        _inner.SetAdvertisedVersionsAndCapacityAsync(
+            id, wispVersion, agentVersion, maxLeases, maxStreams, updatedAt, ct);
+
     public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) => _inner.DeleteAsync(id, ct);
 }
 

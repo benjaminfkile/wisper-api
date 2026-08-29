@@ -209,6 +209,36 @@ public sealed class HostRepository : RepositoryBase, IHostRepository
             new CommandDefinition(sql, parameters, cancellationToken: ct));
     }
 
+    public async Task<Host?> SetAdvertisedVersionsAndCapacityAsync(
+        Guid id, string? wispVersion, string? agentVersion, int? maxLeases, int? maxStreams,
+        DateTimeOffset updatedAt, CancellationToken ct = default)
+    {
+        const string sql = $"""
+            UPDATE hosts
+               SET wisp_version  = @WispVersion,
+                   agent_version = @AgentVersion,
+                   max_leases    = @MaxLeases,
+                   max_streams   = @MaxStreams,
+                   updated_at    = @UpdatedAt
+             WHERE id = @Id
+            RETURNING {Columns}
+            """;
+
+        var parameters = new
+        {
+            Id = id,
+            WispVersion = wispVersion,
+            AgentVersion = agentVersion,
+            MaxLeases = maxLeases,
+            MaxStreams = maxStreams,
+            UpdatedAt = updatedAt,
+        };
+
+        await using var conn = await OpenConnectionAsync(ct);
+        return await conn.QuerySingleOrDefaultAsync<Host>(
+            new CommandDefinition(sql, parameters, cancellationToken: ct));
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await using var conn = await OpenConnectionAsync(ct);
