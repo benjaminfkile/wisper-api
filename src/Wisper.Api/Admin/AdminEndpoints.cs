@@ -34,6 +34,7 @@ public static class AdminEndpoints
         admin.MapGet("/overview", GetOverviewAsync);
         admin.MapGet("/policy", GetPolicyAsync);
         admin.MapPut("/policy", PublishPolicyAsync);
+        admin.MapPost("/policy/fallback/ack", AckPolicyFallbackAsync);
         admin.MapGet("/hosts", SearchHostsAsync);
         admin.MapGet("/users", SearchUsersAsync);
         admin.MapPost("/hosts/{id}/suspend", SuspendHostAsync);
@@ -69,6 +70,13 @@ public static class AdminEndpoints
         var request = Deserialize<PolicyUpdateRequest>(await ReadBodyAsync(http.Request, ct));
         var actor = await accounts.BootstrapAsync(http.User, ct);
         return Results.Json(await admin.PublishPolicyAsync(actor.Id, request, ct));
+    }
+
+    private static async Task<IResult> AckPolicyFallbackAsync(
+        HttpContext http, AdminService admin, IUserAccountService accounts, CancellationToken ct)
+    {
+        var actor = await accounts.BootstrapAsync(http.User, ct);
+        return Results.Json(await admin.AckPolicyFallbackAsync(actor.Id, ct));
     }
 
     private static async Task<IResult> SearchHostsAsync(

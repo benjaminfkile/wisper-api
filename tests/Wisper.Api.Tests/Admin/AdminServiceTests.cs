@@ -8,6 +8,7 @@ using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Audit;
+using Wisper.Api.Persistence.BillingIncidents;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Policy;
@@ -51,7 +52,7 @@ public class AdminServiceTests
         public MeteringService Meter { get; }
         public WalletLeaseGate WalletGate { get; }
         public LedgerReconcileMonitor ReconcileMonitor { get; } = new();
-        public PolicyFallbackMonitor PolicyFallback { get; } = new();
+        public InMemoryPolicyFallbackStore PolicyFallback { get; } = new();
         public AdminService Service { get; }
 
         public Fixture()
@@ -66,7 +67,7 @@ public class AdminServiceTests
                 NullLogger<BillingService>.Instance);
             Meter = new MeteringService(
                 Leases, Usage, Hosts, Ledger, policy, Clock, NullLogger<MeteringService>.Instance,
-                policyFallback: PolicyFallback);
+                fallbacks: PolicyFallback);
             WalletGate = new WalletLeaseGate(
                 Ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             Service = new AdminService(
@@ -230,16 +231,17 @@ public class AdminServiceTests
     }
 
     [Fact]
-    public async Task Overview_flips_health_to_policy_fallback_when_the_monitor_recorded_one()
+    public async Task Overview_flips_health_to_policy_fallback_when_the_store_recorded_one()
     {
-        // Task #206: any fallback since boot flips health to policy_fallback and surfaces the recorded
-        // count + timestamp + policy id on the overview.
+        // Task #206, task #210: any unacknowledged fallback flips health to policy_fallback and
+        // surfaces the durable count + newest timestamp + policy id on the overview.
         var fx = new Fixture();
         var admin = await fx.SeedUserAsync("admin@example.com");
         await fx.Service.PublishPolicyAsync(admin, new PolicyUpdateRequest(FeeBps: 1500));
         var policyId = Guid.NewGuid();
         var at = T0.AddMinutes(-2);
-        fx.PolicyFallback.Record(at, policyId);
+        await fx.PolicyFallback.RecordAsync(
+            PolicyFallbackKind.StaleFallback, leaseId: Guid.NewGuid(), policyId: policyId, occurredAt: at);
 
         var overview = await fx.Service.GetOverviewAsync();
 
@@ -247,16 +249,18 @@ public class AdminServiceTests
         Assert.Equal(1, overview.PlatformPolicy.FallbackCount);
         Assert.Equal(at, overview.PlatformPolicy.LastFallbackAt);
         Assert.Equal(policyId, overview.PlatformPolicy.LastFallbackPolicyId);
+        Assert.Null(overview.PlatformPolicy.AckAt);
         Assert.Equal("policy_fallback", overview.Health);
     }
 
     [Fact]
     public async Task Overview_reports_platform_policy_active_false_when_no_row_exists()
     {
-        // Task #206: no platform_policy row at all reports active=false; combined with a recorded
-        // missing_at_flush fallback (policy id null), health flips to policy_fallback.
+        // Task #206, task #210: no platform_policy row at all reports active=false; combined with a
+        // recorded missing_at_flush fallback (policy id null), health flips to policy_fallback.
         var fx = new Fixture();
-        fx.PolicyFallback.Record(T0, policyId: null);
+        await fx.PolicyFallback.RecordAsync(
+            PolicyFallbackKind.MissingAtFlush, leaseId: Guid.NewGuid(), policyId: null, occurredAt: T0);
 
         var overview = await fx.Service.GetOverviewAsync();
 
@@ -269,16 +273,100 @@ public class AdminServiceTests
     [Fact]
     public async Task Overview_ledger_drift_outranks_policy_fallback_on_health()
     {
-        // Task #206: a drift in the balance cache is a strictly worse operator signal than a policy
-        // fallback, so ledger_drift outranks policy_fallback when both are true.
+        // Task #206, task #210: a drift in the balance cache is a strictly worse operator signal
+        // than a policy fallback, so ledger_drift outranks policy_fallback when both are true.
         var fx = new Fixture();
         fx.ReconcileMonitor.Record(new LedgerReconcileSummary(
             RanAt: T0, AccountsChecked: 3, DriftAccountCount: 1, TotalAbsoluteDriftCents: 10));
-        fx.PolicyFallback.Record(T0, policyId: null);
+        await fx.PolicyFallback.RecordAsync(
+            PolicyFallbackKind.MissingAtFlush, leaseId: Guid.NewGuid(), policyId: null, occurredAt: T0);
 
         var overview = await fx.Service.GetOverviewAsync();
 
         Assert.Equal("ledger_drift", overview.Health);
+    }
+
+    [Fact]
+    public async Task Ack_policy_fallback_shifts_the_watermark_clears_health_and_audits()
+    {
+        // Task #210: POST /v1/admin/policy/fallback/ack must clear the badge on the overview
+        // (fallback_count → 0, health → ok) by shifting the ack watermark, while leaving the
+        // durable billing_incidents history in place so a later fallback re-arms the badge.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        await fx.Service.PublishPolicyAsync(admin, new PolicyUpdateRequest(FeeBps: 1500));
+        var policyId = Guid.NewGuid();
+        var beforeAck = T0.AddMinutes(-3);
+        await fx.PolicyFallback.RecordAsync(
+            PolicyFallbackKind.StaleFallback, leaseId: Guid.NewGuid(), policyId: policyId, occurredAt: beforeAck);
+        var overviewBefore = await fx.Service.GetOverviewAsync();
+        Assert.Equal("policy_fallback", overviewBefore.Health);
+        Assert.Equal(1, overviewBefore.PlatformPolicy.FallbackCount);
+
+        var response = await fx.Service.AckPolicyFallbackAsync(admin);
+
+        // The response captures the state acknowledged (before-ack aggregate) + the new watermark.
+        Assert.Equal(1, response.AcknowledgedCount);
+        Assert.Equal(beforeAck, response.AcknowledgedLastFallbackAt);
+        Assert.Equal(policyId, response.AcknowledgedLastFallbackPolicyId);
+        Assert.Equal(fx.Clock.GetUtcNow(), response.AckAt);
+
+        // Overview reports a healthy platform policy and health=ok now.
+        var overviewAfter = await fx.Service.GetOverviewAsync();
+        Assert.Equal("ok", overviewAfter.Health);
+        Assert.Equal(0, overviewAfter.PlatformPolicy.FallbackCount);
+        Assert.Null(overviewAfter.PlatformPolicy.LastFallbackAt);
+        Assert.Null(overviewAfter.PlatformPolicy.LastFallbackPolicyId);
+        Assert.Equal(fx.Clock.GetUtcNow(), overviewAfter.PlatformPolicy.AckAt);
+
+        // Audit trail carries the acknowledged aggregate so the trail proves what was cleared.
+        var audit = await fx.AuditLog.ListAsync(new AuditLogQuery { Action = "policy.fallback_ack" });
+        var entry = Assert.Single(audit);
+        Assert.Equal(admin, entry.ActorUserId);
+        Assert.Equal("platform_policy", entry.TargetType);
+    }
+
+    [Fact]
+    public async Task Ack_policy_fallback_does_not_hide_fresh_incidents()
+    {
+        // Task #210: a fallback recorded AFTER the ack must re-arm the badge on the overview so a
+        // new incident is not silently masked by an old ack watermark.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        await fx.Service.PublishPolicyAsync(admin, new PolicyUpdateRequest(FeeBps: 1500));
+        await fx.PolicyFallback.RecordAsync(
+            PolicyFallbackKind.StaleFallback, Guid.NewGuid(), Guid.NewGuid(), T0.AddMinutes(-5));
+        await fx.Service.AckPolicyFallbackAsync(admin);
+
+        // A fresh fallback comes in AFTER the ack watermark.
+        var freshAt = fx.Clock.GetUtcNow().AddSeconds(1);
+        var freshPolicyId = Guid.NewGuid();
+        await fx.PolicyFallback.RecordAsync(
+            PolicyFallbackKind.StaleFallback, Guid.NewGuid(), freshPolicyId, freshAt);
+
+        var overview = await fx.Service.GetOverviewAsync();
+        Assert.Equal("policy_fallback", overview.Health);
+        Assert.Equal(1, overview.PlatformPolicy.FallbackCount);
+        Assert.Equal(freshAt, overview.PlatformPolicy.LastFallbackAt);
+        Assert.Equal(freshPolicyId, overview.PlatformPolicy.LastFallbackPolicyId);
+    }
+
+    [Fact]
+    public async Task Ack_policy_fallback_on_empty_history_is_a_safe_no_op()
+    {
+        // A well-meaning operator ack with no fallbacks recorded should not throw and should still
+        // write the watermark so a subsequent overview reports ack_at.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+
+        var response = await fx.Service.AckPolicyFallbackAsync(admin);
+        Assert.Equal(0, response.AcknowledgedCount);
+        Assert.Null(response.AcknowledgedLastFallbackAt);
+        Assert.Null(response.AcknowledgedLastFallbackPolicyId);
+
+        var overview = await fx.Service.GetOverviewAsync();
+        Assert.Equal(fx.Clock.GetUtcNow(), overview.PlatformPolicy.AckAt);
+        Assert.Equal(0, overview.PlatformPolicy.FallbackCount);
     }
 
     [Fact]

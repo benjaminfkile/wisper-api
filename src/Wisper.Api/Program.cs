@@ -77,10 +77,10 @@ builder.Services.Configure<MeteringOptions>(builder.Configuration.GetSection(Met
 // The meter caps accrual at each host's last-healthy liveness point (via the live tunnel registry) so a
 // blind disconnect window is structurally un-billable (docs/TUNNEL.md §8).
 builder.Services.AddSingleton<IMeterLivenessSource, RegistryMeterLivenessSource>();
-// Process-local counter of platform-policy fallbacks the metering flush observed (task #206). Wired
-// into MeteringService and read from the admin overview so an operator sees the incident without
-// tailing logs.
-builder.Services.AddSingleton<PolicyFallbackMonitor>();
+// Persistent platform-policy fallback signal (task #210, docs/PAYMENTS.md §4). The IPolicyFallbackStore
+// is registered by AddWisperPersistence above (Postgres row on the billing_incidents / operational_state
+// tables; in-memory double for the DB-less dev mode). Wired into MeteringService so each observed
+// fallback appends a durable row that GET /v1/admin/overview aggregates across restarts + instances.
 builder.Services.AddSingleton<MeteringService>();
 builder.Services.AddHostedService<MeteringHostedService>();
 
