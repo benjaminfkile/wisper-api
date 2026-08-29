@@ -19,7 +19,7 @@ using Host = Wisper.Api.Domain.Host;
 namespace Wisper.Api.Tests.Tunnel;
 
 /// <summary>
-/// Unit tests for <see cref="TunnelDisconnectCoordinator"/> — the glue that drives the docs/TUNNEL.md §8
+/// Unit tests for <see cref="TunnelDisconnectCoordinator"/> -- the glue that drives the docs/TUNNEL.md §8
 /// policy from the tunnel lifecycle onto <see cref="LeaseReconciliationService"/>. A controllable delay
 /// stands in for the grace timer so the expiry / reconnect race is deterministic (no wall-clock sleeps).
 /// </summary>
@@ -60,7 +60,7 @@ public class TunnelDisconnectCoordinatorTests
         public InMemoryPlatformPolicyRepository Policies { get; } = new();
         public FakeTimeProvider Clock { get; } = new(T0);
         public ManualGrace Grace { get; } = new();
-        // Fake relay so the orphan teardown path (task #73) is observable without a live tunnel — the
+        // Fake relay so the orphan teardown path (task #73) is observable without a live tunnel -- the
         // coordinator resolves the relay lazily via a factory, so this fixture just supplies a fake.
         public FakeTunnelRelay Relay { get; } = new();
 
@@ -94,7 +94,7 @@ public class TunnelDisconnectCoordinatorTests
         /// <summary>
         /// Builds a fresh <see cref="TunnelConnection"/> for this fixture's host so tests can drive the
         /// connection-based <see cref="TunnelDisconnectCoordinator.OnHeartbeatAsync(TunnelConnection, IReadOnlyCollection{Guid}, CancellationToken)"/>
-        /// overload. The socket is a stub — the coordinator only reads <see cref="TunnelConnection.HostId"/>
+        /// overload. The socket is a stub -- the coordinator only reads <see cref="TunnelConnection.HostId"/>
         /// and <see cref="TunnelConnection.TerminalTeardownRelayed"/> from it.
         /// </summary>
         public TunnelConnection NewConnection(string? sessionId = null) =>
@@ -157,7 +157,7 @@ public class TunnelDisconnectCoordinatorTests
 
         Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
         Assert.True(fx.Coordinator.HasPendingGrace(fx.HostKey));
-        // The host stays online during the grace window — a reconnect must find it already catalogued.
+        // The host stays online during the grace window -- a reconnect must find it already catalogued.
         Assert.Equal(HostStatus.Online, await fx.HostStatusAsync());
     }
 
@@ -213,7 +213,7 @@ public class TunnelDisconnectCoordinatorTests
         var resumed = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Active, resumed!.Status);
         Assert.False(fx.Coordinator.HasPendingGrace(fx.HostKey));
-        // A reconnect within grace is a blip — the host was never flipped offline.
+        // A reconnect within grace is a blip -- the host was never flipped offline.
         Assert.Equal(HostStatus.Online, await fx.HostStatusAsync());
     }
 
@@ -243,7 +243,7 @@ public class TunnelDisconnectCoordinatorTests
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
-        // No disconnect ever happened — this is a steady-state heartbeat that omits the lease.
+        // No disconnect ever happened -- this is a steady-state heartbeat that omits the lease.
         await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, Array.Empty<Guid>());
 
         var ended = await fx.ReloadAsync(lease.Id);
@@ -254,13 +254,13 @@ public class TunnelDisconnectCoordinatorTests
     [Fact]
     public async Task Steady_state_heartbeat_with_matching_lease_set_performs_zero_writes()
     {
-        // Steady-state (reported set == active set) must produce no DB writes — no updated_at churn.
+        // Steady-state (reported set == active set) must produce no DB writes -- no updated_at churn.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
         var before = await fx.ReloadAsync(lease.Id);
 
-        // Heartbeat reports the lease as live — perfect match with the manager's active set.
+        // Heartbeat reports the lease as live -- perfect match with the manager's active set.
         await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
 
         var after = await fx.ReloadAsync(lease.Id);
@@ -271,7 +271,7 @@ public class TunnelDisconnectCoordinatorTests
     public async Task Steady_state_heartbeat_revives_host_disconnect_ended_lease()
     {
         // A live host contract with no active manager lease: the lease was ended as host_disconnect
-        // (simulating drift — e.g. a manager restart mid-flight) but the container kept running.
+        // (simulating drift -- e.g. a manager restart mid-flight) but the container kept running.
         // A steady-state heartbeat (no pending grace or post-grace flags) must revive it.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -371,7 +371,7 @@ public class TunnelDisconnectCoordinatorTests
         fx.Coordinator.OnReconnected(fx.HostKey);
         await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, new[] { lease.Id });
 
-        // Manager count now reflects the running container — no phantom free slot.
+        // Manager count now reflects the running container -- no phantom free slot.
         Assert.Equal(1, await fx.Leases.CountActiveByHostAsync(fx.HostId));
     }
 
@@ -389,7 +389,7 @@ public class TunnelDisconnectCoordinatorTests
         fx.Coordinator.OnReconnected(fx.HostKey);
         await fx.Coordinator.OnHeartbeatAsync(fx.HostKey, Array.Empty<Guid>());
 
-        // Lease stays ended — there is nothing to revive.
+        // Lease stays ended -- there is nothing to revive.
         var stored = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
         Assert.Equal(LeaseEndReason.HostDisconnect, stored.EndReason);
@@ -408,7 +408,7 @@ public class TunnelDisconnectCoordinatorTests
         await graceTask1;
         Assert.True(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
 
-        // The host disconnects again before sending a heartbeat — the flag must be reset.
+        // The host disconnects again before sending a heartbeat -- the flag must be reset.
         _ = await fx.Coordinator.OnDisconnectedAsync(fx.HostKey, T0.AddSeconds(15));
         Assert.False(fx.Coordinator.HasPendingPostGraceReconcile(fx.HostKey));
     }
@@ -446,7 +446,7 @@ public class TunnelDisconnectCoordinatorTests
     [Fact]
     public async Task OnLeaseEnded_already_ended_lease_is_a_no_op()
     {
-        // AC187: an already-ended lease stays as it was — no double transition, no reason overwrite.
+        // AC187: an already-ended lease stays as it was -- no double transition, no reason overwrite.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
         await fx.Leases.TransitionStateAsync(
@@ -465,7 +465,7 @@ public class TunnelDisconnectCoordinatorTests
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
-        // A dev-harness host id is not a Guid — the reconciler is never called, the lease stays untouched.
+        // A dev-harness host id is not a Guid -- the reconciler is never called, the lease stays untouched.
         await fx.Coordinator.OnLeaseEndedAsync("dev-host-alpha", lease.Id, LeaseEndReason.Expired);
 
         Assert.Equal(LeaseStatus.Active, (await fx.ReloadAsync(lease.Id))!.Status);
@@ -511,7 +511,7 @@ public class TunnelDisconnectCoordinatorTests
         LeaseEndReason reason)
     {
         // AC263: every terminal end reason OTHER than host_disconnect (which is the revivable case) must
-        // trigger a teardown relay — the container is definitively orphaned.
+        // trigger a teardown relay -- the container is definitively orphaned.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
         await fx.Leases.TransitionStateAsync(lease.Id, LeaseStatus.Ended, endReason: reason, endedAt: T0);
@@ -527,7 +527,7 @@ public class TunnelDisconnectCoordinatorTests
     [Fact]
     public async Task Heartbeat_revive_path_does_not_relay_teardown()
     {
-        // AC264: a reported+ended(host_disconnect) lease is the REVIVE path — the container kept running
+        // AC264: a reported+ended(host_disconnect) lease is the REVIVE path -- the container kept running
         // through an outage and must come back to active, NOT be torn down. The relay must stay silent.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -545,8 +545,8 @@ public class TunnelDisconnectCoordinatorTests
     [Fact]
     public async Task Heartbeat_active_and_suspended_paths_do_not_relay_teardown()
     {
-        // AC264: an active lease that continues to be reported is steady-state — no teardown. A suspended
-        // lease reported live resumes back to active — also no teardown. Neither should touch the relay.
+        // AC264: an active lease that continues to be reported is steady-state -- no teardown. A suspended
+        // lease reported live resumes back to active -- also no teardown. Neither should touch the relay.
         var fx = await ReadyAsync();
         var stillActive = await fx.SeedActiveLeaseAsync();
         var stillSuspended = await fx.SeedActiveLeaseAsync();
@@ -563,7 +563,7 @@ public class TunnelDisconnectCoordinatorTests
     [Fact]
     public async Task Heartbeat_relay_failure_is_swallowed_and_reconcile_pass_completes()
     {
-        // AC265: a host_offline / upstream_timeout on the teardown relay must NOT surface upward — the
+        // AC265: a host_offline / upstream_timeout on the teardown relay must NOT surface upward -- the
         // reconcile pass keeps working and wisp's TTL reaper is the backstop. The lease id is still marked
         // as attempted so subsequent heartbeats on this connection do not spam retries or logs.
         var fx = await ReadyAsync();
@@ -574,10 +574,10 @@ public class TunnelDisconnectCoordinatorTests
 
         var connection = fx.NewConnection();
 
-        // Must not throw — the entire heartbeat handler is best-effort.
+        // Must not throw -- the entire heartbeat handler is best-effort.
         await fx.Coordinator.OnHeartbeatAsync(connection, new[] { lease.Id });
 
-        // Exactly one relay attempt was made (and it threw) — the failed lease id is still tracked so
+        // Exactly one relay attempt was made (and it threw) -- the failed lease id is still tracked so
         // the next heartbeat on this connection does not retry.
         Assert.Single(fx.Relay.ReleaseCalls);
         Assert.True(connection.TerminalTeardownRelayed.ContainsKey(lease.Id));
@@ -591,7 +591,7 @@ public class TunnelDisconnectCoordinatorTests
     public async Task Heartbeat_repeated_beats_do_not_spam_teardown_relays_per_connection()
     {
         // AC265: an orphan the host keeps reporting on every heartbeat must trigger exactly ONE relay
-        // per connection lifetime — the dedupe set on TunnelConnection.TerminalTeardownRelayed is what
+        // per connection lifetime -- the dedupe set on TunnelConnection.TerminalTeardownRelayed is what
         // stops the spam.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -612,7 +612,7 @@ public class TunnelDisconnectCoordinatorTests
     {
         // A supersede/reconnect must reset the dedupe set: the returning agent (a fresh
         // TunnelConnection) gets exactly one fresh attempt per orphan lease. This is how a first-attempt
-        // host_offline failure eventually converges — the next connection tries again.
+        // host_offline failure eventually converges -- the next connection tries again.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
         await fx.Leases.TransitionStateAsync(
@@ -629,7 +629,7 @@ public class TunnelDisconnectCoordinatorTests
         var second = fx.NewConnection();
         await fx.Coordinator.OnHeartbeatAsync(second, new[] { lease.Id });
 
-        // Two total attempts — one per connection. The second dedupe set is independent of the first.
+        // Two total attempts -- one per connection. The second dedupe set is independent of the first.
         Assert.Equal(2, fx.Relay.ReleaseCalls.Count);
         Assert.True(second.TerminalTeardownRelayed.ContainsKey(lease.Id));
     }
@@ -637,7 +637,7 @@ public class TunnelDisconnectCoordinatorTests
     [Fact]
     public async Task Heartbeat_teardown_relay_does_not_touch_the_ledger()
     {
-        // AC266: the teardown path is host-side hygiene only — the lease is already finalized/ended.
+        // AC266: the teardown path is host-side hygiene only -- the lease is already finalized/ended.
         // No metering, no hold-release, no wallet writes. We assert this by snapshotting the ledger
         // balances before and after the teardown-triggering heartbeat.
         var fx = await ReadyAsync();
@@ -684,7 +684,7 @@ public class TunnelDisconnectCoordinatorTests
         // CreateLease has just returned from _relay.CreateLeaseAsync (the container is provisioned on
         // the host) but the lease row is not yet inserted; a host.heartbeat lands in that millisecond
         // window and reports the fresh lease id. Under the pre-#75 teardown code the reconciler saw
-        // GetByIdAsync return null, classified the id as an orphan, and relayed lease.release — killing
+        // GetByIdAsync return null, classified the id as an orphan, and relayed lease.release -- killing
         // the create in-flight. The fixed code must classify the id as UnknownReported (skip teardown)
         // so the create completes normally and the next heartbeat sees the newly-persisted active row.
         var fx = await ReadyAsync();
@@ -760,7 +760,7 @@ public class TunnelDisconnectCoordinatorTests
         Assert.Empty(fx.Relay.ReleaseCalls);
     }
 
-    /// <summary>A do-nothing <see cref="WebSocket"/> — the coordinator never touches it.</summary>
+    /// <summary>A do-nothing <see cref="WebSocket"/> -- the coordinator never touches it.</summary>
     private sealed class StubWebSocket : WebSocket
     {
         public override WebSocketCloseStatus? CloseStatus => null;

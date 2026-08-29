@@ -7,7 +7,7 @@ namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
 /// Over the real app host with no database configured (the in-memory dev mode), the health endpoints must
-/// still report <c>ok</c> and include the DB probe entry marked <c>in-memory</c> — proving the probe is
+/// still report <c>ok</c> and include the DB probe entry marked <c>in-memory</c> -- proving the probe is
 /// wired and states the DB-less mode plainly rather than pretending a database is healthy or crashing the
 /// boot (docs/DATA_MODEL.md §1).
 /// </summary>

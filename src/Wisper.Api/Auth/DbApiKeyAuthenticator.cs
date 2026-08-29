@@ -12,21 +12,21 @@ namespace Wisper.Api.Auth;
 /// DB-backed <see cref="IApiKeyAuthenticator"/> (docs/API.md §2, docs/DATA_MODEL.md §3): resolves a
 /// presented <c>wck_…</c> key to the owning user's principal by a <b>hashed, constant-time</b> lookup
 /// against the <c>api_keys</c> table. The presented key is SHA-256 hashed (<see cref="ApiKeyToken.Hash"/>)
-/// and the digest — never the raw key — is looked up against the stored <c>token_hash</c> (active rows
+/// and the digest -- never the raw key -- is looked up against the stored <c>token_hash</c> (active rows
 /// only, so a revoked key never resolves). The stored hash is re-compared with
 /// <see cref="CryptographicOperations.FixedTimeEquals"/> so resolution does not leak via timing, and
 /// because the lookup key is a preimage-resistant digest the key itself is never recoverable from the row.
 /// <para>
-/// A resolved key's <b>owner must exist and be active</b> — a suspended or missing owner fails closed
+/// A resolved key's <b>owner must exist and be active</b> -- a suspended or missing owner fails closed
 /// (mirroring how host suspension gates the tunnel), and never falls through to the config allow-list.
 /// The principal carries the owner's subject and email and roles = the <b>key's stored scopes</b> (never
 /// Cognito groups), then a best-effort <c>last_used_at</c> stamp is written.
 /// </para>
 /// <para>
-/// The lookup runs against whichever <see cref="IApiKeyRepository"/> backs the persistence layer — the
+/// The lookup runs against whichever <see cref="IApiKeyRepository"/> backs the persistence layer -- the
 /// Postgres table in production, or the in-memory store on a DB-less dev boot (docs/DATA_MODEL.md §1). A
 /// key the store does not recognize falls through to the config-backed allow-list
-/// (<see cref="ConfigApiKeyAuthenticator"/>), the operator bootstrap escape hatch — exactly the layering
+/// (<see cref="ConfigApiKeyAuthenticator"/>), the operator bootstrap escape hatch -- exactly the layering
 /// <see cref="Tunnel.DbHostTokenValidator"/> uses for host tokens. In production the config allow-list is
 /// empty, so the store is the sole source of truth and an unknown key fails closed.
 /// </para>
@@ -60,7 +60,7 @@ public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
             return null;
         }
 
-        // Hashed lookup against the api_keys store (Postgres or the in-memory dev store — both are
+        // Hashed lookup against the api_keys store (Postgres or the in-memory dev store -- both are
         // queryable without a live DB connection, docs/DATA_MODEL.md §1).
         var hash = ApiKeyToken.Hash(bearerToken);
         var key = await _keys.GetByTokenHashAsync(hash, ct);
@@ -69,7 +69,7 @@ public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
             // Known, active key: the owner must exist and be active, else fail closed (a suspended or
             // deleted owner gates the key exactly as a host suspension gates the tunnel). A recognized
             // key never falls through to the config allow-list. A missing/suspended owner is an auth
-            // failure (401), not a 500 downstream — log a single line naming the key so operators can
+            // failure (401), not a 500 downstream -- log a single line naming the key so operators can
             // spot the mis-linked row instead of chasing an opaque server error.
             var user = await _users.GetByIdAsync(key.UserId, ct);
             if (user is null || user.Status != UserStatus.Active)
@@ -86,7 +86,7 @@ public sealed class DbApiKeyAuthenticator : IApiKeyAuthenticator
             return WisperPrincipal.CreateForApiKey(user.CognitoSub, user.Email, key.Scopes);
         }
 
-        // Not resolved from the store — try the config allow-list (dev/bootstrap; empty and thus
+        // Not resolved from the store -- try the config allow-list (dev/bootstrap; empty and thus
         // fail-closed in production).
         return await _fallback.AuthenticateAsync(bearerToken, ct);
     }

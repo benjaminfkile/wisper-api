@@ -56,7 +56,7 @@ public class LeaseShellEndpointsTests
                     services.AddSingleton<ILeaseRepository>(Leases);
                     services.RemoveAll<IUserRepository>();
                     services.AddSingleton<IUserRepository>(Users);
-                    // NB: the real ITunnelRelay is kept — the WS bridge drives a live tunnel to the fake agent.
+                    // NB: the real ITunnelRelay is kept -- the WS bridge drives a live tunnel to the fake agent.
                 });
             });
 
@@ -269,7 +269,7 @@ public class LeaseShellEndpointsTests
         var first = await ConnectShellAsync(factory, leaseId, ticket, ct);
         await first.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", ct);
 
-        // The same ticket can't be redeemed again — the second handshake is rejected.
+        // The same ticket can't be redeemed again -- the second handshake is rejected.
         var ex = await Assert.ThrowsAnyAsync<Exception>(
             () => ConnectShellAsync(factory, leaseId, ticket, ct));
         Assert.Contains("401", ex.Message);

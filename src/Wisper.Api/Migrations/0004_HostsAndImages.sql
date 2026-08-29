@@ -1,4 +1,4 @@
--- 0004_HostsAndImages.sql — hosts and their priced allow-list (docs/DATA_MODEL.md §4, §13).
+-- 0004_HostsAndImages.sql -- hosts and their priced allow-list (docs/DATA_MODEL.md §4, §13).
 --
 -- A host advertises capability/versions via the tunnel `hello`; the agent token is stored hashed
 -- only. host_images overlays price on wisp's capability (wisp stays money-blind), unique per

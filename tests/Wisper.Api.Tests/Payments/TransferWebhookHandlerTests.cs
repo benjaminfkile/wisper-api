@@ -76,7 +76,7 @@ public class TransferWebhookHandlerTests
     public async Task Transfer_failed_marks_failed_and_retains_earnings()
     {
         var fx = new Fixture();
-        // A payout that has NOT committed a ledger txn (payout_txn_id null) — failing it retains earnings.
+        // A payout that has NOT committed a ledger txn (payout_txn_id null) -- failing it retains earnings.
         var payout = await fx.SeedPayoutAsync(PayoutStatus.Pending);
 
         await fx.Handler.HandleAsync(TransferEvent(TransferWebhookHandler.TransferFailed, payout.Id));

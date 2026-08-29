@@ -12,7 +12,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// <summary>
 /// Task #62: the manager must honor the agent's self-reported <c>"degraded"</c> in
 /// <c>host.heartbeat</c>. These tests cover the applier that flips the shared
-/// <see cref="IHostDegradedStore"/> on transition and logs each transition exactly once — a healthy
+/// <see cref="IHostDegradedStore"/> on transition and logs each transition exactly once -- a healthy
 /// agent that stays degraded through many beats never floods the log, and a subsequent healthy
 /// beat both clears the shared flag and emits the recovery line. The end-to-end placement side is
 /// covered by the catalog and lease-admission tests separately.
@@ -52,7 +52,7 @@ public class HeartbeatDegradedApplyTests
     [Fact]
     public async Task Degraded_heartbeat_adds_the_host_to_the_shared_store()
     {
-        // The tunnel is up, but the agent reported "degraded" — the shared set must carry the host
+        // The tunnel is up, but the agent reported "degraded" -- the shared set must carry the host
         // so every instance's placement path (catalog liveness / lease admission) excludes it.
         var fx = Fixture.Create();
 
@@ -67,7 +67,7 @@ public class HeartbeatDegradedApplyTests
     public async Task Non_degraded_heartbeat_after_degraded_clears_the_shared_store()
     {
         // A subsequent heartbeat with no status (or any non-degraded value) restores placement
-        // automatically — the second acceptance criterion for task #62.
+        // automatically -- the second acceptance criterion for task #62.
         var fx = Fixture.Create();
         await HeartbeatDegradedApply.ApplyAsync(
             fx.Connection, Heartbeat("degraded"), fx.Store, fx.Logger, ct: default);
@@ -83,7 +83,7 @@ public class HeartbeatDegradedApplyTests
     [Fact]
     public async Task Repeated_degraded_beats_log_only_the_first_transition()
     {
-        // Steady-state degraded (many beats reporting the same status) MUST NOT flood the log — the
+        // Steady-state degraded (many beats reporting the same status) MUST NOT flood the log -- the
         // handler is a no-op on unchanged state, so both the store write and the log line fire only
         // on the transition. AC #213.
         var fx = Fixture.Create();
@@ -121,7 +121,7 @@ public class HeartbeatDegradedApplyTests
     public async Task Alternating_transitions_each_log_and_toggle_the_store()
     {
         // A flapping agent MUST log each transition (both directions) so operators can see the flap
-        // — the "log once per transition" rule is per transition, not per direction.
+        // -- the "log once per transition" rule is per transition, not per direction.
         var fx = Fixture.Create();
 
         await HeartbeatDegradedApply.ApplyAsync(
@@ -147,7 +147,7 @@ public class HeartbeatDegradedApplyTests
     public async Task Unknown_or_absent_status_normalises_to_healthy(string? status)
     {
         // The docs say only exactly "degraded" excludes; any other value (including a future value
-        // we don't yet know) counts as healthy — an older agent (no status field) MUST never end up
+        // we don't yet know) counts as healthy -- an older agent (no status field) MUST never end up
         // stranded out of placement.
         var fx = Fixture.Create();
 
@@ -177,7 +177,7 @@ public class HeartbeatDegradedApplyTests
     [Fact]
     public async Task Store_write_failure_is_swallowed_and_logged_and_leaves_state_unchanged()
     {
-        // The applier is fail-safe on its own — a store hiccup must never disturb lease reconciliation
+        // The applier is fail-safe on its own -- a store hiccup must never disturb lease reconciliation
         // or the tunnel. On failure the connection flag is NOT flipped (so the next beat retries) and
         // the log carries the exception.
         var fx = Fixture.Create(store: new ThrowingDegradedStore());
@@ -194,15 +194,15 @@ public class HeartbeatDegradedApplyTests
     [Fact]
     public async Task First_healthy_heartbeat_clears_a_stale_degraded_entry_left_by_a_prior_connection()
     {
-        // AC #223: a stale entry in the shared store — from a superseded/crashed prior connection, or a
-        // disconnect-time clear that lost a race — must be cleared by the FIRST heartbeat of the fresh
+        // AC #223: a stale entry in the shared store -- from a superseded/crashed prior connection, or a
+        // disconnect-time clear that lost a race -- must be cleared by the FIRST heartbeat of the fresh
         // (healthy) connection. Without the unconditional first-beat settle the guard would skip the
         // write on every steady-state healthy beat (fresh IsDegraded=false == reportedDegraded=false)
         // and the host would stay excluded from placement forever.
         var fx = Fixture.Create();
         await fx.Store.SetDegradedAsync(HostId.ToString()); // seed the stale entry
 
-        // Fresh connection — IsDegradedSettled starts false — receives one healthy heartbeat.
+        // Fresh connection -- IsDegradedSettled starts false -- receives one healthy heartbeat.
         await HeartbeatDegradedApply.ApplyAsync(
             fx.Connection, Heartbeat(status: null), fx.Store, fx.Logger, ct: default);
 
@@ -214,7 +214,7 @@ public class HeartbeatDegradedApplyTests
     [Fact]
     public async Task Supersede_while_degraded_does_not_strand_the_host_after_healthy_reconnect()
     {
-        // AC #224: a supersede while degraded is the common agent-reconnect path — the prior tunnel's
+        // AC #224: a supersede while degraded is the common agent-reconnect path -- the prior tunnel's
         // disconnect handler deliberately skips its ClearDegradedAsync on supersede so the newer
         // owner's own heartbeats govern the flag. If the new agent comes back HEALTHY, the first
         // heartbeat of the new connection MUST clear the stale entry. Same shared store across both
@@ -222,13 +222,13 @@ public class HeartbeatDegradedApplyTests
         var sharedStore = new InMemoryHostDegradedStore();
 
         var oldConn = MakeConnection("sess-old");
-        // Old connection reports degraded — this is what a real deployment would look like right
+        // Old connection reports degraded -- this is what a real deployment would look like right
         // before the supersede: the store carries the host, and the disconnect path leaves it alone.
         await HeartbeatDegradedApply.ApplyAsync(
             oldConn, Heartbeat("degraded"), sharedStore, NullLogger.Instance, ct: default);
         Assert.True(await sharedStore.IsDegradedAsync(HostId.ToString()));
 
-        // New agent reconnects (supersede) — fresh connection, healthy heartbeats. This is the leak.
+        // New agent reconnects (supersede) -- fresh connection, healthy heartbeats. This is the leak.
         var newConn = MakeConnection("sess-new");
         var logger = new CountingLogger();
 
@@ -244,7 +244,7 @@ public class HeartbeatDegradedApplyTests
     public async Task First_healthy_beat_without_any_stale_entry_does_not_log_a_recovery_line()
     {
         // First-beat settle writes the store authoritatively (a redundant DEL when nothing is there),
-        // but it must NOT emit the recovery info log line on a non-transition — that line is reserved
+        // but it must NOT emit the recovery info log line on a non-transition -- that line is reserved
         // for a genuine degraded → healthy transition on this connection. Preserves AC #225.
         var fx = Fixture.Create();
 
@@ -283,7 +283,7 @@ public class HeartbeatDegradedApplyTests
         // AC #226 (in-memory proxy): the Redis store gives its per-host key a TTL on every SET, so a
         // live degraded host that keeps heartbeating must never expire from TTL alone. Modeled here by
         // asserting the applier calls SetDegradedAsync on EVERY degraded heartbeat, not just on the
-        // transition — the Redis store's SET semantics turn each call into an atomic TTL refresh.
+        // transition -- the Redis store's SET semantics turn each call into an atomic TTL refresh.
         var recording = new RecordingDegradedStore();
         var fx = Fixture.Create(store: recording);
 
@@ -301,7 +301,7 @@ public class HeartbeatDegradedApplyTests
     [Fact]
     public async Task First_beat_settle_failure_does_not_latch_and_retries_next_beat()
     {
-        // If the very first beat's store write throws, the connection MUST NOT be marked "settled" —
+        // If the very first beat's store write throws, the connection MUST NOT be marked "settled" --
         // otherwise the next healthy beat would fall into the fast-path and never retry, leaving any
         // stale entry uncleared forever.
         var flakyStore = new FlakyDegradedStore();
@@ -382,7 +382,7 @@ public class HeartbeatDegradedApplyTests
         }
     }
 
-    /// <summary>An <see cref="IHostDegradedStore"/> that throws on every write — for the fail-safe test.</summary>
+    /// <summary>An <see cref="IHostDegradedStore"/> that throws on every write -- for the fail-safe test.</summary>
     private sealed class ThrowingDegradedStore : IHostDegradedStore
     {
         public Task SetDegradedAsync(string hostId, CancellationToken ct = default) =>
@@ -425,7 +425,7 @@ public class HeartbeatDegradedApplyTests
     }
 
     /// <summary>An <see cref="IHostDegradedStore"/> that throws the next write when <see cref="ThrowOnce"/>
-    /// is set — used to prove the first-beat settle does not latch on failure.</summary>
+    /// is set -- used to prove the first-beat settle does not latch on failure.</summary>
     private sealed class FlakyDegradedStore : IHostDegradedStore
     {
         public bool ThrowOnce { get; set; }

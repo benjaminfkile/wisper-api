@@ -13,9 +13,9 @@ using Xunit;
 namespace Wisper.Api.Tests.Infrastructure;
 
 /// <summary>
-/// The §9–§12 repositories and helpers must be wired into DI and constructible from the real app host
-/// (WebApplicationFactory&lt;Program&gt;) — including the optional-constructor helpers that take a shared
-/// <see cref="TimeProvider"/> — so the service composes even on a DB-less boot.
+/// The §9-§12 repositories and helpers must be wired into DI and constructible from the real app host
+/// (WebApplicationFactory&lt;Program&gt;) -- including the optional-constructor helpers that take a shared
+/// <see cref="TimeProvider"/> -- so the service composes even on a DB-less boot.
 /// </summary>
 public class InfraServicesRegistrationTests : IClassFixture<WebApplicationFactory<Program>>
 {

@@ -56,19 +56,19 @@ public class LedgerMigrationsTests
     {
         var sql = ReadScript("0006_Ledger.sql");
 
-        // ledger_accounts — maintained balance + one-per-user uniqueness.
+        // ledger_accounts -- maintained balance + one-per-user uniqueness.
         Assert.Contains("CREATE TABLE ledger_accounts", sql, StringComparison.Ordinal);
         Assert.Contains("kind          ledger_account_kind NOT NULL", sql, StringComparison.Ordinal);
         Assert.Contains("owner_user_id uuid                REFERENCES users (id)", sql, StringComparison.Ordinal);
         Assert.Contains("balance_cents bigint              NOT NULL DEFAULT 0", sql, StringComparison.Ordinal);
         Assert.Contains("UNIQUE (kind, owner_user_id)", sql, StringComparison.Ordinal);
 
-        // ledger_transactions — idempotency dedupe key.
+        // ledger_transactions -- idempotency dedupe key.
         Assert.Contains("CREATE TABLE ledger_transactions", sql, StringComparison.Ordinal);
         Assert.Contains("kind            ledger_txn_kind NOT NULL", sql, StringComparison.Ordinal);
         Assert.Contains("idempotency_key text            UNIQUE", sql, StringComparison.Ordinal);
 
-        // ledger_entries — exactly-one-side + non-negative amounts + the account/txn/lease indexes.
+        // ledger_entries -- exactly-one-side + non-negative amounts + the account/txn/lease indexes.
         Assert.Contains("CREATE TABLE ledger_entries", sql, StringComparison.Ordinal);
         Assert.Contains("debit_cents    bigint      NOT NULL DEFAULT 0 CHECK (debit_cents  >= 0)", sql, StringComparison.Ordinal);
         Assert.Contains("credit_cents   bigint      NOT NULL DEFAULT 0 CHECK (credit_cents >= 0)", sql, StringComparison.Ordinal);

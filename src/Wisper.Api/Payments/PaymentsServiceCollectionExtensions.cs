@@ -11,7 +11,7 @@ namespace Wisper.Api.Payments;
 /// <c>Stripe</c> section (keys from the secrets manager, per env), registers the config-driven client
 /// wrapper and signature verifier, the webhook dispatcher + ingest service, and the handler registry.
 /// Handlers are stubs here (P6.2+ fill in the ledger effects). Everything is behind an interface so the
-/// unit suite runs against fakes — Grunt has no Stripe.
+/// unit suite runs against fakes -- Grunt has no Stripe.
 /// </summary>
 public static class PaymentsServiceCollectionExtensions
 {
@@ -25,7 +25,7 @@ public static class PaymentsServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
 
         // Config-driven SDK wrapper + signature verifier + the higher-level billing gateway (real impls;
-        // fakes back the unit suite — Grunt has no Stripe).
+        // fakes back the unit suite -- Grunt has no Stripe).
         services.AddSingleton<IStripeClient, StripeClient>();
         services.AddSingleton<IStripeSignatureVerifier, StripeSignatureVerifier>();
         services.AddSingleton<IStripeBillingGateway, StripeBillingGateway>();
@@ -44,7 +44,7 @@ public static class PaymentsServiceCollectionExtensions
 
         // Consumer billing surface (docs/API.md §5, docs/PAYMENTS.md §3): top-up create + balance/usage +
         // ledger view. Depends on the ledger, lease + user repositories, active policy, and the Stripe
-        // gateway — all registered above / by AddWisperPersistence.
+        // gateway -- all registered above / by AddWisperPersistence.
         services.AddSingleton<BillingService>();
 
         // Host Connect Express onboarding surface (docs/API.md §6, docs/PAYMENTS.md §5): create/continue the

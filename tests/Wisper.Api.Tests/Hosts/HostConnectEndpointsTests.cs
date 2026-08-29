@@ -32,7 +32,7 @@ public class HostConnectEndpointsTests
         public FakeStripeConnectGateway Gateway { get; } = new();
         public FakeJwtValidator Validator { get; } = new()
         {
-            // A host (additive: also a consumer) — the connect endpoints are host-gated (§6).
+            // A host (additive: also a consumer) -- the connect endpoints are host-gated (§6).
             Principal = WisperPrincipal.Create("host-sub", "host@example.com", new[] { "host" }),
         };
 

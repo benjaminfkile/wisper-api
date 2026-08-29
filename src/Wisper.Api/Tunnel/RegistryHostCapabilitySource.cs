@@ -59,7 +59,7 @@ public sealed class RegistryHostCapabilitySource : IHostCapabilitySource
             limits.MaxMemoryMb,
             limits.PidsLimit,
             // The host's advertised container OS ("linux"|"windows"), or null for an older agent that
-            // did not send it — surfacing only, back-compatible (docs/TUNNEL.md §5).
+            // did not send it -- surfacing only, back-compatible (docs/TUNNEL.md §5).
             capability.Os,
             MaxGpus: gpu?.MaxGpus ?? 0,
             GpuClasses: HostGpu.NormalizeClasses(gpu?.DeviceClasses),

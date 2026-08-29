@@ -10,8 +10,8 @@ namespace Wisper.Api.Tunnel;
 /// <see cref="RegistryHostCapabilitySource"/> and lease admission see fresh values within one heartbeat)
 /// and republishes the projected snapshot to the shared <see cref="IHostCapabilityStore"/> (so non-owner
 /// instances reading via <see cref="DistributedHostCapabilitySource"/> see them too), then routes
-/// isolation/GPU into the persistence side via <see cref="IHostPresence"/> — the pre-#61 mid-session
-/// refreshes for tasks #417 / #521 are preserved unchanged. An omitted capability is "no update — keep
+/// isolation/GPU into the persistence side via <see cref="IHostPresence"/> -- the pre-#61 mid-session
+/// refreshes for tasks #417 / #521 are preserved unchanged. An omitted capability is "no update -- keep
 /// last known" (the agent deliberately omits it when its local wisp is unreachable), so callers only
 /// invoke this for a non-null block. All work is best-effort: any exception is logged and swallowed so
 /// a refresh hiccup can never disturb lease reconciliation or the tunnel.
@@ -35,7 +35,7 @@ internal static class HeartbeatCapabilityRefresh
         try
         {
             // Refresh the live capability so lease admission (contract ceiling / OS / limits) sees fresh
-            // values within one heartbeat — the entire point of #61. Same source of truth
+            // values within one heartbeat -- the entire point of #61. Same source of truth
             // RegistryHostCapabilitySource reads, so the fast path picks it up with no extra plumbing.
             connection.Capability = capability;
 

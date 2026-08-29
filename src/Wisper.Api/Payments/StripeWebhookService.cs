@@ -4,7 +4,7 @@ using Wisper.Api.Persistence.Stripe;
 namespace Wisper.Api.Payments;
 
 /// <summary>
-/// The webhook ingest pipeline (docs/PAYMENTS.md §8) — signature-verify, persist-then-process, dedupe, and
+/// The webhook ingest pipeline (docs/PAYMENTS.md §8) -- signature-verify, persist-then-process, dedupe, and
 /// dispatch to idempotent handlers with retry-safe failure recording. Kept HTTP-free so it is unit-testable
 /// with a fake verifier + in-memory event store (Grunt has no Stripe/Postgres); the endpoint is a thin
 /// shell that reads the raw body and header and calls <see cref="IngestAsync"/>.
@@ -47,7 +47,7 @@ public sealed class StripeWebhookService
     public async Task<StripeWebhookResult> IngestAsync(
         string payload, string? signatureHeader, CancellationToken ct = default)
     {
-        // 1. Signature is the trust boundary — verify before we touch the store or a handler (§8.1).
+        // 1. Signature is the trust boundary -- verify before we touch the store or a handler (§8.1).
         var evt = _verifier.Verify(payload, signatureHeader);
 
         // 2. Persist-then-process: first sight inserts `received`; a conflict is a re-delivery (§8.2).
@@ -67,19 +67,19 @@ public sealed class StripeWebhookService
             if (existing is null)
             {
                 // Vanishingly rare: another delivery deleted it between insert and read. Treat as fresh.
-                _logger.LogWarning("stripe event {Id} missing right after an insert conflict — re-dispatching", evt.Id);
+                _logger.LogWarning("stripe event {Id} missing right after an insert conflict -- re-dispatching", evt.Id);
             }
             else if (existing.Status is StripeEventStatus.Processed or StripeEventStatus.Ignored)
             {
                 // True duplicate of an already-settled event → ack, no-op (§8.2, edge matrix).
-                _logger.LogInformation("stripe event {Id} ({Type}) is a duplicate ({Status}) — dedupe no-op",
+                _logger.LogInformation("stripe event {Id} ({Type}) is a duplicate ({Status}) -- dedupe no-op",
                     evt.Id, evt.Type, existing.Status);
                 return new StripeWebhookResult(evt.Id, evt.Type, StripeWebhookOutcome.Deduplicated, existing.Status);
             }
             else
             {
                 // `failed` / stuck `received` → this delivery is a retry; re-dispatch the idempotent handler (§8.4).
-                _logger.LogInformation("stripe event {Id} ({Type}) re-delivered in state {Status} — retrying",
+                _logger.LogInformation("stripe event {Id} ({Type}) re-delivered in state {Status} -- retrying",
                     evt.Id, evt.Type, existing.Status);
             }
         }
@@ -102,7 +102,7 @@ public sealed class StripeWebhookService
         }
         catch (Exception ex)
         {
-            // Retry-safe failure: durably record the error and let Stripe re-deliver (§8.4). Never rethrow —
+            // Retry-safe failure: durably record the error and let Stripe re-deliver (§8.4). Never rethrow --
             // the endpoint decides the HTTP status from the result, and the row is the dead-letter record.
             _logger.LogError(ex, "stripe webhook handler failed for {Id} ({Type})", evt.Id, evt.Type);
             await _events.SetStatusAsync(

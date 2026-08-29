@@ -11,14 +11,14 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// Wiring for the multi-instance backplane (docs/DESIGN.md §7, docs/TUNNEL.md §11). Registers the live
 /// tunnel registry + relay in one of two shapes, chosen by <see cref="BackplaneOptions.Enabled"/>:
 /// <list type="bullet">
-/// <item><b>disabled (default)</b> — the single-instance <see cref="InMemoryHostRegistry"/> +
+/// <item><b>disabled (default)</b> -- the single-instance <see cref="InMemoryHostRegistry"/> +
 /// <see cref="TunnelRelay"/> back the <see cref="IHostRegistry"/>/<see cref="ITunnelRelay"/> interfaces
 /// directly, and nothing touches Redis. This is what Grunt builds and every existing unit test uses.</item>
-/// <item><b>enabled</b> — the local registry/relay still own the physical sockets, but the interfaces are
+/// <item><b>enabled</b> -- the local registry/relay still own the physical sockets, but the interfaces are
 /// fronted by <see cref="DistributedHostRegistry"/> (writes host→instance presence) and
 /// <see cref="DistributedTunnelRelay"/> (routes a consumer call to whichever instance owns the host's
 /// tunnel). The pub/sub fabric + presence store are Redis-backed when a connection string is configured,
-/// or the in-process loopback otherwise (single-process dev — no Redis required).</item>
+/// or the in-process loopback otherwise (single-process dev -- no Redis required).</item>
 /// </list>
 /// Consumers of <see cref="IHostRegistry"/>/<see cref="ITunnelRelay"/> are oblivious to which shape is
 /// active; the interfaces are identical.
@@ -47,16 +47,16 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IShellTicketStore, InMemoryShellTicketStore>();
             // Presence store is always needed (CatalogService/HostService consult it for distributed liveness).
             // In single-instance mode the local registry is authoritative, so this store stays empty and the
-            // fast-path (local registry) always wins — no Redis I/O.
+            // fast-path (local registry) always wins -- no Redis I/O.
             services.AddSingleton<IHostPresenceStore, InMemoryHostPresenceStore>();
             // Capability store: unused in single-instance mode (registry-backed source is authoritative),
             // but registered so the concrete type is available if needed by tests.
             services.AddSingleton<IHostCapabilityStore, InMemoryHostCapabilityStore>();
             // Degraded set is always registered (task #62): the heartbeat handler writes into it and the
             // catalog / lease admission read a snapshot to exclude degraded hosts. Stays empty (and cheap)
-            // in single-instance mode until an agent reports "degraded" — no Redis I/O in the healthy path.
+            // in single-instance mode until an agent reports "degraded" -- no Redis I/O in the healthy path.
             services.AddSingleton<IHostDegradedStore, InMemoryHostDegradedStore>();
-            // IHostCapabilitySource: local registry only — single-instance, no backplane I/O.
+            // IHostCapabilitySource: local registry only -- single-instance, no backplane I/O.
             services.AddSingleton<RegistryHostCapabilitySource>();
             services.AddSingleton<IHostCapabilitySource>(sp =>
                 sp.GetRequiredService<RegistryHostCapabilitySource>());
@@ -78,7 +78,7 @@ public static class BackplaneServiceCollectionExtensions
 
         if (!string.IsNullOrWhiteSpace(options.RedisConfiguration))
         {
-            // Real Redis fabric + presence (verified against a live Redis separately — Grunt never sets a
+            // Real Redis fabric + presence (verified against a live Redis separately -- Grunt never sets a
             // connection string, so this path is not exercised by the build/test).
             services.TryAddSingleton<IConnectionMultiplexer>(_ =>
                 ConnectionMultiplexer.Connect(options.RedisConfiguration!));
@@ -86,12 +86,12 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IHostPresenceStore>(sp => new RedisHostPresenceStore(
                 sp.GetRequiredService<IConnectionMultiplexer>(),
                 sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
-            // Capability snapshots stored in Redis alongside presence — same lifecycle, different hash key.
+            // Capability snapshots stored in Redis alongside presence -- same lifecycle, different hash key.
             services.AddSingleton<IHostCapabilityStore>(sp => new RedisHostCapabilityStore(
                 sp.GetRequiredService<IConnectionMultiplexer>(),
                 sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
             // Shell tickets stored in Redis so any instance can redeem a ticket minted by another instance.
-            // Reuses the backplane's existing IConnectionMultiplexer — no second Redis connection.
+            // Reuses the backplane's existing IConnectionMultiplexer -- no second Redis connection.
             services.AddSingleton<IShellTicketStore>(sp => new RedisShellTicketStore(
                 sp.GetRequiredService<IConnectionMultiplexer>(),
                 sp.GetRequiredService<IOptions<BackplaneOptions>>().Value));
@@ -112,7 +112,7 @@ public static class BackplaneServiceCollectionExtensions
             services.AddSingleton<IHostDegradedStore, InMemoryHostDegradedStore>();
         }
 
-        // Local capability source backed by the physical (local) registry — used both as the fast path
+        // Local capability source backed by the physical (local) registry -- used both as the fast path
         // inside DistributedHostCapabilitySource and to build the snapshot published on registration.
         // Resolves InMemoryHostRegistry directly so it is not affected by the DistributedHostRegistry wrapper.
         services.AddSingleton(sp => new RegistryHostCapabilitySource(
@@ -131,7 +131,7 @@ public static class BackplaneServiceCollectionExtensions
             sp.GetRequiredService<WisperInstanceIdentity>(),
             sp.GetRequiredService<ILogger<DistributedHostRegistry>>()));
 
-        // Passed the concrete local relay explicitly — resolving ITunnelRelay here would loop back to this
+        // Passed the concrete local relay explicitly -- resolving ITunnelRelay here would loop back to this
         // wrapper. The local relay in turn resolves IHostRegistry (the distributed wrapper) whose lookups
         // all delegate to the same InMemoryHostRegistry, so the socket authority stays consistent.
         services.AddSingleton(sp => new DistributedTunnelRelay(

@@ -67,7 +67,7 @@ public class RedisShellTicketStoreTests
 
         // First redemption wins.
         Assert.NotNull(storeA.Redeem(ticket.Value, leaseId));
-        // Second redemption (even from a different "instance") gets nothing — key already deleted.
+        // Second redemption (even from a different "instance") gets nothing -- key already deleted.
         Assert.Null(storeB.Redeem(ticket.Value, leaseId));
     }
 

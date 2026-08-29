@@ -15,12 +15,12 @@ namespace Wisper.Api.Tests.Persistence;
 /// <summary>
 /// Migration <c>0014_ImageResourceProfile</c> (task #569) applied end to end against a <b>real</b>
 /// Postgres-backed <see cref="HostImageRepository"/> on a throwaway server (<see cref="EphemeralPostgres"/>).
-/// The in-memory double can never prove the DDL is right — that the nullable <c>cpus</c>/<c>memory_mb</c>
-/// columns exist and that <c>max_gpus</c> was renamed to <c>gpus</c> — so this drives a sized offer through the
+/// The in-memory double can never prove the DDL is right -- that the nullable <c>cpus</c>/<c>memory_mb</c>
+/// columns exist and that <c>max_gpus</c> was renamed to <c>gpus</c> -- so this drives a sized offer through the
 /// SQL store and asserts the profile round-trips (both a fully-sized offer and a NULL cpu/memory profile).
 /// <para>
 /// This stands up a real server, so it is gated behind the explicit <c>WISPER_RUN_PG_TESTS</c> opt-in
-/// (task #558). When it is unset — the default, including normal CI — the fixture reports unavailable and each
+/// (task #558). When it is unset -- the default, including normal CI -- the fixture reports unavailable and each
 /// test is reported <b>skipped</b> (a visible <c>[SkippableFact]</c> skip), so the suite stays deterministically
 /// green. Set <c>WISPER_RUN_PG_TESTS=1</c> to run it for real (this repo ships PostgreSQL 15).
 /// </para>
@@ -65,7 +65,7 @@ public sealed class PostgresImageResourceProfileTests
         Assert.Equal(4096, stored.MemoryMb);
         Assert.Equal(3, stored.Gpus);
 
-        // NULL cpus/memory_mb means "the host's own per-lease policy default applies downstream" (§4) — the
+        // NULL cpus/memory_mb means "the host's own per-lease policy default applies downstream" (§4) -- the
         // nullable columns really are nullable in the applied schema.
         var unsized = await images.CreateAsync(new HostImage
         {

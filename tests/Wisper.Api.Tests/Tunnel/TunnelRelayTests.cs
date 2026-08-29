@@ -349,7 +349,7 @@ public class TunnelRelayTests
     [Fact]
     public async Task Lease_ended_before_ready_fails_the_pending_create()
     {
-        // AC188: the existing create-waiter completion behavior must survive the task #56 rewiring — a
+        // AC188: the existing create-waiter completion behavior must survive the task #56 rewiring -- a
         // host that reaps the container before sending lease.ready, and reports lease.ended instead, must
         // fail the create call fast (with the reason surfaced in the message) rather than let it hang until
         // the relay deadline. Same behavior as before, just routed through the async lease-ended path.
@@ -389,7 +389,7 @@ public class TunnelRelayTests
         var ct = Token();
         var socket = await ConnectAndHandshakeAsync(factory, ct);
 
-        // Fake agent reads the request but never replies — the relay must time out.
+        // Fake agent reads the request but never replies -- the relay must time out.
         var responder = Task.Run(async () =>
         {
             var req = await ReadControlAsync(socket, ct);

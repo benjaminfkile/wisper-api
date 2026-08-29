@@ -393,7 +393,7 @@ public class AdminEndpointsTests
         // A second POST is a no-op success (idempotent) and does not relay again.
         var replay = await client.PostAsync($"/v1/admin/leases/{lease.Id}/end", null);
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
-        Assert.Single(fx.Relay.ReleaseCalls); // still one — no double notify
+        Assert.Single(fx.Relay.ReleaseCalls); // still one -- no double notify
     }
 
     [Fact]

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>exec.open</c> (W→A) — Wisper asks the agent to run a command with its output <b>streamed</b>
+/// <c>exec.open</c> (W→A) -- Wisper asks the agent to run a command with its output <b>streamed</b>
 /// live; the agent calls wisp <c>POST /contracts/:id/exec?stream=1</c> and pipes the parsed SSE
 /// onto the stream as binary frames (docs/TUNNEL.md §5, §6, §10). Wisper owns the id space, so it
 /// carries the server-assigned <c>rid</c> and <c>sid</c> (both inherited). The agent replies

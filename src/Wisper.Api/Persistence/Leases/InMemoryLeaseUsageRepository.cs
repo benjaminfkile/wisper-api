@@ -5,7 +5,7 @@ namespace Wisper.Api.Persistence.Leases;
 /// <summary>
 /// In-memory <see cref="ILeaseUsageRepository"/> double for unit tests (Grunt has no Postgres).
 /// Semantics mirror the SQL side: <see cref="AppendAsync"/> is idempotent on
-/// <c>(lease_id, period_start)</c> — a second append for the same key returns the first-written row
+/// <c>(lease_id, period_start)</c> -- a second append for the same key returns the first-written row
 /// unchanged instead of inserting a duplicate (mirroring <c>ON CONFLICT DO NOTHING</c>).
 /// </summary>
 public sealed class InMemoryLeaseUsageRepository : InMemoryRepositoryBase<Guid, LeaseUsage>, ILeaseUsageRepository

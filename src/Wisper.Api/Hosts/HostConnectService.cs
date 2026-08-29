@@ -11,7 +11,7 @@ namespace Wisper.Api.Hosts;
 /// <c>POST /v1/hosts/connect</c> (ensure an Express account on the caller's <c>users</c> row → mint a hosted
 /// Account Link → return the onboarding URL) and <c>GET /v1/hosts/connect/status</c> (read the account's
 /// capability snapshot → derive <c>connect_status</c> + surface outstanding requirements). Onboarding
-/// completion is never inferred from an HTTP response — it is confirmed only by the <c>account.updated</c>
+/// completion is never inferred from an HTTP response -- it is confirmed only by the <c>account.updated</c>
 /// webhook (docs/PAYMENTS.md §5, §8), which is authoritative; the status read here reconciles opportunistically.
 /// Everything depends on interfaces so the unit suite runs without Stripe/Postgres.
 /// </summary>
@@ -74,7 +74,7 @@ public sealed class HostConnectService
 
         if (string.IsNullOrWhiteSpace(user.ConnectAccountId))
         {
-            // No Connect account has been created — there is nothing to query Stripe for yet.
+            // No Connect account has been created -- there is nothing to query Stripe for yet.
             return new HostConnectStatusResponse(
                 ConnectStatus: PgEnum.ToLabel(user.ConnectStatus),
                 ChargesEnabled: false,

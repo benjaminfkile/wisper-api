@@ -15,8 +15,8 @@ public interface IPlatformPolicyRepository : IRepository
     Task<PlatformPolicy> AppendAsync(PlatformPolicy policy, CancellationToken ct = default);
 
     /// <summary>
-    /// The active policy as of <paramref name="asOf"/> — the row with the greatest
-    /// <see cref="PlatformPolicy.EffectiveFrom"/> that is at or before it — or <c>null</c> when no version
+    /// The active policy as of <paramref name="asOf"/> -- the row with the greatest
+    /// <see cref="PlatformPolicy.EffectiveFrom"/> that is at or before it -- or <c>null</c> when no version
     /// has taken effect yet.
     /// </summary>
     Task<PlatformPolicy?> GetActiveAsync(DateTimeOffset asOf, CancellationToken ct = default);

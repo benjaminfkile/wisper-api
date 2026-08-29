@@ -5,9 +5,9 @@ namespace Wisper.Api.Payments;
 /// <summary>
 /// Real <see cref="IStripeConnectGateway"/> over the Stripe SDK (docs/PAYMENTS.md §5, §6). Each call constructs
 /// the relevant Stripe service from the shared <see cref="IStripeClient.Sdk"/>. The connected account is created
-/// <b>Express</b> with the <c>transfers</c> capability requested — Wisper uses separate charges &amp; transfers,
+/// <b>Express</b> with the <c>transfers</c> capability requested -- Wisper uses separate charges &amp; transfers,
 /// so the platform holds funds and pays hosts by Transfer to their connected balance (docs/PAYMENTS.md §1, §6).
-/// Not exercised by the unit suite (Grunt has no Stripe) — the fake double backs the tests; this type is
+/// Not exercised by the unit suite (Grunt has no Stripe) -- the fake double backs the tests; this type is
 /// covered by the separate live-integration verification.
 /// </summary>
 public sealed class StripeConnectGateway : IStripeConnectGateway

@@ -21,7 +21,7 @@ public class RedisHostDegradedStoreTests
 
     /// <summary>
     /// Returns two <see cref="RedisHostDegradedStore"/> instances backed by the same in-memory store so
-    /// "instance A marks degraded, instance B sees it" can be verified — mirroring the
+    /// "instance A marks degraded, instance B sees it" can be verified -- mirroring the
     /// <c>RedisShellTicketStoreTests</c> shared-pair pattern.
     /// </summary>
     private static (RedisHostDegradedStore A, RedisHostDegradedStore B) MakeSharedPair(FakeTimeProvider time)
@@ -47,7 +47,7 @@ public class RedisHostDegradedStoreTests
                 }
                 if (time.GetUtcNow() >= expiresAt)
                 {
-                    shared.TryRemove(key, out _); // lazy expiry — mirrors Redis's own behavior
+                    shared.TryRemove(key, out _); // lazy expiry -- mirrors Redis's own behavior
                     return Task.FromResult(false);
                 }
                 return Task.FromResult(true);
@@ -123,7 +123,7 @@ public class RedisHostDegradedStoreTests
         for (var i = 0; i < 5; i++)
         {
             await a.SetDegradedAsync("host-1");
-            // Advance halfway through the TTL between refreshes — the entry should never expire.
+            // Advance halfway through the TTL between refreshes -- the entry should never expire.
             time.Advance(Ttl / 2);
             Assert.True(await b.IsDegradedAsync("host-1"),
                 $"host must remain degraded across TTL refresh #{i}");

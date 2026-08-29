@@ -11,8 +11,8 @@ public sealed record RegisterHostRequest(
     [property: JsonPropertyName("label")] string? Label);
 
 /// <summary>
-/// Response of <c>POST /v1/hosts</c> (docs/API.md §6): the freshly issued <c>agent_token</c> — shown
-/// <b>once</b>, never retrievable again — plus its non-secret prefix, the <c>manager_ws</c> the agent dials,
+/// Response of <c>POST /v1/hosts</c> (docs/API.md §6): the freshly issued <c>agent_token</c> -- shown
+/// <b>once</b>, never retrievable again -- plus its non-secret prefix, the <c>manager_ws</c> the agent dials,
 /// and the host's initial (offline) status.
 /// </summary>
 public sealed record HostRegisteredResponse(
@@ -36,7 +36,7 @@ public sealed record AgentTokenRotatedResponse(
     [property: JsonPropertyName("tunnel_closed")] bool TunnelClosed);
 
 /// <summary>
-/// One row of <c>GET /v1/hosts/mine</c> (docs/API.md §6): the owner's view of a host — identity, presence
+/// One row of <c>GET /v1/hosts/mine</c> (docs/API.md §6): the owner's view of a host -- identity, presence
 /// (<c>online</c> from the live tunnel registry, authoritative over the stored status), advertised capacity,
 /// versions, and the non-secret token prefix. The clear token is never included (it exists only at issuance).
 /// </summary>
@@ -61,8 +61,8 @@ public sealed record HostSummary(
     /// <summary>
     /// Projects a stored host into the owner's summary. <paramref name="hostMaxCpus"/>/
     /// <paramref name="hostMaxMemoryMb"/> are the host's advertised per-lease caps (wisp
-    /// <c>limits.max_cpus</c>/<c>max_memory_mb</c>) from its live tunnel — the real numbers the offer editor
-    /// prefills against (task #583) — or <c>null</c> when the host is offline or advertises no cap for that
+    /// <c>limits.max_cpus</c>/<c>max_memory_mb</c>) from its live tunnel -- the real numbers the offer editor
+    /// prefills against (task #583) -- or <c>null</c> when the host is offline or advertises no cap for that
     /// dimension.
     /// </summary>
     public static HostSummary From(
@@ -76,7 +76,7 @@ public sealed record HostSummary(
         AgentVersion: host.AgentVersion,
         MaxLeases: host.MaxLeases,
         MaxStreams: host.MaxStreams,
-        // The advertised GPU, surfaced read-only (task #521) — opaque classes + total device count.
+        // The advertised GPU, surfaced read-only (task #521) -- opaque classes + total device count.
         GpuClasses: host.GpuClasses,
         GpuCount: host.GpuCount,
         HostMaxCpus: hostMaxCpus,
@@ -152,7 +152,7 @@ public sealed record ReplaceImagesRequest(
     [property: JsonPropertyName("images")] IReadOnlyList<ImageUpsert>? Images);
 
 /// <summary>
-/// One entry in a <see cref="ReplaceImagesRequest"/> — a priced image and the FIXED resource profile it sells
+/// One entry in a <see cref="ReplaceImagesRequest"/> -- a priced image and the FIXED resource profile it sells
 /// (task #569). <see cref="Cpus"/>/<see cref="MemoryMb"/> are the exact per-lease provisioning (omitted/null =
 /// the host's own per-lease policy default applies downstream); each must be positive when present.
 /// <see cref="Gpus"/> is the exact whole-device GPU count this offer provisions (0 = no GPU access, the

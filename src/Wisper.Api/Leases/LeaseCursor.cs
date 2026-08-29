@@ -4,8 +4,8 @@ namespace Wisper.Api.Leases;
 
 /// <summary>
 /// The opaque cursor that paginates a consumer's leases (docs/API.md §10). It encodes the stable sort
-/// key of the last lease on the page — <c>(created_at, id)</c>, descending, matching the
-/// <c>leases_consumer_idx</c> order (docs/DATA_MODEL.md §5) — so inserts during paging can neither
+/// key of the last lease on the page -- <c>(created_at, id)</c>, descending, matching the
+/// <c>leases_consumer_idx</c> order (docs/DATA_MODEL.md §5) -- so inserts during paging can neither
 /// duplicate nor skip a lease. The wire form is URL-safe Base64 of <c>"{utcTicks}:{guid}"</c>; clients
 /// treat it as an opaque token. Mirrors <see cref="Wisper.Api.Catalog.CatalogCursor"/>.
 /// </summary>
@@ -58,7 +58,7 @@ public sealed record LeaseCursor(DateTimeOffset CreatedAt, Guid Id)
     }
 
     /// <summary>
-    /// Orders <c>(aCreatedAt, aId)</c> against <c>(bCreatedAt, bId)</c> by the stable descending key —
+    /// Orders <c>(aCreatedAt, aId)</c> against <c>(bCreatedAt, bId)</c> by the stable descending key --
     /// newer <c>created_at</c> first, ties broken by the larger id. Negative when the first sorts before
     /// the second.
     /// </summary>

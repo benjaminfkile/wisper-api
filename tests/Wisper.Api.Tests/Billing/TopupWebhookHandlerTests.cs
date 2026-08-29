@@ -120,7 +120,7 @@ public class TopupWebhookHandlerTests
             Data = new Stripe.EventData { Object = intent },
         };
 
-        await handler.HandleAsync(evt); // must not throw — a benign no-op
+        await handler.HandleAsync(evt); // must not throw -- a benign no-op
 
         // No wallet account created for anyone; the ledger holds no topup.
         var accounts = await ledger.ReconcileAsync();

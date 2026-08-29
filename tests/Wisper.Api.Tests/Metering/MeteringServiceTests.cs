@@ -24,7 +24,7 @@ public class MeteringServiceTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
 
-    // A price of 60¢/min is exactly 1¢/second, so a healthy interval's charge equals its seconds — the
+    // A price of 60¢/min is exactly 1¢/second, so a healthy interval's charge equals its seconds -- the
     // arithmetic stays readable while still exercising the ⌊seconds·price/60⌋ cumulative rule.
     private const long PricePerMin = 60;
     private const int FeeBps = 1500; // 15%
@@ -174,7 +174,7 @@ public class MeteringServiceTests
         var usage = Assert.Single(await fx.Usage.ListByLeaseAsync(lease.Id));
         Assert.Equal(usage.ChargeTxnId, result.ChargeTxnId);
 
-        // The charge is a lease_charge — no Stripe/topup/payout involvement (docs/PAYMENTS.md §2).
+        // The charge is a lease_charge -- no Stripe/topup/payout involvement (docs/PAYMENTS.md §2).
         var txn = await fx.LedgerStore.FindTransactionByIdempotencyKeyAsync(
             MeteringService.ChargeIdempotencyKey(lease.Id, T0));
         Assert.NotNull(txn);
@@ -200,7 +200,7 @@ public class MeteringServiceTests
         Assert.Equal(180, afterTicks!.BillableSeconds);
         Assert.Equal(3, (await fx.Usage.ListByLeaseAsync(lease.Id)).Count);
 
-        // On end, flush the remaining sub-tick interval (30s) — the on-end flush of the final partial minute.
+        // On end, flush the remaining sub-tick interval (30s) -- the on-end flush of the final partial minute.
         fx.Clock.Advance(TimeSpan.FromSeconds(30));
         var end = await meter.FlushLeaseByIdAsync(lease.Id, fx.Clock.GetUtcNow());
 
@@ -262,7 +262,7 @@ public class MeteringServiceTests
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await afterRestart.RunTickAsync();
 
-        // Two minutes total — the first minute was not re-billed (resume from last_metered_at, §14).
+        // Two minutes total -- the first minute was not re-billed (resume from last_metered_at, §14).
         var stored = await fx.Leases.GetByIdAsync(lease.Id);
         Assert.Equal(120, stored!.BillableSeconds);
         Assert.Equal(T0.AddSeconds(120), stored.LastMeteredAt);
@@ -320,7 +320,7 @@ public class MeteringServiceTests
     public async Task Zero_price_lease_meters_ledger_safely_writing_no_charge_or_usage_row()
     {
         // A free image (price 0): the meter still accrues healthy seconds so the timeline is correct, but the
-        // charge is 0¢, so no lease_charge txn and no lease_usage row are written — a 0=0 ledger txn would be
+        // charge is 0¢, so no lease_charge txn and no lease_usage row are written -- a 0=0 ledger txn would be
         // vacuous and is skipped (docs/PAYMENTS.md §4, docs/DATA_MODEL.md §8). No hold was ever placed.
         var fx = await ReadyFixtureAsync();
         var lease = await fx.SeedActiveLeaseAsync(price: 0);
@@ -329,7 +329,7 @@ public class MeteringServiceTests
         fx.Clock.Advance(TimeSpan.FromSeconds(90));
         var flushed = await fx.NewService().RunTickAsync();
 
-        Assert.Equal(0, flushed); // no billable flush — nothing to charge
+        Assert.Equal(0, flushed); // no billable flush -- nothing to charge
 
         // The watermark still advances (billable_seconds accrue) so a later paid image can't rely on drift.
         var stored = await fx.Leases.GetByIdAsync(lease.Id);
@@ -370,7 +370,7 @@ public class MeteringServiceTests
     [Fact]
     public async Task FinalizeLease_caps_the_flush_watermark_at_started_at_plus_ttl()
     {
-        // Task #34: the on-end finalization must cap at ttl even when `now` is past it — the lease was
+        // Task #34: the on-end finalization must cap at ttl even when `now` is past it -- the lease was
         // not entitled to run past its TTL, so a release / TTL-expiry / container-lost finalize called
         // some seconds after TTL must still only bill up to started_at + ttl_seconds.
         var fx = await ReadyFixtureAsync();
@@ -390,9 +390,9 @@ public class MeteringServiceTests
     [Fact]
     public async Task Ticks_never_advance_billable_time_or_charge_past_started_at_plus_ttl()
     {
-        // Task #54 (billing integrity): if a host keeps reporting a lease past its TTL — wisp's reaper
+        // Task #54 (billing integrity): if a host keeps reporting a lease past its TTL -- wisp's reaper
         // kills at TTL but the agent only notices on a 30s poll, and today's agent can report stale lease
-        // lists — the tick MUST apply the same TTL cap the finalize path applies (started_at + ttl_seconds).
+        // lists -- the tick MUST apply the same TTL cap the finalize path applies (started_at + ttl_seconds).
         // Without that cap the tick would keep charging every 60s past TTL, burn the entire hold, then
         // throw InsufficientFunds on lease_holds and the tick would error forever while the lease stayed
         // active; the later TTL-capped finalize would land behind the runaway watermark and short-circuit
@@ -422,7 +422,7 @@ public class MeteringServiceTests
         Assert.True(totalCharged <= 120, $"total charged {totalCharged}¢ must not exceed the 120¢ hold");
         Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds)); // hold fully but exactly drawn
 
-        // A subsequent finalize past TTL must be a no-op — the tick already billed up to TTL, so
+        // A subsequent finalize past TTL must be a no-op -- the tick already billed up to TTL, so
         // elapsedSeconds is 0 and no double-charge lands.
         var end = await meter.FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
         Assert.Null(end);
@@ -449,17 +449,17 @@ public class MeteringServiceTests
         await fx.FundHoldAsync(lease.Id, holdCents: 3600);
         var meter = fx.NewService();
 
-        // Tick 1 — 60s billed, 60¢ posted; display and ledger agree at whole-minute boundary.
+        // Tick 1 -- 60s billed, 60¢ posted; display and ledger agree at whole-minute boundary.
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await meter.RunTickAsync();
         await AssertViewMatchesLedgerAsync(fx, lease.Id, expectedSeconds: 60, expectedCharge: 60);
 
-        // Tick 2 — another 60s billed; whole-minute rounding still happens to agree at 120s.
+        // Tick 2 -- another 60s billed; whole-minute rounding still happens to agree at 120s.
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await meter.RunTickAsync();
         await AssertViewMatchesLedgerAsync(fx, lease.Id, expectedSeconds: 120, expectedCharge: 120);
 
-        // Final flush of the partial 17s — this is where whole-minute display used to lie:
+        // Final flush of the partial 17s -- this is where whole-minute display used to lie:
         // ⌊137/60⌋·60 = 120¢ shown, but the ledger has actually charged 137¢.
         fx.Clock.Advance(TimeSpan.FromSeconds(17));
         await meter.FlushLeaseByIdAsync(lease.Id, fx.Clock.GetUtcNow());

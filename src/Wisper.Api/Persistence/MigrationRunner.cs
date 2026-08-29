@@ -9,7 +9,7 @@ namespace Wisper.Api.Persistence;
 /// Applies the ordered, embedded SQL migrations (docs/DATA_MODEL.md §1, §15) with DbUp.
 /// Scripts live in <c>Migrations/</c> as <c>EmbeddedResource</c>s and run in ascending
 /// resource-name order (name them <c>NNNN_description.sql</c>). DbUp journals applied scripts
-/// in a <c>schemaversions</c> table, so a rerun only applies what is new — the operation is
+/// in a <c>schemaversions</c> table, so a rerun only applies what is new -- the operation is
 /// idempotent and safe to run on every startup and against each per-env logical DB.
 /// </summary>
 public static class MigrationRunner
@@ -24,7 +24,7 @@ public static class MigrationRunner
     /// default <c>ConsoleUpgradeLog</c> prints "Master ConnectionString =&gt; ..." to stdout at
     /// that step, leaking host/username/database to CloudWatch even with the password masked. The
     /// ensure step throws on failure, so nothing important is lost by dropping its informational
-    /// output — errors still surface as exceptions and abort startup.
+    /// output -- errors still surface as exceptions and abort startup.
     /// </summary>
     public static readonly IUpgradeLog SilentEnsureLog = new NullUpgradeLog();
 

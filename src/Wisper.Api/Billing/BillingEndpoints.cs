@@ -13,7 +13,7 @@ namespace Wisper.Api.Billing;
 /// usage summary), <c>GET /v1/billing/transactions</c> (the caller's ledger view, cursor-paginated, §10),
 /// and <c>POST /v1/billing/payment-methods</c> (a SetupIntent to save a method). All are consumer-gated
 /// (every authenticated user is implicitly a consumer, §2) and bootstrap the caller's <c>users</c> row so
-/// billing is scoped to a persisted account. The wallet is <b>never</b> credited here — that happens only on
+/// billing is scoped to a persisted account. The wallet is <b>never</b> credited here -- that happens only on
 /// the <c>payment_intent.succeeded</c> webhook (docs/PAYMENTS.md §3, §8).
 /// </summary>
 public static class BillingEndpoints
@@ -41,7 +41,7 @@ public static class BillingEndpoints
         IdempotencyService idempotency,
         CancellationToken ct)
     {
-        // The Idempotency-Key is REQUIRED — a top-up moves money, so a retry must never create a second
+        // The Idempotency-Key is REQUIRED -- a top-up moves money, so a retry must never create a second
         // PaymentIntent/charge (docs/API.md §9, docs/PAYMENTS.md §3).
         var key = http.Request.Headers[IdempotencyKeyHeader].ToString();
         if (string.IsNullOrWhiteSpace(key))
@@ -93,7 +93,7 @@ public static class BillingEndpoints
         IdempotencyService idempotency,
         CancellationToken ct)
     {
-        // A refund moves money, so the Idempotency-Key is REQUIRED — a retry must never refund twice
+        // A refund moves money, so the Idempotency-Key is REQUIRED -- a retry must never refund twice
         // (docs/API.md §9, docs/PAYMENTS.md §7).
         var key = http.Request.Headers[IdempotencyKeyHeader].ToString();
         if (string.IsNullOrWhiteSpace(key))

@@ -1,7 +1,7 @@
 namespace Wisper.Api.Ledger;
 
 /// <summary>
-/// A single unposted leg of a transaction — one account and a debit <b>or</b> a credit (docs/DATA_MODEL.md
+/// A single unposted leg of a transaction -- one account and a debit <b>or</b> a credit (docs/DATA_MODEL.md
 /// §7). It becomes a <see cref="Wisper.Api.Domain.LedgerEntry"/> once the transaction is posted. Build one
 /// with <see cref="Debit"/> or <see cref="Credit"/> so the "exactly one side" invariant holds by
 /// construction.

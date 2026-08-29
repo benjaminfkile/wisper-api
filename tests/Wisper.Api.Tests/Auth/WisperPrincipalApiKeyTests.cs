@@ -5,7 +5,7 @@ namespace Wisper.Api.Tests.Auth;
 
 /// <summary>
 /// Unit tests for <see cref="WisperPrincipal.CreateForApiKey"/> (docs/API.md §2): an API-key principal's
-/// roles are <b>exactly</b> its scopes — no implicit consumer, no Cognito groups — while it is otherwise
+/// roles are <b>exactly</b> its scopes -- no implicit consumer, no Cognito groups -- while it is otherwise
 /// shaped like a JWT principal so the same role gates apply unchanged.
 /// </summary>
 public class WisperPrincipalApiKeyTests

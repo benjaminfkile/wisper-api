@@ -7,8 +7,8 @@ namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
 /// The DB probe must report healthy and name the <c>in-memory</c> dev mode when no database is configured
-/// (rather than pretending a database is healthy), and must actually round-trip a query — surfacing an
-/// <b>unhealthy</b> result — when a database is configured but unreachable.
+/// (rather than pretending a database is healthy), and must actually round-trip a query -- surfacing an
+/// <b>unhealthy</b> result -- when a database is configured but unreachable.
 /// </summary>
 public class DbHealthCheckTests
 {

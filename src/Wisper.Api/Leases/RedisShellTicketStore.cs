@@ -10,7 +10,7 @@ namespace Wisper.Api.Leases;
 /// Redis-backed <see cref="IShellTicketStore"/> for multi-instance deployments (docs/API.md §7, P8.1).
 /// Each ticket is a Redis string key <c>{prefix}:ticket:{tkt_…}</c> whose value is a compact JSON
 /// payload binding the ticket to <c>(user, lease)</c>. Redis TTL enforces the ~30 s lifetime.
-/// Redemption calls <c>GETDEL</c> — atomic across all instances sharing the same Redis: exactly one
+/// Redemption calls <c>GETDEL</c> -- atomic across all instances sharing the same Redis: exactly one
 /// concurrent presenter wins the key; all others get nil.
 /// </summary>
 /// <remarks>
@@ -39,7 +39,7 @@ public sealed class RedisShellTicketStore : IShellTicketStore
     private readonly string _keyPrefix;
 
     /// <summary>
-    /// Production constructor — reuses the backplane's <paramref name="multiplexer"/> to write and
+    /// Production constructor -- reuses the backplane's <paramref name="multiplexer"/> to write and
     /// atomically read-delete ticket keys, using Redis TTL for expiry.
     /// </summary>
     public RedisShellTicketStore(IConnectionMultiplexer multiplexer, BackplaneOptions options)
@@ -56,7 +56,7 @@ public sealed class RedisShellTicketStore : IShellTicketStore
     }
 
     /// <summary>
-    /// Test constructor — both delegates should close over the same shared in-memory structure so two
+    /// Test constructor -- both delegates should close over the same shared in-memory structure so two
     /// <see cref="RedisShellTicketStore"/> instances behave as if they share one Redis.
     /// </summary>
     public RedisShellTicketStore(
@@ -73,7 +73,7 @@ public sealed class RedisShellTicketStore : IShellTicketStore
     {
         var value = TicketPrefix + NewToken();
         var key = _keyPrefix + value;
-        // Ticket value is the key — it must not appear in the stored payload.
+        // Ticket value is the key -- it must not appear in the stored payload.
         var json = Serialize(new Payload(userId, leaseId));
         _setWithTtl(key, json, Ttl);
         return new ShellTicket(value, (int)Ttl.TotalSeconds);
@@ -95,7 +95,7 @@ public sealed class RedisShellTicketStore : IShellTicketStore
 
         if (payload is null) return null;
 
-        // Bound to exactly one lease — a wrong-lease presentation burns the ticket.
+        // Bound to exactly one lease -- a wrong-lease presentation burns the ticket.
         if (payload.L != leaseId) return null;
 
         return new ShellTicketRedemption(payload.U, leaseId);

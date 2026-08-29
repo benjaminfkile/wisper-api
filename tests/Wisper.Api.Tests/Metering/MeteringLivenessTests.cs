@@ -110,7 +110,7 @@ public class MeteringLivenessTests
         fx.Clock.Advance(TimeSpan.FromSeconds(150));
         await meter.RunTickAsync();
 
-        // Only the healthy 90s is billed — the 60s blind window is not.
+        // Only the healthy 90s is billed -- the 60s blind window is not.
         var stored = await fx.Leases.GetByIdAsync(lease.Id);
         Assert.Equal(90, stored!.BillableSeconds);
         Assert.Equal(T0.AddSeconds(90), stored.LastMeteredAt);

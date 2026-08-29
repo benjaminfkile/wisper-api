@@ -11,7 +11,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// (<c>supported</c> / <c>devices[].{id,class,vram_mb}</c> / <c>max_gpus</c> / <c>isolations</c>) is parsed
 /// off the <c>hello.capability</c> and off a <c>host.heartbeat</c> that re-advertises, and the live capability
 /// the registry tracks (<see cref="RegistryHostCapabilitySource"/>) surfaces the device ceiling and distinct
-/// classes on the <see cref="HostCapabilitySnapshot"/>. Class strings are opaque — mirrored, never
+/// classes on the <see cref="HostCapabilitySnapshot"/>. Class strings are opaque -- mirrored, never
 /// interpreted. An older agent that omits the block leaves it <c>null</c> and never faults.
 /// </summary>
 public class HostGpuWireTests
@@ -69,7 +69,7 @@ public class HostGpuWireTests
 
         Assert.NotNull(snapshot);
         Assert.Equal(0, snapshot!.MaxGpus);
-        Assert.Empty(snapshot.GpuClasses); // never null — an absent gpu block is no GPU
+        Assert.Empty(snapshot.GpuClasses); // never null -- an absent gpu block is no GPU
     }
 
     [Fact]

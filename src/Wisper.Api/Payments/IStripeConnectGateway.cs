@@ -8,7 +8,7 @@ namespace Wisper.Api.Payments;
 /// host out. It sits above <see cref="IStripeClient"/> (which only hands out the raw SDK client) so the
 /// <see cref="Wisper.Api.Hosts.HostConnectService"/>, <see cref="Wisper.Api.Payments.PayoutService"/>, and the
 /// <c>account.updated</c>/<c>transfer.*</c> webhook handlers are unit-testable against a fake and never reach
-/// the network (Grunt has no Stripe). Wisper stores only the account id + derived status — never any KYC data
+/// the network (Grunt has no Stripe). Wisper stores only the account id + derived status -- never any KYC data
 /// (docs/PAYMENTS.md §10).
 /// </summary>
 public interface IStripeConnectGateway
@@ -22,30 +22,30 @@ public interface IStripeConnectGateway
 
     /// <summary>
     /// Creates an <b>Account Link</b> for the connected account and returns the hosted-onboarding URL the host
-    /// is redirected to (docs/PAYMENTS.md §5). A fresh link is minted on every call — links are single-use and
-    /// short-lived — so <c>POST /v1/hosts/connect</c> both <i>creates</i> and <i>continues</i> onboarding.
+    /// is redirected to (docs/PAYMENTS.md §5). A fresh link is minted on every call -- links are single-use and
+    /// short-lived -- so <c>POST /v1/hosts/connect</c> both <i>creates</i> and <i>continues</i> onboarding.
     /// </summary>
     Task<string> CreateAccountLinkAsync(AccountLinkRequest request, CancellationToken ct = default);
 
     /// <summary>
     /// Reads the current capability snapshot for the connected account (docs/PAYMENTS.md §5): whether charges
-    /// and payouts are enabled, whether details were submitted, and the outstanding onboarding requirements —
+    /// and payouts are enabled, whether details were submitted, and the outstanding onboarding requirements --
     /// the inputs the status endpoint surfaces and <c>connect_status</c> is derived from.
     /// </summary>
     Task<ConnectAccountSnapshot> GetAccountAsync(string accountId, CancellationToken ct = default);
 
     /// <summary>
     /// Creates a <b>Transfer</b> that moves <see cref="TransferRequest.AmountCents"/> from the platform
-    /// balance to the host's connected account (docs/PAYMENTS.md §1, §6) — how host earnings are paid out.
+    /// balance to the host's connected account (docs/PAYMENTS.md §1, §6) -- how host earnings are paid out.
     /// The Stripe idempotency key is the <c>payouts.id</c> (<see cref="TransferRequest.IdempotencyKey"/>), so a
     /// retried payout run returns the same transfer rather than double-paying. A transfer that cannot be made
-    /// (e.g. insufficient platform balance, a connected account that can't receive) fails synchronously here —
+    /// (e.g. insufficient platform balance, a connected account that can't receive) fails synchronously here --
     /// the caller records the payout <c>failed</c> and posts no ledger txn, so earnings are retained (§6).
     /// </summary>
     Task<StripeTransfer> CreateTransferAsync(TransferRequest request, CancellationToken ct = default);
 }
 
-/// <summary>Inputs for creating a Connect Express account — the host's identity for the connected account.</summary>
+/// <summary>Inputs for creating a Connect Express account -- the host's identity for the connected account.</summary>
 public sealed record ConnectAccountRequest(Guid UserId, string Email);
 
 /// <summary>
@@ -85,7 +85,7 @@ public sealed record TransferRequest(
     string Currency,
     string IdempotencyKey);
 
-/// <summary>A created payout Transfer — its Stripe id (<c>tr_…</c>), pinned onto the <c>payouts</c> row (unique).</summary>
+/// <summary>A created payout Transfer -- its Stripe id (<c>tr_…</c>), pinned onto the <c>payouts</c> row (unique).</summary>
 public sealed record StripeTransfer(string Id);
 
 /// <summary>

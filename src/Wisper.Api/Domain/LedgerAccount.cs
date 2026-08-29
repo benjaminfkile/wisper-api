@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// A ledger account (docs/DATA_MODEL.md §7, <c>ledger_accounts</c>) — one of the buckets every cent in
+/// A ledger account (docs/DATA_MODEL.md §7, <c>ledger_accounts</c>) -- one of the buckets every cent in
 /// Wisper lives in. Each user has exactly one <c>user_wallet</c> and (if a host) one
 /// <c>host_earnings</c> account, pinned by the <c>(kind, owner_user_id)</c> unique constraint; the
 /// platform singletons (<c>lease_holds</c>, <c>platform_revenue</c>, <c>platform_cash</c>,

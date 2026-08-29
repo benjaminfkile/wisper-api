@@ -8,16 +8,16 @@ namespace Wisper.Api.Leases;
 /// Body of <c>POST /v1/leases</c> (docs/API.md §5). All fields are nullable at the wire so the service
 /// can distinguish "omitted" from a supplied value and return a precise <c>validation_error</c>. The
 /// snapshots the lease keeps are resolved server-side from the referenced priced offer, not trusted from
-/// the client — only <c>network</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c>/<c>isolation</c> are
+/// the client -- only <c>network</c>/<c>ttl_seconds</c>/<c>userdata</c>/<c>env</c>/<c>isolation</c> are
 /// request inputs. The resource profile (cpus/memory_mb/gpus) is <b>fixed by the selected offer</b>
 /// (task #570): the consumer no longer chooses it, so a request carrying a <see cref="Resources"/> object
-/// or a top-level <see cref="Gpus"/> count is rejected with <c>validation_error</c> — both are kept on the
+/// or a top-level <see cref="Gpus"/> count is rejected with <c>validation_error</c> -- both are kept on the
 /// wire shape only to detect and reject the removed knobs, never to consume them. <see cref="Isolation"/>
 /// is the optional requested sandbox level (<c>shared</c> &lt; <c>sandboxed</c> &lt; <c>vm</c>, task #418):
 /// omitted → <c>shared</c>; <c>confidential</c>/unknown → <c>validation_error</c>; the service enforces the
 /// <c>min_isolation</c> policy ceiling and the target host's advertised levels before it reaches the tunnel.
 /// <see cref="Env"/> mirrors the dev harness's create-time env exactly (docs/TUNNEL.md §5): an optional,
-/// opaque <c>{string:string}</c> map forwarded down the tunnel for secret injection — its values are
+/// opaque <c>{string:string}</c> map forwarded down the tunnel for secret injection -- its values are
 /// secrets-in-transit, so they are never logged, echoed in errors, or persisted (§13).
 /// </summary>
 public sealed record CreateLeaseRequest(
@@ -48,7 +48,7 @@ public sealed record LeaseResourcesRequest(
 /// hold snapshot the client needs to reason about cost. The <see cref="Status"/> reflects the persisted
 /// lease state; the console then watches <c>GET /v1/leases/:id</c> for further transitions. <see cref="Os"/>
 /// carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>) like the dev endpoint and
-/// <see cref="LeaseView"/>, or <c>null</c> when the host is offline or its (older) agent advertised none —
+/// <see cref="LeaseView"/>, or <c>null</c> when the host is offline or its (older) agent advertised none --
 /// so the caller can adapt without a follow-up host fetch, and it never errors (task #316).
 /// </summary>
 public sealed record CreateLeaseResponse(
@@ -62,7 +62,7 @@ public sealed record CreateLeaseResponse(
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a freshly created lease + its hold estimate into the 201 wire shape, optionally
-    /// carrying the host's live container OS (null when offline/pre-os — surfacing only).</summary>
+    /// carrying the host's live container OS (null when offline/pre-os -- surfacing only).</summary>
     public static CreateLeaseResponse From(LeaseCreationResult result)
     {
         var lease = result.Lease;
@@ -81,7 +81,7 @@ public sealed record CreateLeaseResponse(
 /// <summary>
 /// The lease's provisioned resource profile as it appears on the read surface (docs/API.md §5): the exact
 /// size stamped from the selected offer at create (task #570), so the consumer sees precisely what the flat
-/// per-offer price bought. <see cref="Cpus"/>/<see cref="MemoryMb"/> are the raw stamped snapshot — <c>null</c>
+/// per-offer price bought. <see cref="Cpus"/>/<see cref="MemoryMb"/> are the raw stamped snapshot -- <c>null</c>
 /// when the offer left that dimension to the host default AND no host cap was recorded (e.g. legacy rows
 /// created before task #578); <see cref="Gpus"/> is the booked whole-device GPU count (0 when none).
 /// <see cref="EffectiveCpus"/>/<see cref="EffectiveMemoryMb"/> plus <see cref="ResourcesSource"/> (task #578)
@@ -101,10 +101,10 @@ public sealed record LeaseResourcesView(
 /// The read shape of a lease (docs/API.md §5, <c>GET /v1/leases</c> and <c>GET /v1/leases/:id</c>): the
 /// immutable snapshots, the current lifecycle state, and the metering timeline with a running-cost
 /// figure. Until the P5 metering engine lands, <see cref="BillableSeconds"/> is the persisted watermark
-/// (0 for a just-started lease) and <see cref="CostCentsSoFar"/> is derived from it — a truthful
+/// (0 for a just-started lease) and <see cref="CostCentsSoFar"/> is derived from it -- a truthful
 /// placeholder, not an estimate of wall-clock time. <see cref="Os"/> carries the host's advertised
 /// container OS (<c>"linux"</c> | <c>"windows"</c>) resolved from its live capability at projection time,
-/// or <c>null</c> when the host is offline or its (older) agent advertised none — so lease detail/exec/
+/// or <c>null</c> when the host is offline or its (older) agent advertised none -- so lease detail/exec/
 /// console UIs adapt without a separate host fetch, and it never errors (task #316).
 /// </summary>
 public sealed record LeaseView(
@@ -128,7 +128,7 @@ public sealed record LeaseView(
     [property: JsonPropertyName("os")] string? Os = null)
 {
     /// <summary>Projects a stored <see cref="Lease"/> into its read wire shape, optionally carrying the
-    /// host's live container <paramref name="os"/> (null when offline/pre-os — surfacing only) and its live
+    /// host's live container <paramref name="os"/> (null when offline/pre-os -- surfacing only) and its live
     /// advertised per-lease caps (<paramref name="hostCapCpus"/> cores, <paramref name="hostCapMemoryMb"/> MB;
     /// 0 = offline / no cap) used to resolve the effective profile for a NULL-stamped legacy row (task #578).</summary>
     public static LeaseView From(
@@ -165,7 +165,7 @@ public sealed record LeaseView(
     /// The running cost the consumer sees (docs/API.md §5): the exact per-second charge the metering
     /// ledger posts, computed via <see cref="MeteringService.ChargeCentsFor"/> from the persisted
     /// <c>billable_seconds</c> watermark. Sharing the formula guarantees the display always matches the
-    /// sum of posted <c>lease_charge</c> for the lease — whole-minute rounding here would under-report the
+    /// sum of posted <c>lease_charge</c> for the lease -- whole-minute rounding here would under-report the
     /// actual charge (137s at 60¢/min: ledger 137¢, whole-minute 120¢).
     /// </summary>
     private static long RunningCostCents(Lease lease) =>
@@ -197,7 +197,7 @@ public sealed record LeaseListQuery
 /// <summary>
 /// The result of a successful lease-create: the persisted <see cref="Lease"/> plus the
 /// <see cref="HoldCents"/> the wallet gate authorized, which the 201 body echoes, and the host's
-/// advertised container <see cref="Os"/> at create time (null when offline/pre-os — surfacing only, task #316).
+/// advertised container <see cref="Os"/> at create time (null when offline/pre-os -- surfacing only, task #316).
 /// </summary>
 public sealed record LeaseCreationResult(Lease Lease, long HoldCents, string? Os = null);
 

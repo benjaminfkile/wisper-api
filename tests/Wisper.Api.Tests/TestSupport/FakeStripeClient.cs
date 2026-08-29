@@ -4,7 +4,7 @@ namespace Wisper.Api.Tests.TestSupport;
 
 /// <summary>
 /// A test double for <see cref="IStripeClient"/> (Grunt has no Stripe). It reports configured and exposes a
-/// Stripe SDK client built from a dummy test key — the billing services that land in P6.2+ depend on
+/// Stripe SDK client built from a dummy test key -- the billing services that land in P6.2+ depend on
 /// <see cref="IStripeClient"/>, so they can be constructed in unit tests against this without touching the
 /// network (their own tests stub the individual Stripe service calls). <see cref="Configured"/> can be
 /// flipped to exercise the Stripe-less / fail-closed branches.

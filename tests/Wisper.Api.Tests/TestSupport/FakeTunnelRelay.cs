@@ -10,7 +10,7 @@ namespace Wisper.Api.Tests.TestSupport;
 /// It records the create/release/exec calls the lease surface makes and lets a test preset the outcome:
 /// a ready <see cref="LeaseResult"/> for create, an <see cref="Messages.ExecResult"/> (or streamed
 /// <see cref="FakeTunnelExec"/>) for exec, or a typed <see cref="ApiException"/> (host_offline /
-/// upstream_timeout / lease_failed) to exercise the error-envelope paths. Shell streams throw — the
+/// upstream_timeout / lease_failed) to exercise the error-envelope paths. Shell streams throw -- the
 /// consumer exec surface never opens a shell.
 /// </summary>
 public sealed class FakeTunnelRelay : ITunnelRelay

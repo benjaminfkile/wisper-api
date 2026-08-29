@@ -6,7 +6,7 @@ namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
 /// The DbUp runner must discover the ordered, embedded migration scripts from the API assembly
-/// without a live database — proving the wiring end-to-end short of an actual Postgres apply.
+/// without a live database -- proving the wiring end-to-end short of an actual Postgres apply.
 /// </summary>
 public class MigrationRunnerTests
 {
@@ -51,7 +51,7 @@ public class MigrationRunnerTests
     /// prints "Master ConnectionString => Host=...;Username=...;Password=******;..." at the
     /// EnsureDatabase step. <see cref="MigrationRunner"/> routes that step through
     /// <see cref="MigrationRunner.SilentEnsureLog"/> instead. Whatever DbUp hands to that sink
-    /// — including the master connection string — must be dropped.
+    /// -- including the master connection string -- must be dropped.
     /// </summary>
     [Fact]
     public void Silent_ensure_log_discards_all_output_including_connection_string()
@@ -70,7 +70,7 @@ public class MigrationRunnerTests
         log.WriteWarning("Something odd: Host=leaked;Username=leaked");
         log.WriteError("Something failed: Host=leaked;Username=leaked");
 
-        // The sink is a black hole — nothing observable, no state, no throw.
+        // The sink is a black hole -- nothing observable, no state, no throw.
         Assert.Empty(recording.Messages);
     }
 

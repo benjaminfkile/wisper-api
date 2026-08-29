@@ -4,7 +4,7 @@ namespace Wisper.Api.Domain;
 /// A consumer's rented container instance (docs/DATA_MODEL.md §5, <c>leases</c>). At creation the lease
 /// takes <b>immutable snapshots</b> of the priced image (image ref, network, the offer's sized resource
 /// profile, TTL, price, currency) so a later host reprice never affects a running lease (§6). It then carries the
-/// metering timeline on Wisper's clock — <see cref="StartedAt"/> to the <see cref="LastMeteredAt"/>
+/// metering timeline on Wisper's clock -- <see cref="StartedAt"/> to the <see cref="LastMeteredAt"/>
 /// watermark, accruing <see cref="BillableSeconds"/> only over healthy intervals (suspended gaps never
 /// bill, docs/TUNNEL.md §8). The state machine is
 /// <c>pending → provisioning → active ⇄ suspended → ended</c> (plus <c>provisioning → failed</c>).
@@ -40,7 +40,7 @@ public sealed record Lease
     /// <summary>
     /// Snapshot: the exact vCPU count provisioned for this lease, stamped from the selected offer's sized
     /// profile at create (task #570). <c>NULL</c> = the offer left it to the host's own per-lease policy
-    /// default (nothing pinned downstream); immutable thereafter. The consumer no longer chooses it — the
+    /// default (nothing pinned downstream); immutable thereafter. The consumer no longer chooses it -- the
     /// offer fixes it (docs/DATA_MODEL.md §4, §5).
     /// </summary>
     public int? Cpus { get; init; }
@@ -83,7 +83,7 @@ public sealed record Lease
     /// <summary>Row creation time (UTC).</summary>
     public DateTimeOffset CreatedAt { get; init; }
 
-    /// <summary>Meter start — first <c>lease.ready</c>; <c>null</c> until then.</summary>
+    /// <summary>Meter start -- first <c>lease.ready</c>; <c>null</c> until then.</summary>
     public DateTimeOffset? StartedAt { get; init; }
 
     /// <summary>Watermark of billed time (UTC); advances as ticks flush.</summary>
@@ -98,7 +98,7 @@ public sealed record Lease
     /// <summary>
     /// When the lease was moved to <c>suspended</c> (task #55). Non-null while the lease is under grace
     /// management; cleared on resume (back to <c>active</c>) or revive. Persisted so the durable grace
-    /// sweep can reap leases whose in-memory grace timer was lost across a restart — the sole authoritative
+    /// sweep can reap leases whose in-memory grace timer was lost across a restart -- the sole authoritative
     /// clock for "how long has this been suspended?" that survives an instance restart.
     /// </summary>
     public DateTimeOffset? SuspendedAt { get; init; }

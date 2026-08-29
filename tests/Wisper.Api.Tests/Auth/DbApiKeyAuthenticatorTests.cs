@@ -12,9 +12,9 @@ namespace Wisper.Api.Tests.Auth;
 /// <summary>
 /// Unit tests for <see cref="DbApiKeyAuthenticator"/> (docs/API.md §2): a presented <c>wck_</c> key is
 /// resolved to the owning user's principal by a hashed lookup against the api_keys store, roles come from
-/// the key's stored scopes, and every fail-closed condition rejects — unknown key, revoked key, a
+/// the key's stored scopes, and every fail-closed condition rejects -- unknown key, revoked key, a
 /// suspended/missing owner, and a null/empty bearer. A key the store does not hold degrades to the config
-/// allow-list. The in-memory doubles serve every lookup, so no Postgres is required — mirroring
+/// allow-list. The in-memory doubles serve every lookup, so no Postgres is required -- mirroring
 /// <c>DbHostTokenValidatorTests</c>.
 /// </summary>
 public class DbApiKeyAuthenticatorTests
@@ -89,7 +89,7 @@ public class DbApiKeyAuthenticatorTests
         Assert.NotNull(principal);
         Assert.Equal("cognito-owner", principal!.GetSubject());
         Assert.Equal("cognito-owner@example.com", principal.GetEmail());
-        // Roles are exactly the key's scopes — never Cognito groups, never implicit consumer beyond scope.
+        // Roles are exactly the key's scopes -- never Cognito groups, never implicit consumer beyond scope.
         Assert.True(principal.HasRole(WisperRole.Consumer));
         Assert.True(principal.HasRole(WisperRole.Host));
         Assert.False(principal.HasRole(WisperRole.Admin));
@@ -165,7 +165,7 @@ public class DbApiKeyAuthenticatorTests
     public async Task Missing_owner_fails_closed()
     {
         var keys = new InMemoryApiKeyRepository();
-        // Key owned by a user id with no matching row — must reject as 401 (not throw), and never fall
+        // Key owned by a user id with no matching row -- must reject as 401 (not throw), and never fall
         // through to the config allow-list.
         var (_, token) = await SeedKey(keys, Guid.NewGuid(), new[] { "consumer" });
         var authenticator = Build(keys, new InMemoryUserRepository());

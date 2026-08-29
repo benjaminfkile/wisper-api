@@ -15,7 +15,7 @@ internal enum RelayOp
 
 /// <summary>
 /// A relay request routed from the instance handling a consumer call to the instance that owns the
-/// host's tunnel (docs/DESIGN.md §7 — "publishes the frame to A's channel with a correlation id"). The
+/// host's tunnel (docs/DESIGN.md §7 -- "publishes the frame to A's channel with a correlation id"). The
 /// owner executes it against its <b>local</b> relay (which owns the socket + its id space) and replies.
 /// </summary>
 internal sealed record RpcRequest
@@ -63,7 +63,7 @@ internal sealed record RpcReply
 }
 
 /// <summary>
-/// One message on a bridged byte-stream channel (docs/DESIGN.md §7 — a consumer stream on one instance
+/// One message on a bridged byte-stream channel (docs/DESIGN.md §7 -- a consumer stream on one instance
 /// bridged to a host tunnel on another). Down = owner→caller (agent output / exit / close); Up =
 /// caller→owner (stdin, credit, resize, close). Raw bytes ride as base64 to stay JSON-debuggable like
 /// the control frames; the high-volume socket hop is on the owning instance, not here.
@@ -104,7 +104,7 @@ internal static class BackplaneChannels
     public static string StreamUp(string prefix, string correlationId) => $"{prefix}:stream:{correlationId}:up";
 }
 
-/// <summary>Shared JSON (de)serialization for backplane messages — reuses the tunnel control-frame options.</summary>
+/// <summary>Shared JSON (de)serialization for backplane messages -- reuses the tunnel control-frame options.</summary>
 internal static class BackplaneJson
 {
     public static byte[] Serialize<T>(T message) =>

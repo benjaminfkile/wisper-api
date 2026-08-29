@@ -125,14 +125,14 @@ public class DbHostTokenValidatorTests
     [InlineData("Staging")]
     public async Task Static_fallback_is_not_consulted_outside_Development(string environment)
     {
-        // A DB-issued token (via the store) MUST still resolve — the env gate only closes the
+        // A DB-issued token (via the store) MUST still resolve -- the env gate only closes the
         // static fallback, not the DB path (task #39).
         var hosts = new InMemoryHostRepository();
         var dbToken = HostAgentToken.Issue().Token;
         var host = SeedHost(hosts, dbToken);
 
         // The config carries a static token that WOULD resolve in Development. Outside Development
-        // it must fail closed — a deployed secret can no longer mint a long-lived host bearer.
+        // it must fail closed -- a deployed secret can no longer mint a long-lived host bearer.
         var validator = new DbHostTokenValidator(hosts, Config(environment, ("static-dev-token", "host-static")));
 
         var staticResult = await validator.ValidateAsync("static-dev-token");

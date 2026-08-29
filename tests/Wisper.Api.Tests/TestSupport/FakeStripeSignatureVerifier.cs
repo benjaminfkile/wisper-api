@@ -13,7 +13,7 @@ public sealed class FakeStripeSignatureVerifier : IStripeSignatureVerifier
 {
     private readonly Func<string, string?, Stripe.Event> _impl;
 
-    /// <summary>The (payload, signature) pairs seen — lets a test assert the raw body reached the verifier.</summary>
+    /// <summary>The (payload, signature) pairs seen -- lets a test assert the raw body reached the verifier.</summary>
     public List<(string Payload, string? Signature)> Calls { get; } = new();
 
     public FakeStripeSignatureVerifier(Func<string, string?, Stripe.Event> impl) => _impl = impl;

@@ -5,7 +5,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// <summary>
 /// In-process <see cref="IHostCapabilityStore"/> for single-instance boots and loopback tests.
 /// Two simulated instances can share one store to verify that a capability written by "instance A" is
-/// visible on "instance B" — the same guarantee a Redis-backed store provides in production.
+/// visible on "instance B" -- the same guarantee a Redis-backed store provides in production.
 /// </summary>
 public sealed class InMemoryHostCapabilityStore : IHostCapabilityStore
 {

@@ -4,7 +4,7 @@ namespace Wisper.Api.Billing;
 
 /// <summary>
 /// The opaque cursor that paginates the caller's ledger view (docs/API.md §10). It encodes the stable sort
-/// key of the last transaction on the page — <c>(created_at, id)</c>, descending, newest-first — so inserts
+/// key of the last transaction on the page -- <c>(created_at, id)</c>, descending, newest-first -- so inserts
 /// during paging can neither duplicate nor skip a transaction. The wire form is URL-safe Base64 of
 /// <c>"{utcTicks}:{guid}"</c>; clients treat it as an opaque token. Mirrors
 /// <see cref="Wisper.Api.Leases.LeaseCursor"/>.
@@ -58,7 +58,7 @@ public sealed record BillingCursor(DateTimeOffset CreatedAt, Guid Id)
     }
 
     /// <summary>
-    /// Orders <c>(aCreatedAt, aId)</c> against <c>(bCreatedAt, bId)</c> by the stable descending key — newer
+    /// Orders <c>(aCreatedAt, aId)</c> against <c>(bCreatedAt, bId)</c> by the stable descending key -- newer
     /// <c>created_at</c> first, ties broken by the larger id. Negative when the first sorts before the second.
     /// </summary>
     public static int Compare(DateTimeOffset aCreatedAt, Guid aId, DateTimeOffset bCreatedAt, Guid bId)

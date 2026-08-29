@@ -7,7 +7,7 @@ namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
 /// The identity + catalog migrations must be embedded, discovered in order, and define the enum types
-/// and tables the schema calls for (docs/DATA_MODEL.md §2–§4). Grunt has no Postgres, so this asserts
+/// and tables the schema calls for (docs/DATA_MODEL.md §2-§4). Grunt has no Postgres, so this asserts
 /// the migration <b>content</b> the DbUp runner will apply rather than a live schema.
 /// </summary>
 public class CatalogMigrationsTests

@@ -122,9 +122,9 @@ public static class TunnelEndpoints
             // Route each heartbeat's live lease list into the disconnect coordinator so a reconnect
             // reconciles the suspended set via set-diff (docs/TUNNEL.md §8). A heartbeat that re-advertises
             // capability also refreshes the host's live capability snapshot (task #61) and its persisted
-            // isolation/GPU (tasks #417, #521); an omitted capability means "no update — keep last known"
+            // isolation/GPU (tasks #417, #521); an omitted capability means "no update -- keep last known"
             // (the agent deliberately omits it when its local wisp is unreachable). The refresh helper is
-            // fail-safe on its own — a hiccup there never disturbs lease reconciliation or the tunnel.
+            // fail-safe on its own -- a hiccup there never disturbs lease reconciliation or the tunnel.
             HeartbeatRouter = async (conn, heartbeat, hbCt) =>
             {
                 // Route with the connection, so the coordinator can best-effort tear down orphan
@@ -139,7 +139,7 @@ public static class TunnelEndpoints
                 // Apply the agent's self-reported health flag (task #62): a "degraded" beat marks the
                 // host degraded in the shared set so every instance's placement path excludes it; a
                 // subsequent beat with no status clears the flag and restores placement. Lease state is
-                // unaffected — the containers keep running; only the agent's wisp API is unreachable.
+                // unaffected -- the containers keep running; only the agent's wisp API is unreachable.
                 await HeartbeatDegradedApply.ApplyAsync(conn, heartbeat, degradedStore, logger, hbCt);
             },
         };
@@ -167,7 +167,7 @@ public static class TunnelEndpoints
                 GraceSeconds = options.GraceSeconds,
             }, ct);
 
-            // The handshake is fully complete now — registered AND hello.ack sent — so the host is
+            // The handshake is fully complete now -- registered AND hello.ack sent -- so the host is
             // available to the relay (docs/TUNNEL.md §3). Until this point a create for this host waits
             // briefly for readiness rather than racing to host_offline on a freshly-connected agent.
             connection.MarkReady();
@@ -191,7 +191,7 @@ public static class TunnelEndpoints
 
             // Presence follows the tunnel (docs/TUNNEL.md §3): with the handshake complete, flip the host
             // online if it clears the earning gate (owner Connect-enabled, or every enabled image is
-            // zero-priced — task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
+            // zero-priced -- task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
             try
             {
                 // An absent capability block (older agent, or an agent whose local wisp is unreachable at
@@ -228,7 +228,7 @@ public static class TunnelEndpoints
             connection.MarkUnavailable();
 
             // Was this connection superseded by a newer tunnel for the same host? If the registry now
-            // points elsewhere, a fresh connection already took over — do NOT suspend/arm grace (the host
+            // points elsewhere, a fresh connection already took over -- do NOT suspend/arm grace (the host
             // is still connected). Only a genuine disconnect of the live tunnel triggers the §8 policy.
             var superseded = !(registry.TryGet(hostId, out var current) && ReferenceEquals(current, connection));
 
@@ -247,9 +247,9 @@ public static class TunnelEndpoints
 
                 // Clear any lingering degraded flag on a genuine disconnect (task #62): the flag is only
                 // meaningful while a tunnel is up on some instance, and a returning agent's first
-                // heartbeat now re-establishes the state authoritatively (task #65 — every fresh
+                // heartbeat now re-establishes the state authoritatively (task #65 -- every fresh
                 // connection's first beat settles the store regardless of transition-edge state).
-                // Skipped on supersede — the newer owner tunnel is already live and its own heartbeats
+                // Skipped on supersede -- the newer owner tunnel is already live and its own heartbeats
                 // govern the flag from here on, so an unconditional clear here would race and briefly
                 // re-admit a still-degraded host; the task-#65 settle on the newer tunnel's first beat
                 // is what closes the supersede-while-degraded leak safely.

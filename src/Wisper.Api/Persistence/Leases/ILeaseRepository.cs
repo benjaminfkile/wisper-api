@@ -18,13 +18,13 @@ public interface ILeaseRepository : IRepository
     Task<IReadOnlyList<Lease>> ListByConsumerAsync(Guid consumerUserId, CancellationToken ct = default);
 
     /// <summary>
-    /// A host's live leases — <c>status IN ('active','suspended')</c> (partial index
+    /// A host's live leases -- <c>status IN ('active','suspended')</c> (partial index
     /// <c>leases_host_active_idx</c>); the set the meter reloads to resume on restart/reconnect.
     /// </summary>
     Task<IReadOnlyList<Lease>> ListActiveByHostAsync(Guid hostId, CancellationToken ct = default);
 
     /// <summary>
-    /// Counts a host's live leases — <c>status IN ('active','suspended')</c> (partial index
+    /// Counts a host's live leases -- <c>status IN ('active','suspended')</c> (partial index
     /// <c>leases_host_active_idx</c>). This is the host's non-terminal contract count the per-host admission
     /// fast-fail gates against (task #571): a create yields <c>active</c> directly and <c>suspended</c> is the
     /// only other live state, so this set is exactly the host's in-flight contracts (terminal ended/failed
@@ -33,7 +33,7 @@ public interface ILeaseRepository : IRepository
     Task<int> CountActiveByHostAsync(Guid hostId, CancellationToken ct = default);
 
     /// <summary>
-    /// Every lease with <c>status = 'active'</c> — the metering engine's working set (docs/DATA_MODEL.md
+    /// Every lease with <c>status = 'active'</c> -- the metering engine's working set (docs/DATA_MODEL.md
     /// §14). On each tick the meter accrues over this set, and on restart it reloads the set from the DB
     /// and resumes each lease from its persisted <see cref="Lease.LastMeteredAt"/> watermark. Suspended
     /// leases are excluded: a suspended gap never bills (docs/TUNNEL.md §8).
@@ -49,7 +49,7 @@ public interface ILeaseRepository : IRepository
 
     /// <summary>
     /// Every lease with <c>status = 'suspended'</c> whose <see cref="Lease.SuspendedAt"/> is at or before
-    /// <paramref name="suspendedOnOrBefore"/> — the driving query of the durable grace sweep (task #55).
+    /// <paramref name="suspendedOnOrBefore"/> -- the driving query of the durable grace sweep (task #55).
     /// Backed by the partial index <c>leases_suspended_at_idx</c>; ordered oldest-first so a batch-limited
     /// sweep tackles the oldest strays first.
     /// </summary>
@@ -57,11 +57,11 @@ public interface ILeaseRepository : IRepository
         DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default);
 
     /// <summary>
-    /// Every non-terminal lease (<c>status IN ('active','suspended')</c>) across every host — the working
+    /// Every non-terminal lease (<c>status IN ('active','suspended')</c>) across every host -- the working
     /// set the admin listing surfaces so an operator can find stuck leases (task #57) without reaching for
     /// SQL. Ordered oldest-first (by <see cref="Lease.CreatedAt"/>) so a paged view surfaces the strays
     /// first. Excludes the terminal <c>ended</c>/<c>failed</c> and the transient <c>pending</c>/
-    /// <c>provisioning</c> — a stuck lease that needs an operator escape hatch is one holding a wallet hold
+    /// <c>provisioning</c> -- a stuck lease that needs an operator escape hatch is one holding a wallet hold
     /// and a concurrency slot, and that is exactly the <c>active + suspended</c> set.
     /// </summary>
     Task<IReadOnlyList<Lease>> ListNonTerminalAsync(CancellationToken ct = default);
@@ -82,7 +82,7 @@ public interface ILeaseRepository : IRepository
     /// <paramref name="lastMeteredAt"/>, <paramref name="billableSeconds"/>, <paramref name="endedAt"/>,
     /// <paramref name="suspendedAt"/>); a null argument leaves that column unchanged. Returns the stored
     /// row, or <c>null</c> if no such lease OR the optional <paramref name="expectedCurrentStatus"/>
-    /// CAS guard did not match — used by the durable grace sweep (task #55) so two concurrent instances
+    /// CAS guard did not match -- used by the durable grace sweep (task #55) so two concurrent instances
     /// converge on exactly one <c>suspended → ended</c> transition per lease. <c>suspended_at</c> is
     /// auto-cleared on any transition to a non-<c>suspended</c> status (a resumed/ended row never carries
     /// a stale suspension timestamp). This is what <c>pending → provisioning → active ⇄ suspended → ended/failed</c>

@@ -4,7 +4,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Infrastructure;
 
 /// <summary>
-/// Unit tests for <see cref="RequestHash"/> — the body digest that lets an <c>Idempotency-Key</c> replay
+/// Unit tests for <see cref="RequestHash"/> -- the body digest that lets an <c>Idempotency-Key</c> replay
 /// distinguish a same-body retry from a different-body reuse (docs/API.md §9). The digest is stable for
 /// equal bodies and differs for unequal ones.
 /// </summary>

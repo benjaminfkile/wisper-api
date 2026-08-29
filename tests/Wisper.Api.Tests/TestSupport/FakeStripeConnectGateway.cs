@@ -15,7 +15,7 @@ public sealed class FakeStripeConnectGateway : IStripeConnectGateway
     public List<string> AccountFetches { get; } = new();
     public List<TransferRequest> TransferCalls { get; } = new();
 
-    /// <summary>When set, <see cref="CreateTransferAsync"/> throws it — to exercise the failed-transfer path.</summary>
+    /// <summary>When set, <see cref="CreateTransferAsync"/> throws it -- to exercise the failed-transfer path.</summary>
     public Exception? TransferError { get; set; }
 
     /// <summary>The transfer id handed back from <see cref="CreateTransferAsync"/> (per call, suffixed).</summary>

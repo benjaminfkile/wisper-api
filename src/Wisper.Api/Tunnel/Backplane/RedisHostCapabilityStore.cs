@@ -82,7 +82,7 @@ public sealed class RedisHostCapabilityStore : IHostCapabilityStore
             dto.MaxContracts);
     }
 
-    /// <summary>Compact serialization DTO — plain arrays, networks stored as their string labels.</summary>
+    /// <summary>Compact serialization DTO -- plain arrays, networks stored as their string labels.</summary>
     private sealed record CapabilityDto(
         string[] Images,
         string[] Networks,

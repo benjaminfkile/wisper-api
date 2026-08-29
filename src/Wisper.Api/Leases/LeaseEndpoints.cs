@@ -47,7 +47,7 @@ public static class LeaseEndpoints
         IdempotencyService idempotency,
         CancellationToken ct)
     {
-        // The Idempotency-Key is REQUIRED here — lease creation moves money (the wallet hold), so a retry
+        // The Idempotency-Key is REQUIRED here -- lease creation moves money (the wallet hold), so a retry
         // must never provision twice (docs/API.md §9).
         var key = http.Request.Headers[IdempotencyKeyHeader].ToString();
         if (string.IsNullOrWhiteSpace(key))
@@ -132,8 +132,8 @@ public static class LeaseEndpoints
 
     /// <summary>
     /// Runs a command in the caller's lease over the tunnel relay (docs/API.md §5, §7). Ownership + ready
-    /// state are checked first (404 / 409 <c>lease_not_ready</c> via the envelope) — before any response
-    /// body — so those errors stay JSON. <c>?stream=1</c> then streams the live output as SSE
+    /// state are checked first (404 / 409 <c>lease_not_ready</c> via the envelope) -- before any response
+    /// body -- so those errors stay JSON. <c>?stream=1</c> then streams the live output as SSE
     /// (<c>chunk</c>/<c>exit</c>/<c>error</c>); otherwise the buffered <c>{stdout,stderr,exit_code}</c> is
     /// returned. Both drive the same relay exec paths built for the dev harness.
     /// </summary>

@@ -39,7 +39,7 @@ public static class ShellBridge
         var consumerToShell = PumpConsumerToShellAsync(socket, shell, logger, linked);
         var shellToConsumer = PumpShellToConsumerAsync(socket, shell, linked);
 
-        // Wait on the two pumps only — NOT shell.Completion directly. When the PTY exits the host
+        // Wait on the two pumps only -- NOT shell.Completion directly. When the PTY exits the host
         // closes the stream, which completes shell.Output; the shell→consumer pump then drains any
         // trailing output and ends on its own. Racing shell.Completion here would cancel mid-drain and
         // abort the socket's in-flight send, so the consumer would see an abrupt 1006 instead of the
@@ -89,7 +89,7 @@ public static class ShellBridge
         }
         catch (InvalidOperationException)
         {
-            // The stream closed under us while writing stdin — treat as end of the consumer side.
+            // The stream closed under us while writing stdin -- treat as end of the consumer side.
         }
         finally
         {

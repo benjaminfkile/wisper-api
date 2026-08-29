@@ -1,6 +1,6 @@
--- 0005_Leases.sql — leases and their flushed metering intervals (docs/DATA_MODEL.md §5, §6, §13).
+-- 0005_Leases.sql -- leases and their flushed metering intervals (docs/DATA_MODEL.md §5, §6, §13).
 --
--- A lease snapshots the priced image at creation (immutable — the host may reprice later, §6) and
+-- A lease snapshots the priced image at creation (immutable -- the host may reprice later, §6) and
 -- carries the metering timeline on Wisper's clock (started_at → last_metered_at watermark →
 -- billable_seconds, excluding suspended gaps, docs/TUNNEL.md §8). lease_usage is one row per flushed
 -- tick (and on lease end), idempotent on (lease_id, period_start) so a retried flush can't

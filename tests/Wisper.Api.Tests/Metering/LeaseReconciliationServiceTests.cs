@@ -15,7 +15,7 @@ namespace Wisper.Api.Tests.Metering;
 
 /// <summary>
 /// Unit tests for <see cref="LeaseReconciliationService"/> with in-memory doubles (Grunt has no Postgres):
-/// the docs/TUNNEL.md §8 disconnect policy — pause billing at last-healthy on suspend, resume the same
+/// the docs/TUNNEL.md §8 disconnect policy -- pause billing at last-healthy on suspend, resume the same
 /// lease id on reconnect (billing restarts, gap never billed), end vanished leases (container_lost) and
 /// grace-expired leases (host_disconnect) finalized at last-healthy, and the reconnect set-diff.
 /// </summary>
@@ -23,7 +23,7 @@ public class LeaseReconciliationServiceTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
 
-    // 60¢/min = exactly 1¢/second, so a healthy interval's charge equals its seconds — readable arithmetic.
+    // 60¢/min = exactly 1¢/second, so a healthy interval's charge equals its seconds -- readable arithmetic.
     private const long PricePerMin = 60;
     private const int FeeBps = 1500; // 15%
 
@@ -166,7 +166,7 @@ public class LeaseReconciliationServiceTests
         }
 
         /// <summary>
-        /// Drains the wallet by moving <paramref name="cents"/> back to platform_cash — the revive
+        /// Drains the wallet by moving <paramref name="cents"/> back to platform_cash -- the revive
         /// deny-path tests need the wallet empty at revive time to trigger insufficient funds. Adjustment
         /// keeps the ledger balanced and honors the non-negative wallet guard.
         /// </summary>
@@ -221,7 +221,7 @@ public class LeaseReconciliationServiceTests
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
 
-        // A metering tick five minutes into the outage bills nothing — a suspended lease is not in the
+        // A metering tick five minutes into the outage bills nothing -- a suspended lease is not in the
         // active working set (docs/TUNNEL.md §8: metering accrues only while active).
         fx.Clock.Advance(TimeSpan.FromMinutes(5));
         var flushed = await fx.Meter.RunTickAsync();
@@ -269,7 +269,7 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(60, resumed.BillableSeconds);              // the 5-minute gap was not billed
         Assert.Equal(T0.AddSeconds(360), resumed.LastMeteredAt); // meter restarted at the reconnect instant
 
-        // A tick one minute after resume bills exactly that minute — never the outage gap.
+        // A tick one minute after resume bills exactly that minute -- never the outage gap.
         fx.Clock.Advance(TimeSpan.FromSeconds(60)); // now T0+420
         await fx.Meter.RunTickAsync();
         var afterTick = await fx.ReloadAsync(lease.Id);
@@ -286,7 +286,7 @@ public class LeaseReconciliationServiceTests
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
         fx.Clock.Advance(TimeSpan.FromMinutes(2));
 
-        // The host reconnects but no longer runs the container (crash/restart) — it is not reported live.
+        // The host reconnects but no longer runs the container (crash/restart) -- it is not reported live.
         var outcome = await fx.Reconciler.ReconcileHostAsync(
             fx.HostId, Array.Empty<Guid>(), lastHealthyAt: T0.AddSeconds(60));
 
@@ -473,7 +473,7 @@ public class LeaseReconciliationServiceTests
         Assert.Empty(outcome.Revived);
         Assert.Empty(outcome.Orphaned);
 
-        // Lease remains ended — no containers were reported, nothing to revive.
+        // Lease remains ended -- no containers were reported, nothing to revive.
         Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(lease.Id))!.Status);
     }
 
@@ -482,7 +482,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task ReconcileHeartbeat_ends_active_unreported_lease_as_container_lost()
     {
-        // AC78: silent container death — the manager has an active lease the host no longer reports.
+        // AC78: silent container death -- the manager has an active lease the host no longer reports.
         // The heartbeat reconciliation must end it as container_lost without a tunnel disconnect.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -527,7 +527,7 @@ public class LeaseReconciliationServiceTests
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 180, holdCents: 180);
 
-        // Heartbeat arrives at 210s — 30s past the 180s TTL. The container is gone (not in the reported
+        // Heartbeat arrives at 210s -- 30s past the 180s TTL. The container is gone (not in the reported
         // set), so container-lost fires; billing must cap at 180s (started_at + ttl), not 210s.
         fx.Clock.Advance(TimeSpan.FromSeconds(210));
         var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
@@ -547,7 +547,7 @@ public class LeaseReconciliationServiceTests
 
         var before = await fx.ReloadAsync(lease.Id);
 
-        // Heartbeat reports exactly the active set — nothing to heal.
+        // Heartbeat reports exactly the active set -- nothing to heal.
         var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { lease.Id });
 
         Assert.False(outcome.HasChanges);
@@ -557,7 +557,7 @@ public class LeaseReconciliationServiceTests
         Assert.Empty(outcome.UnknownReported);
         Assert.Same(HeartbeatReconcileOutcome.Empty, outcome); // singleton fast-path
 
-        // Record must be byte-for-byte identical — no write occurred.
+        // Record must be byte-for-byte identical -- no write occurred.
         var after = await fx.ReloadAsync(lease.Id);
         Assert.Equal(before, after);
     }
@@ -577,7 +577,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task ReconcileHeartbeat_revives_host_disconnect_ended_lease()
     {
-        // AC79: a live contract with no active manager lease — ended as host_disconnect — must be revived.
+        // AC79: a live contract with no active manager lease -- ended as host_disconnect -- must be revived.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -608,7 +608,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task ReconcileHeartbeat_terminal_orphans_reported_lease_ended_for_other_reason()
     {
-        // A reported lease that was ended for a non-host_disconnect reason cannot be revived — flag it
+        // A reported lease that was ended for a non-host_disconnect reason cannot be revived -- flag it
         // as TerminalOrphaned (the row exists in a terminal state) so the caller may relay lease.release.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -622,7 +622,7 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(new[] { lease.Id }, outcome.TerminalOrphaned);
         Assert.Empty(outcome.UnknownReported);
 
-        // Lease stays ended with original reason — we must not touch purposefully-ended leases.
+        // Lease stays ended with original reason -- we must not touch purposefully-ended leases.
         var stored = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
         Assert.Equal(LeaseEndReason.Released, stored.EndReason);
@@ -656,7 +656,7 @@ public class LeaseReconciliationServiceTests
 
         // Move revivable through the full grace-expiry teardown (suspend → end as host_disconnect) so its
         // pre-drop hold is properly released back to the wallet, matching the state the reconciler leaves
-        // a lease in when grace really expires (task #23 — the revive re-hold gate draws from this returned
+        // a lease in when grace really expires (task #23 -- the revive re-hold gate draws from this returned
         // balance). Suspending only revivable directly (not via SuspendHostLeasesAsync, which would take
         // dying with it) keeps dying Active so the container_lost set-diff arm still fires.
         await fx.Leases.TransitionStateAsync(revivable.Id, LeaseStatus.Suspended);
@@ -681,7 +681,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task ReconcileHeartbeat_is_idempotent_for_container_lost()
     {
-        // AC81: repeated heartbeats that omit a silently-dead lease converge — second call is a no-op.
+        // AC81: repeated heartbeats that omit a silently-dead lease converge -- second call is a no-op.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -689,19 +689,19 @@ public class LeaseReconciliationServiceTests
         var first = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
         Assert.Equal(new[] { lease.Id }, first.ContainerLost);
 
-        // Second heartbeat: lease is already ended — active set is empty, reported set is empty.
+        // Second heartbeat: lease is already ended -- active set is empty, reported set is empty.
         var second = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
         Assert.Same(HeartbeatReconcileOutcome.Empty, second); // fast-path: both sets empty
         Assert.False(second.HasChanges);
 
-        // Lease is still Ended — idempotent.
+        // Lease is still Ended -- idempotent.
         Assert.Equal(LeaseStatus.Ended, (await fx.ReloadAsync(lease.Id))!.Status);
     }
 
     [Fact]
     public async Task ReconcileHeartbeat_is_idempotent_for_revival()
     {
-        // AC81: repeated heartbeats that report a revivable lease converge — second call is a no-op.
+        // AC81: repeated heartbeats that report a revivable lease converge -- second call is a no-op.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0);
@@ -725,7 +725,7 @@ public class LeaseReconciliationServiceTests
         // Task #55: after a wisper-api restart the in-memory grace timer is gone, but the row is still
         // `suspended`. The coordinator routes the first heartbeat to ReconcileHeartbeatAsync (no in-memory
         // grace entry to route to the within-grace path). A suspended lease the host reports as still live
-        // must resume — the container is still running.
+        // must resume -- the container is still running.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -755,7 +755,7 @@ public class LeaseReconciliationServiceTests
     public async Task ReconcileHeartbeat_suspended_unreported_lease_ends_container_lost_post_restart()
     {
         // Task #55: after a wisper-api restart the in-memory grace timer is gone. A suspended lease the
-        // host no longer reports must end as container_lost — the container is definitively gone, so we
+        // host no longer reports must end as container_lost -- the container is definitively gone, so we
         // must not strand the lease as suspended waiting for a timer that will never fire.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -765,7 +765,7 @@ public class LeaseReconciliationServiceTests
         var suspendedAt = (await fx.ReloadAsync(lease.Id))!.SuspendedAt;
         Assert.NotNull(suspendedAt);
 
-        // Host reconnects and reports NO live leases — container is gone.
+        // Host reconnects and reports NO live leases -- container is gone.
         fx.Clock.Advance(TimeSpan.FromMinutes(2));
         var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, Array.Empty<Guid>());
 
@@ -859,7 +859,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task RevivePostGrace_is_idempotent_and_does_not_stack_holds_on_repeated_flap()
     {
-        // AC86: repeated revive/flap must not stack duplicate holds — hold ops are keyed by lease id in
+        // AC86: repeated revive/flap must not stack duplicate holds -- hold ops are keyed by lease id in
         // the wallet gate. The second revive call sees the lease already Active and skips; even if it did
         // re-enter the wallet gate path, the revival hold key dedupes so no second hold posts.
         var fx = await ReadyAsync();
@@ -872,7 +872,7 @@ public class LeaseReconciliationServiceTests
         fx.Clock.Advance(TimeSpan.FromMinutes(5));
         var reconnectAt = fx.Clock.GetUtcNow();
 
-        // Two revive calls with the same reported set — a heartbeat flap after post-grace reconnect.
+        // Two revive calls with the same reported set -- a heartbeat flap after post-grace reconnect.
         var first = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
         var second = await fx.Reconciler.RevivePostGraceAsync(fx.HostId, new[] { lease.Id }, reconnectAt);
 
@@ -909,7 +909,7 @@ public class LeaseReconciliationServiceTests
         Assert.True(second.Allowed);
         Assert.Equal(first.HoldTxnId, second.HoldTxnId); // dedup replay returns the same txn id
 
-        // Physical earmark reflects a single hold, not two — the extra top-up is still in the wallet.
+        // Physical earmark reflects a single hold, not two -- the extra top-up is still in the wallet.
         Assert.Equal(3540, await fx.HoldsCentsForAsync(lease.Id));
         Assert.Equal(3540, await fx.WalletCentsAsync()); // the extra top-up untouched
     }
@@ -940,7 +940,7 @@ public class LeaseReconciliationServiceTests
     public async Task RevivePostGrace_free_image_revives_without_placing_a_hold()
     {
         // A zero-priced image needs no hold to be leased in the first place (docs/PAYMENTS.md §4);
-        // the revive path must degenerate cleanly the same way — the lease returns to active and no
+        // the revive path must degenerate cleanly the same way -- the lease returns to active and no
         // lease_hold ever posts.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync(price: 0, holdCents: 0);
@@ -962,7 +962,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task RevivePostGrace_meter_still_restarts_at_reconnect_and_gap_is_never_billed()
     {
-        // AC87: the #21 meter-restart-at-reconnect invariant is unchanged by task #23 — the revive path
+        // AC87: the #21 meter-restart-at-reconnect invariant is unchanged by task #23 -- the revive path
         // still resets LastMeteredAt to the reconnect instant so the offline gap is never back-billed,
         // and a subsequent meter tick bills exactly the post-revive interval.
         var fx = await ReadyAsync();
@@ -991,7 +991,7 @@ public class LeaseReconciliationServiceTests
     {
         // Correctness of the release side after a revive: the revived lease's hold_txn_id changes, which
         // makes the ReleaseHoldAsync idempotency key distinct from the pre-revive release. A second end
-        // therefore actually posts the release rather than dedup-replaying the first — the revival hold's
+        // therefore actually posts the release rather than dedup-replaying the first -- the revival hold's
         // remainder returns to the wallet.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -1024,7 +1024,7 @@ public class LeaseReconciliationServiceTests
     public async Task Suspend_then_resume_within_grace_keeps_exactly_one_hold_intact()
     {
         // AC85: suspend does NOT release the hold (only end does); resume needs no new hold. The full
-        // suspend → resume cycle must leave exactly one lease_hold in place — no duplicate posted, no
+        // suspend → resume cycle must leave exactly one lease_hold in place -- no duplicate posted, no
         // gap where the lease ran active with no hold.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
@@ -1033,7 +1033,7 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(3600, beforeHoldsForLease);
         Assert.Equal(1, beforeHoldTxnCount);
 
-        // Tunnel drop within grace: suspend at last-healthy. The hold stays intact — a suspended lease
+        // Tunnel drop within grace: suspend at last-healthy. The hold stays intact -- a suspended lease
         // simply pauses metering, it does not touch lease_holds.
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
@@ -1058,7 +1058,7 @@ public class LeaseReconciliationServiceTests
     {
         // A flappy tunnel drives suspend → resume → suspend → resume many times; the single hold survives
         // every cycle. Number of lease_hold txns stays at 1 (create-time), and the physical earmark
-        // shrinks only by the meter's charges — never re-earmarked or duplicated.
+        // shrinks only by the meter's charges -- never re-earmarked or duplicated.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -1079,14 +1079,14 @@ public class LeaseReconciliationServiceTests
     // The unsolicited lease.ended frame from wisp's local reaper is the host's explicit "this lease died"
     // signal (TTL, abnormal exit, etc.). Routing it through the reconciler finalizes billing with the
     // TTL-capped watermark, transitions the lease to ended with the mapped reason, and releases the wallet
-    // hold — the same three-step end path the heartbeat set-diff runs for a silently-vanished container,
+    // hold -- the same three-step end path the heartbeat set-diff runs for a silently-vanished container,
     // but driven by the host's explicit signal (so it fires up to a heartbeat sooner and carries the
     // correct `expired` reason where the set-diff would say `container_lost`).
 
     [Fact]
     public async Task EndLeaseFromAgent_expired_ends_lease_finalizes_billing_ttl_capped_and_releases_hold()
     {
-        // AC185: lease.ended(reason=expired) on an active lease — the host's TTL reaper fired late.
+        // AC185: lease.ended(reason=expired) on an active lease -- the host's TTL reaper fired late.
         // The lease must end as `expired`, billing must be finalized TTL-capped (not to a runaway `now`),
         // and the wallet hold's unused remainder must return.
         var fx = await ReadyAsync();
@@ -1106,7 +1106,7 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(180, stored.BillableSeconds); // capped at TTL, not 210s wall-clock
 
         // Hold was 180¢, charged is exactly TTL (180s * 1¢/sec) = 180¢, so the release moves nothing back
-        // — full hold consumed. The lease's earmark in lease_holds is zero.
+        // -- full hold consumed. The lease's earmark in lease_holds is zero.
         Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
     }
 
@@ -1139,7 +1139,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task EndLeaseFromAgent_already_ended_lease_is_a_no_op_and_does_not_double_release()
     {
-        // AC187: a lease.ended for an already-ended lease is a no-op — no double flush, no double hold
+        // AC187: a lease.ended for an already-ended lease is a no-op -- no double flush, no double hold
         // release. Simulates the consumer DELETE (or the heartbeat set-diff) winning the race and the
         // agent's frame arriving after.
         var fx = await ReadyAsync();
@@ -1156,7 +1156,7 @@ public class LeaseReconciliationServiceTests
         var walletAfterConsumerRelease = await fx.WalletCentsAsync();
         var holdsCentsAfterConsumerRelease = await fx.HoldsCentsForAsync(lease.Id);
 
-        // The agent's lease.ended arrives now — must be a strict no-op.
+        // The agent's lease.ended arrives now -- must be a strict no-op.
         var outcome = await fx.Reconciler.EndLeaseFromAgentAsync(
             fx.HostId, lease.Id, LeaseEndReason.Expired);
 
@@ -1174,7 +1174,7 @@ public class LeaseReconciliationServiceTests
     {
         // A suspended lease was already flushed to last-healthy at suspend time; the agent's lease.ended
         // (e.g. the reaper fired during the outage) must end it and release the hold, but no additional
-        // billing must accrue — BillableSeconds stays at last-healthy.
+        // billing must accrue -- BillableSeconds stays at last-healthy.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -1251,7 +1251,7 @@ public class LeaseReconciliationServiceTests
         // leases). When the tunnel then drops, `lastHealthyAt` can be past `started_at + ttl`. Before
         // the fix, SuspendHostLeasesAsync used the raw uncapped meter flush and would bill the post-TTL
         // tail (task #60 Bug 1). The fix routes through the shared TTL + last-healthy cap, so the
-        // suspend flush never bills past TTL — the total charge is exactly ⌈ttl·price/60⌉.
+        // suspend flush never bills past TTL -- the total charge is exactly ⌈ttl·price/60⌉.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync(ttlSeconds: 60, holdCents: 60);
 
@@ -1264,7 +1264,7 @@ public class LeaseReconciliationServiceTests
 
         var stored = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Suspended, stored!.Status);
-        // Billed exactly TTL, not the 300s wall-clock last-healthy — the post-TTL tail is un-billable.
+        // Billed exactly TTL, not the 300s wall-clock last-healthy -- the post-TTL tail is un-billable.
         Assert.Equal(60, stored.BillableSeconds);
         Assert.Equal(T0.AddSeconds(60), stored.LastMeteredAt);
 
@@ -1279,7 +1279,7 @@ public class LeaseReconciliationServiceTests
     {
         // AC202: the "silent drain" invariant reduced to per-lease. lease_holds is a singleton aggregate
         // account (docs/DATA_MODEL.md §7d), so before the fix the uncapped past-TTL suspend flush on
-        // one lease could bill more than its own hold — the aggregate non-negative guard would let the
+        // one lease could bill more than its own hold -- the aggregate non-negative guard would let the
         // overcharge land as long as another lease's earmark carried the balance. With the TTL cap in
         // place, a lease's total posted lease_charge is never more than its own ⌈ttl·price/60⌉ hold, so
         // no aggregate-account overdraw is possible however many other holds live in the account.
@@ -1301,7 +1301,7 @@ public class LeaseReconciliationServiceTests
             "a lease's own earmark can never go negative under the shared aggregate account");
     }
 
-    // ---- Task #60 Bug 2: sweep-vs-resume race — CAS keeps "active ⇒ hold present" invariant ----
+    // ---- Task #60 Bug 2: sweep-vs-resume race -- CAS keeps "active ⇒ hold present" invariant ----
 
     [Fact]
     public async Task Sweep_wins_before_heartbeat_lease_ends_with_hold_released_and_heartbeat_revives_it()
@@ -1342,7 +1342,7 @@ public class LeaseReconciliationServiceTests
     [Fact]
     public async Task Sweep_racing_with_within_grace_resume_CAS_prevents_unbacked_active_lease()
     {
-        // AC204+205: the exact interleaving the task calls out — the reconciler has already read the
+        // AC204+205: the exact interleaving the task calls out -- the reconciler has already read the
         // lease as suspended, but a sweep on another instance CAS-ends it (releases the hold) before
         // the reconciler's own TransitionState fires. Without the CAS guard on the resume, the
         // ended-and-hold-released row would be flipped back to active with no wallet earmark.
@@ -1481,7 +1481,7 @@ public class LeaseReconciliationServiceTests
         Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
         Assert.Empty(outcome.Revived);
         // The revive-denial path transitions the row to payment_failed and reports it under
-        // TerminalOrphaned (the row exists in a terminal state — safe to relay lease.release).
+        // TerminalOrphaned (the row exists in a terminal state -- safe to relay lease.release).
         Assert.Contains(lease.Id, outcome.TerminalOrphaned);
     }
 
@@ -1500,7 +1500,7 @@ public class LeaseReconciliationServiceTests
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
         fx.Clock.Advance(TimeSpan.FromMinutes(2));
 
-        // Sweep on another instance wins first — lease already ended with hold released.
+        // Sweep on another instance wins first -- lease already ended with hold released.
         await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
             TimeSpan.FromSeconds(60), new HashSet<Guid>());
         var afterSweep = await fx.ReloadAsync(lease.Id);
@@ -1510,12 +1510,12 @@ public class LeaseReconciliationServiceTests
 
         // Grace-timer fires on THIS instance calling EndSuspendedHostLeasesAsync (which routes each
         // still-suspended lease through EndSuspendedAsync). The lease is already ended, so
-        // ListActiveByHostAsync should not see it — but exercise the code path by injecting a suspended
+        // ListActiveByHostAsync should not see it -- but exercise the code path by injecting a suspended
         // clone that races with a background sweep.
         var count = await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
         Assert.Equal(0, count); // nothing suspended left, so the loop is empty
 
-        // Wallet / holds unchanged from post-sweep state — no double release.
+        // Wallet / holds unchanged from post-sweep state -- no double release.
         Assert.Equal(walletAfterSweep, await fx.WalletCentsAsync());
         Assert.Equal(holdsAfterSweep, await fx.HoldsCentsForAsync(lease.Id));
     }
@@ -1602,13 +1602,13 @@ public class LeaseReconciliationServiceTests
 
         Assert.True(raced, "concurrent end must have fired between the read and the CAS transition");
 
-        // The winner's end_reason survives — our container_lost CAS misses and we skip its release.
+        // The winner's end_reason survives -- our container_lost CAS misses and we skip its release.
         var stored = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
         Assert.Equal(LeaseEndReason.Released, stored.EndReason);
         Assert.DoesNotContain(lease.Id, outcome.ContainerLost); // loser did not report the end
 
-        // Wallet reflects exactly one release, not two — the CAS makes the second attempt a no-op.
+        // Wallet reflects exactly one release, not two -- the CAS makes the second attempt a no-op.
         var walletAfter = await fx.WalletCentsAsync();
         Assert.Equal(3540, walletAfter - walletBefore); // 3600 hold − 60 charged = 3540, once.
     }

@@ -4,7 +4,7 @@ namespace Wisper.Api.Tunnel.Backplane;
 /// Persists a host's <see cref="HostCapabilitySnapshot"/> alongside its presence record so the snapshot
 /// is readable from any instance, even when the host's tunnel lives on a different one (task #17).
 /// Lifecycle is tied to presence: <see cref="SetAsync"/> is called on register and <see cref="ClearAsync"/>
-/// on disconnect — a dead tunnel never leaves a readable snapshot.
+/// on disconnect -- a dead tunnel never leaves a readable snapshot.
 /// </summary>
 public interface IHostCapabilityStore
 {

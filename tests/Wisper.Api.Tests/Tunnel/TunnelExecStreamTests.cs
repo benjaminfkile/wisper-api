@@ -89,7 +89,7 @@ public class TunnelExecStreamTests
         var ct = Token();
         var agent = await FakeAgent.ConnectAsync(factory, ct);
         // Gate exec.exit on the credit: the agent emits 64 bytes of stdout and holds the exit until
-        // a stream.credit comes back. This is deterministic — the stream stays open (so the drained
+        // a stream.credit comes back. This is deterministic -- the stream stays open (so the drained
         // bytes actually replenish credit) until the credit is observed, then the exit follows.
         agent.StartExec(new[] { Out(new string('x', 64)) }, exitCode: 0, ct, gateExitOnCredit: true);
 

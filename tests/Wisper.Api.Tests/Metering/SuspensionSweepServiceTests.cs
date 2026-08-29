@@ -17,7 +17,7 @@ using Host = Wisper.Api.Domain.Host;
 namespace Wisper.Api.Tests.Metering;
 
 /// <summary>
-/// Unit tests for the durable grace backstop (task #55) — <see cref="LeaseReconciliationService.SweepStaleSuspendedLeasesAsync"/>
+/// Unit tests for the durable grace backstop (task #55) -- <see cref="LeaseReconciliationService.SweepStaleSuspendedLeasesAsync"/>
 /// and <see cref="SuspensionSweepService.RunOnceAsync"/>. The scenario is the highest-severity availability
 /// bug the task fixes: a wisper-api restart while a host is in grace strands its leases in <c>suspended</c>
 /// forever (wallet hold never released, host + consumer concurrency slots consumed forever). The sweep
@@ -28,7 +28,7 @@ public class SuspensionSweepServiceTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 7, 12, 0, 0, 0, TimeSpan.Zero);
 
-    // 60¢/min = exactly 1¢/second — readable arithmetic.
+    // 60¢/min = exactly 1¢/second -- readable arithmetic.
     private const long PricePerMin = 60;
     private const int FeeBps = 1500;
     private const int GraceSeconds = 90;
@@ -140,7 +140,7 @@ public class SuspensionSweepServiceTests
         return fx;
     }
 
-    // ---- AC180: durable grace — a fresh coordinator sweeps and ends a stranded suspended lease ----
+    // ---- AC180: durable grace -- a fresh coordinator sweeps and ends a stranded suspended lease ----
 
     [Fact]
     public async Task Sweep_ends_a_suspended_lease_whose_in_memory_grace_was_lost_across_a_restart()
@@ -175,7 +175,7 @@ public class SuspensionSweepServiceTests
         Assert.NotNull(reaped.EndedAt);
         Assert.Null(reaped.SuspendedAt); // cleared on transition off suspended
 
-        // Wallet hold is released (the whole point of the fix — otherwise the hold sits forever).
+        // Wallet hold is released (the whole point of the fix -- otherwise the hold sits forever).
         Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
 
         // Consumer + host concurrency slots are freed (they counted suspended as live).
@@ -187,14 +187,14 @@ public class SuspensionSweepServiceTests
     {
         // AC180 end-to-end: the hosted service's public RunOnceAsync (the same code path the timer drives
         // each tick) reaps a stale suspended lease using its wired-in TunnelDisconnectCoordinator (which
-        // has no armed grace timers — the "fresh coordinator" case).
+        // has no armed grace timers -- the "fresh coordinator" case).
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
 
-        // Fresh coordinator — mirrors the state after a wisper-api restart.
+        // Fresh coordinator -- mirrors the state after a wisper-api restart.
         var coordinator = new TunnelDisconnectCoordinator(
             fx.Reconciler,
             new StaticOptionsMonitor<TunnelOptions>(new TunnelOptions { GraceSeconds = GraceSeconds }),
@@ -230,7 +230,7 @@ public class SuspensionSweepServiceTests
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
 
-        // Advance only 30s — well inside the grace + safety window.
+        // Advance only 30s -- well inside the grace + safety window.
         fx.Clock.Advance(TimeSpan.FromSeconds(30));
 
         var ended = await fx.Reconciler.SweepStaleSuspendedLeasesAsync(
@@ -248,7 +248,7 @@ public class SuspensionSweepServiceTests
     public async Task Sweep_skips_hosts_whose_in_memory_grace_timer_is_currently_armed()
     {
         // The fast path is the in-memory grace timer (task #55): while it is armed on THIS instance, the
-        // sweep must NOT race it — the sweep is the durable backstop, not a parallel decision maker.
+        // sweep must NOT race it -- the sweep is the durable backstop, not a parallel decision maker.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -264,7 +264,7 @@ public class SuspensionSweepServiceTests
         Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(lease.Id))!.Status);
     }
 
-    // ---- AC182: idempotency — twice, or two instances, converge on exactly one end + one release ----
+    // ---- AC182: idempotency -- twice, or two instances, converge on exactly one end + one release ----
 
     [Fact]
     public async Task Sweep_is_idempotent_running_twice_produces_exactly_one_end_and_one_release()
@@ -291,7 +291,7 @@ public class SuspensionSweepServiceTests
         Assert.Equal(LeaseStatus.Ended, reaped!.Status);
         Assert.Equal(LeaseEndReason.HostDisconnect, reaped.EndReason);
 
-        // Hold released exactly once — the ledger's key-per-hold-generation dedupes anyway, but this
+        // Hold released exactly once -- the ledger's key-per-hold-generation dedupes anyway, but this
         // captures the end-state: zero net earmark after the sweep converges.
         Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
     }
@@ -300,7 +300,7 @@ public class SuspensionSweepServiceTests
     public async Task Sweep_two_concurrent_instances_produce_exactly_one_end_transition()
     {
         // AC182: the concurrent-instances race. Two "instances" of the reconciler racing on the same DB
-        // (shared repo/ledger state) must converge — the CAS guard makes one lose the update.
+        // (shared repo/ledger state) must converge -- the CAS guard makes one lose the update.
         var fx = await ReadyAsync();
         var lease = await fx.SeedActiveLeaseAsync();
 
@@ -325,7 +325,7 @@ public class SuspensionSweepServiceTests
         Assert.Equal(0, await fx.HoldsCentsForAsync(lease.Id));
     }
 
-    // ---- AC183: migration semantics — suspend sets, resume/revive clears ----
+    // ---- AC183: migration semantics -- suspend sets, resume/revive clears ----
 
     [Fact]
     public async Task Suspend_stamps_suspended_at_and_resume_clears_it()
@@ -365,7 +365,7 @@ public class SuspensionSweepServiceTests
         await fx.Reconciler.SuspendHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
         Assert.NotNull((await fx.ReloadAsync(lease.Id))!.SuspendedAt);
 
-        // Grace expires — end as host_disconnect. suspended_at should also clear on this transition.
+        // Grace expires -- end as host_disconnect. suspended_at should also clear on this transition.
         await fx.Reconciler.EndSuspendedHostLeasesAsync(fx.HostId, T0.AddSeconds(60));
         var ended = await fx.ReloadAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, ended!.Status);
@@ -379,14 +379,14 @@ public class SuspensionSweepServiceTests
         Assert.Null(revived.SuspendedAt);
     }
 
-    // ---- AC181: reconnect after restart — heartbeat resolves the suspended set ----
+    // ---- AC181: reconnect after restart -- heartbeat resolves the suspended set ----
 
     [Fact]
     public async Task Reconnect_after_restart_resumes_reported_and_ends_unreported_suspended()
     {
         // AC181: after a wisper-api restart the coordinator's in-memory grace is gone; the first heartbeat
         // must resume host-reported suspended leases (container still running) and end unreported ones as
-        // container_lost. Two leases in one host — one reported live, one gone.
+        // container_lost. Two leases in one host -- one reported live, one gone.
         var fx = await ReadyAsync();
         var alive = await fx.SeedActiveLeaseAsync();
         var gone = await fx.SeedActiveLeaseAsync();
@@ -396,7 +396,7 @@ public class SuspensionSweepServiceTests
         Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(alive.Id))!.Status);
         Assert.Equal(LeaseStatus.Suspended, (await fx.ReloadAsync(gone.Id))!.Status);
 
-        // Restart (no in-memory grace). Agent reconnects and heartbeats — reports only `alive`.
+        // Restart (no in-memory grace). Agent reconnects and heartbeats -- reports only `alive`.
         fx.Clock.Advance(TimeSpan.FromSeconds(20));
         var heartbeatAt = fx.Clock.GetUtcNow();
         var outcome = await fx.Reconciler.ReconcileHeartbeatAsync(fx.HostId, new[] { alive.Id });

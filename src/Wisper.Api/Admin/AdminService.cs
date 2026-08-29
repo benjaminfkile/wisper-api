@@ -16,7 +16,7 @@ using Wisper.Api.Tunnel;
 namespace Wisper.Api.Admin;
 
 /// <summary>
-/// The admin API (docs/API.md §8) — the admin-group-gated operations surface: the platform overview
+/// The admin API (docs/API.md §8) -- the admin-group-gated operations surface: the platform overview
 /// (revenue/active leases/counts derived from the ledger + repos), the versioned platform policy (read +
 /// publish), host/user search and suspend/unsuspend moderation, manual refunds, the balanced ledger
 /// <c>adjustment</c> (the only hand-correction of money), the audit trail, and read-only ledger forensics.
@@ -48,6 +48,7 @@ public sealed class AdminService
     private readonly ILeaseWalletGate _walletGate;
     private readonly ITunnelRelay _relay;
     private readonly LedgerReconcileMonitor _reconcileMonitor;
+    private readonly PolicyFallbackMonitor _policyFallback;
     private readonly TimeProvider _time;
     private readonly ILogger<AdminService> _logger;
 
@@ -63,6 +64,7 @@ public sealed class AdminService
         ILeaseWalletGate walletGate,
         ITunnelRelay relay,
         LedgerReconcileMonitor reconcileMonitor,
+        PolicyFallbackMonitor policyFallback,
         TimeProvider time,
         ILogger<AdminService> logger)
     {
@@ -77,13 +79,14 @@ public sealed class AdminService
         _walletGate = walletGate;
         _relay = relay;
         _reconcileMonitor = reconcileMonitor;
+        _policyFallback = policyFallback;
         _time = time;
         _logger = logger;
     }
 
     /// <summary>
     /// The platform overview (docs/API.md §8): accrued platform revenue + the outstanding wallet liability +
-    /// unpaid host earnings (all ledger-derived — the source of truth, docs/DATA_MODEL.md §7), the live
+    /// unpaid host earnings (all ledger-derived -- the source of truth, docs/DATA_MODEL.md §7), the live
     /// active-lease count, and host/consumer counts.
     /// </summary>
     public async Task<AdminOverviewResponse> GetOverviewAsync(CancellationToken ct = default)
@@ -108,7 +111,25 @@ public sealed class AdminService
                 snap.HasDrift)
             : LedgerReconcileView.Empty;
 
-        var health = reconcile.HasDrift ? "ledger_drift" : "ok";
+        // Surface the metering flush's platform-policy fallback (task #206) so an operator sees the
+        // incident on the overview without waiting for the next log line. `active` reflects whether an
+        // active row currently resolves; `fallback_count` + `last_fallback_*` come from the process-local
+        // counter MeteringService feeds. Health flips to `policy_fallback` as soon as a fallback has been
+        // recorded this boot; a ledger drift outranks it because a drift means the balance cache itself
+        // has diverged from the journal.
+        var activePolicy = await _policy.GetActiveAsync(ct);
+        var lastFallback = _policyFallback.Last;
+        var platformPolicy = lastFallback is null
+            ? new PlatformPolicyHealthView(activePolicy is not null, 0, null, null)
+            : new PlatformPolicyHealthView(
+                activePolicy is not null,
+                lastFallback.Count,
+                lastFallback.At,
+                lastFallback.PolicyId);
+
+        var health = reconcile.HasDrift
+            ? "ledger_drift"
+            : (platformPolicy.FallbackCount > 0 ? "policy_fallback" : "ok");
 
         return new AdminOverviewResponse(
             Currency,
@@ -120,7 +141,8 @@ public sealed class AdminService
             online.Count,
             userCount,
             Health: health,
-            LedgerReconcile: reconcile);
+            LedgerReconcile: reconcile,
+            PlatformPolicy: platformPolicy);
     }
 
     /// <summary>The current policy + full version history (docs/API.md §8, <c>GET /v1/admin/policy</c>).</summary>
@@ -159,7 +181,7 @@ public sealed class AdminService
         ValidateNonNegative(request.NewAccountMaxTopupCentsPerDay, "new_account_max_topup_cents_per_day");
         ValidateNonNegative(request.MaxSpendCentsPerDay, "max_spend_cents_per_day");
 
-        // The min-isolation floor must be a requestable level (shared/sandboxed/vm) — confidential or an
+        // The min-isolation floor must be a requestable level (shared/sandboxed/vm) -- confidential or an
         // unknown value could never be satisfied by a lease request (task #418). A blank value is normalized
         // to "no floor" so the field can be cleared.
         var minIsolation = string.IsNullOrWhiteSpace(request.MinIsolation) ? null : request.MinIsolation.Trim();
@@ -291,7 +313,7 @@ public sealed class AdminService
 
     /// <summary>
     /// The admin manual refund (docs/API.md §8, <c>POST /v1/admin/refunds</c>): validates the target user, then
-    /// delegates to <see cref="BillingService.AdminRefundAsync"/> — the same Stripe refund + <c>refund</c>
+    /// delegates to <see cref="BillingService.AdminRefundAsync"/> -- the same Stripe refund + <c>refund</c>
     /// ledger txn the self-serve path posts, recorded with the acting admin as the audit actor.
     /// </summary>
     public async Task<RefundResponse> RefundAsync(
@@ -314,7 +336,7 @@ public sealed class AdminService
     }
 
     /// <summary>
-    /// The balanced ledger <c>adjustment</c> — the <b>only</b> way to hand-correct money (docs/API.md §8,
+    /// The balanced ledger <c>adjustment</c> -- the <b>only</b> way to hand-correct money (docs/API.md §8,
     /// docs/DATA_MODEL.md §7, §12): posts a two-legged transaction moving <c>amount_cents</c> from the debit
     /// account to the credit account (keyed by <paramref name="idempotencyKey"/> so a retry can't double-post),
     /// then records a <c>ledger.adjustment</c> audit row with the amount + reason. Throws <c>validation_error</c>
@@ -355,7 +377,7 @@ public sealed class AdminService
                 new { field = "credit_account_id" });
         }
 
-        // Both accounts must exist — never post against a phantom account (§7). 404 leaks nothing money-side.
+        // Both accounts must exist -- never post against a phantom account (§7). 404 leaks nothing money-side.
         var debit = await _ledger.GetAccountAsync(debitId, ct)
             ?? throw new ApiException(ApiErrorCode.NotFound, $"No such ledger account '{debitId}'.");
         var credit = await _ledger.GetAccountAsync(creditId, ct)
@@ -411,7 +433,7 @@ public sealed class AdminService
     }
 
     /// <summary>
-    /// The admin lease listing (docs/API.md §8, task #57) — a page of non-terminal leases
+    /// The admin lease listing (docs/API.md §8, task #57) -- a page of non-terminal leases
     /// (<c>active + suspended</c>), the set an operator needs to find stuck leases without SQL. Optional
     /// <paramref name="status"/> narrows to one lifecycle state; <paramref name="pastTtl"/> keeps only
     /// leases whose <c>started_at + ttl_seconds</c> has already elapsed. Ordered oldest-first (the strays
@@ -441,10 +463,10 @@ public sealed class AdminService
 
     /// <summary>
     /// The operator escape hatch (docs/API.md §8, task #57): force-end a stuck lease from ANY non-terminal
-    /// state — the same three-step end path the tunnel reconciliation drivers use (finalize billing → CAS
+    /// state -- the same three-step end path the tunnel reconciliation drivers use (finalize billing → CAS
     /// transition to <c>ended (admin)</c> → release the wallet hold), plus a best-effort
     /// <c>lease.release</c> down the tunnel so a live host tears the container down (wisp's TTL reaper
-    /// covers a host with no live tunnel — no need to wait). Idempotent: an already-terminal lease is a
+    /// covers a host with no live tunnel -- no need to wait). Idempotent: an already-terminal lease is a
     /// no-op success (no double hold release), an unknown lease is <c>404</c>. Records a
     /// <c>lease.admin_end</c> audit row with the before/after status.
     /// </summary>
@@ -454,7 +476,7 @@ public sealed class AdminService
         var lease = await _leases.GetByIdAsync(leaseId, ct)
             ?? throw new ApiException(ApiErrorCode.NotFound, $"No such lease '{leaseId}'.");
 
-        // Idempotent: an already-terminal (ended/failed) lease is a safe no-op replay — the wallet hold
+        // Idempotent: an already-terminal (ended/failed) lease is a safe no-op replay -- the wallet hold
         // was released the first time around and re-issuing the release keyed to the same hold generation
         // would move nothing anyway; still, skipping the whole path avoids re-notifying the host and a
         // duplicate audit row for something that already happened.
@@ -466,7 +488,7 @@ public sealed class AdminService
         var now = _time.GetUtcNow();
         var before = lease.Status;
 
-        // Only an active lease has a billable tail to flush — a suspended lease was already flushed to
+        // Only an active lease has a billable tail to flush -- a suspended lease was already flushed to
         // last-healthy at suspend time, and pending/provisioning never accrued (docs/TUNNEL.md §8).
         // FinalizeLeaseAsync applies the same TTL + last-healthy caps the periodic tick and every other
         // finalize driver use (task #54), so the consumer is charged exactly the healthy seconds up to now
@@ -478,7 +500,7 @@ public sealed class AdminService
 
         // CAS-guarded transition on the pre-flush status: if the sweep / heartbeat set-diff / a consumer
         // release won the race the WHERE clause fails, TransitionStateAsync returns null, and we do NOT
-        // re-release the hold below — mirroring the discipline used elsewhere for the end path.
+        // re-release the hold below -- mirroring the discipline used elsewhere for the end path.
         var moved = await _leases.TransitionStateAsync(
             lease.Id, LeaseStatus.Ended, endReason: LeaseEndReason.Admin, endedAt: now,
             expectedCurrentStatus: lease.Status, ct: ct);
@@ -489,13 +511,13 @@ public sealed class AdminService
         }
 
         // Return the unused hold to the wallet (docs/PAYMENTS.md §4). Keyed per hold generation so
-        // repeated end drivers converge on a single release — the CAS above already gives zero-post
+        // repeated end drivers converge on a single release -- the CAS above already gives zero-post
         // idempotence on the state transition itself.
         await _walletGate.ReleaseHoldAsync(lease.Id, ct);
 
         // Best-effort tunnel notify (task #57): if the host has a live tunnel, tear the container down
         // via lease.release. No live tunnel (host_offline) or a slow host (upstream_timeout) is not a
-        // failure — wisp's local TTL reaper reclaims the container regardless (docs/TUNNEL.md §8), and
+        // failure -- wisp's local TTL reaper reclaims the container regardless (docs/TUNNEL.md §8), and
         // an admin already committed the ledger-side end above.
         await TryReleaseOverTunnelAsync(lease, ct);
 
@@ -522,7 +544,7 @@ public sealed class AdminService
     /// <summary>
     /// Fires-and-forgets <c>lease.release</c> down the host's tunnel (task #57). A missing tunnel
     /// (<c>host_offline</c>), a silent host (<c>upstream_timeout</c>), or any other typed relay failure is
-    /// swallowed here — wisp's local TTL reaper reclaims the container regardless, and an admin has
+    /// swallowed here -- wisp's local TTL reaper reclaims the container regardless, and an admin has
     /// already committed the ledger-side end. The exception must not shadow the completed end.
     /// </summary>
     private async Task TryReleaseOverTunnelAsync(Lease lease, CancellationToken ct)
@@ -612,12 +634,12 @@ public sealed class AdminService
         return new AdminPage<LedgerAccountListView>(view, next);
     }
 
-    /// <summary>The <c>adjustment</c> ledger idempotency key — namespaced under the admin's API idempotency key.</summary>
+    /// <summary>The <c>adjustment</c> ledger idempotency key -- namespaced under the admin's API idempotency key.</summary>
     public static string AdjustmentIdempotencyKey(string apiKey) => $"adjustment:{apiKey}";
 
-    /// <summary>A lease's TTL has elapsed on Wisper's clock (task #57) — used by the admin listing's
+    /// <summary>A lease's TTL has elapsed on Wisper's clock (task #57) -- used by the admin listing's
     /// <c>past_ttl</c> filter. A lease with no <see cref="Lease.StartedAt"/> (never went ready) is not
-    /// past its TTL yet — the clock only runs from meter start.</summary>
+    /// past its TTL yet -- the clock only runs from meter start.</summary>
     private static bool IsPastTtl(Lease lease, DateTimeOffset now) =>
         lease.StartedAt is { } started && started.AddSeconds(lease.TtlSeconds) < now;
 

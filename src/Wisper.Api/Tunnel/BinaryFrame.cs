@@ -18,7 +18,7 @@ public readonly record struct BinaryFrame(byte Channel, uint Sid, ReadOnlyMemory
     /// <summary>Fixed header length in bytes.</summary>
     public const int HeaderSize = 6;
 
-    /// <summary>Maximum payload length per frame — 32 KiB (docs/TUNNEL.md §2).</summary>
+    /// <summary>Maximum payload length per frame -- 32 KiB (docs/TUNNEL.md §2).</summary>
     public const int MaxPayload = 32 * 1024;
 
     /// <summary>

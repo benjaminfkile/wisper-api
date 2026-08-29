@@ -3,7 +3,7 @@ using Wisper.Api.Domain;
 namespace Wisper.Api.Persistence.Payouts;
 
 /// <summary>
-/// Data access for <see cref="Payout"/> rows — host Connect transfers that drain accrued earnings
+/// Data access for <see cref="Payout"/> rows -- host Connect transfers that drain accrued earnings
 /// (docs/DATA_MODEL.md §9, docs/PAYMENTS.md §6). A payout is created <see cref="PayoutStatus.Pending"/>,
 /// then advanced as the Stripe transfer progresses; <see cref="Payout.StripeTransferId"/> is unique so a
 /// retried run can't double-pay. A Dapper + explicit-SQL implementation backs Postgres; an in-memory

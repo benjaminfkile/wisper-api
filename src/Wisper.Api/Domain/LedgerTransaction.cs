@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// One money movement (docs/DATA_MODEL.md §7, <c>ledger_transactions</c>) — the header over a balanced
+/// One money movement (docs/DATA_MODEL.md §7, <c>ledger_transactions</c>) -- the header over a balanced
 /// set of <see cref="LedgerEntry"/> rows whose <c>Σ debit = Σ credit</c>. Append-only and immutable; a
 /// correction is a new reversing transaction, never an edit. <see cref="IdempotencyKey"/> is the
 /// unique dedupe key (a Stripe event id, an API idempotency key, …) so a retry or duplicate webhook can
@@ -18,7 +18,7 @@ public sealed record LedgerTransaction
     /// <summary>The lease this movement is scoped to, when lease-scoped (hold/charge/release).</summary>
     public Guid? LeaseId { get; init; }
 
-    /// <summary>An external reference — a Stripe <c>pi_</c>/<c>tr_</c>/<c>ch_</c> id, etc.</summary>
+    /// <summary>An external reference -- a Stripe <c>pi_</c>/<c>tr_</c>/<c>ch_</c> id, etc.</summary>
     public string? ExternalRef { get; init; }
 
     /// <summary>Unique idempotency key that dedupes retries/webhooks; <c>null</c> for un-keyed internal posts.</summary>

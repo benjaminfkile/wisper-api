@@ -20,7 +20,7 @@ using Wisper.Api.Tunnel.Backplane;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Structured JSON logging to stdout — one line per event, UTC, scope-aware so the
+// Structured JSON logging to stdout -- one line per event, UTC, scope-aware so the
 // request id (below) rides along on every log line. Matches the fleet's log shape.
 builder.Logging.ClearProviders();
 builder.Logging.AddJsonConsole(options =>
@@ -43,14 +43,14 @@ builder.Services.AddWisperAuth(builder.Configuration);
 // repository (P2.2) and the shared clock, both registered by AddWisperPersistence above.
 builder.Services.AddSingleton<IUserAccountService, UserAccountService>();
 
-// Self-serve API keys (docs/API.md §2, §5, P3.x): the /v1/me/api-keys lifecycle — mint (JWT-only,
+// Self-serve API keys (docs/API.md §2, §5, P3.x): the /v1/me/api-keys lifecycle -- mint (JWT-only,
 // scope-capped, shown once, hash-at-rest), list (prefix only), revoke (idempotent). Backs a machine
 // client driving the /v1 surface with one long-lived bearer. Behind the api_keys repository (registered
 // by AddWisperPersistence) + the shared clock; no Postgres needed to test.
 builder.Services.AddSingleton<ApiKeyService>();
 
 // Consumer catalog (docs/API.md §5, P4.1): reads online hosts and their priced, enabled images by
-// joining the host_images allow-list (P2.2) with the live tunnel registry — the authoritative source
+// joining the host_images allow-list (P2.2) with the live tunnel registry -- the authoritative source
 // of host presence. Backs GET /v1/catalog and GET /v1/hosts/:id, both consumer-gated.
 builder.Services.AddSingleton<ICatalogService, CatalogService>();
 
@@ -59,24 +59,28 @@ builder.Services.AddSingleton<ICatalogService, CatalogService>();
 // persists the leases row (P2.3). The wallet gate (P6.3, docs/PAYMENTS.md §4) is now the real billing
 // gate: at POST /leases it enforces the per-user concurrency cap and places a ⌈ttl/60⌉·price hold from
 // the wallet (402 insufficient_funds before any lease.create), the meter debits it per tick, and lease
-// end releases the remainder — pure internal ledger against pre-funded wallet money, no Stripe.
+// end releases the remainder -- pure internal ledger against pre-funded wallet money, no Stripe.
 builder.Services.AddSingleton<ILeaseWalletGate, WalletLeaseGate>();
 builder.Services.AddSingleton<ILeaseService, LeaseService>();
 
 // Consumer interactive shell (docs/API.md §7, P4.4): the store that mints the single-use, ~30s,
 // (user,lease)-bound WS tickets behind POST /v1/leases/:id/shell-ticket. Registered by
 // AddTunnelBackplane: InMemoryShellTicketStore when single-instance (backplane disabled), or
-// RedisShellTicketStore when the Redis backplane is active — reusing the same IConnectionMultiplexer.
+// RedisShellTicketStore when the Redis backplane is active -- reusing the same IConnectionMultiplexer.
 
 // Metering engine (docs/DATA_MODEL.md §14, docs/PAYMENTS.md §4, P5.1): the manager-authoritative meter
 // that accrues billable lease-minutes over healthy intervals and, on a fixed tick (default 60s) and on
 // lease end, posts a lease_charge (hold → host_earnings + platform_revenue) + a lease_usage row, idempotent
-// on (lease_id, period_start). Internal ledger only — no Stripe. The background loop is a no-op on a DB-less
+// on (lease_id, period_start). Internal ledger only -- no Stripe. The background loop is a no-op on a DB-less
 // boot; it resumes each active lease from its persisted last_metered_at watermark on restart.
 builder.Services.Configure<MeteringOptions>(builder.Configuration.GetSection(MeteringOptions.SectionName));
 // The meter caps accrual at each host's last-healthy liveness point (via the live tunnel registry) so a
 // blind disconnect window is structurally un-billable (docs/TUNNEL.md §8).
 builder.Services.AddSingleton<IMeterLivenessSource, RegistryMeterLivenessSource>();
+// Process-local counter of platform-policy fallbacks the metering flush observed (task #206). Wired
+// into MeteringService and read from the admin overview so an operator sees the incident without
+// tailing logs.
+builder.Services.AddSingleton<PolicyFallbackMonitor>();
 builder.Services.AddSingleton<MeteringService>();
 builder.Services.AddHostedService<MeteringHostedService>();
 
@@ -87,7 +91,7 @@ builder.Services.AddHostedService<MeteringHostedService>();
 builder.Services.AddSingleton<LeaseReconciliationService>();
 // Host presence follows the tunnel (docs/TUNNEL.md §3, §8, task #392): tunnel-ready flips the host online
 // when it clears the earning gate (owner Connect-enabled OR every enabled image zero-priced), and a durable
-// tunnel loss (grace expiry / no-lease close, driven by the coordinator) flips it back offline — the wiring
+// tunnel loss (grace expiry / no-lease close, driven by the coordinator) flips it back offline -- the wiring
 // that was missing, leaving a live agent's host stuck offline and absent from the catalog.
 builder.Services.AddSingleton<IHostPresence, HostPresenceService>();
 // The coordinator resolves ITunnelRelay lazily via a factory to break the DI cycle with TunnelRelay
@@ -106,12 +110,12 @@ builder.Services.AddSingleton<TunnelDisconnectCoordinator>(sp => new TunnelDisco
 // memory, so a restart / crash / scale-in with any host inside grace strands its leases in `suspended`
 // forever (wallet hold never released, host + consumer concurrency slots consumed forever). The sweep
 // discovers stale suspended leases via the durable `suspended_at` stamp and ends them as
-// host_disconnect on the same finalize path — CAS-guarded so two instances converge on one transition.
+// host_disconnect on the same finalize path -- CAS-guarded so two instances converge on one transition.
 builder.Services.AddHostedService<SuspensionSweepService>();
 
 // Stripe integration (docs/PAYMENTS.md §1, §8, P6.1): the config-driven Stripe client wrapper + webhook
 // signature verifier (both behind interfaces, keys from the Stripe config section / secrets manager), and
-// the POST /stripe/webhook ingest pipeline — persist-then-process into stripe_events (PK dedupe), then
+// the POST /stripe/webhook ingest pipeline -- persist-then-process into stripe_events (PK dedupe), then
 // dispatch to idempotent, order-independent handlers with retry-safe failure recording. The payment/
 // account/transfer handlers are stubs here; later billing tasks (P6.2+) fill in the ledger effects.
 // The dev environment carries Stripe *test* keys (sk_test_/whsec_) in Secrets Manager; unset ⇒ fail-closed.
@@ -141,7 +145,7 @@ builder.Services.Configure<IdempotencySweepOptions>(
 builder.Services.AddHostedService<IdempotencySweepHostedService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
-// (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel
+// (config-backed for Phase 1), and the in-memory host registry (singleton -- one live tunnel
 // per host, superseded on reconnect).
 builder.Services.Configure<TunnelOptions>(builder.Configuration.GetSection(TunnelOptions.SectionName));
 // Host-token auth is now DB-backed (docs/TUNNEL.md §13, P7.1): a presented agent token is resolved to its
@@ -150,8 +154,8 @@ builder.Services.Configure<TunnelOptions>(builder.Configuration.GetSection(Tunne
 builder.Services.AddSingleton<ConfigHostTokenValidator>();
 builder.Services.AddSingleton<IHostTokenValidator, DbHostTokenValidator>();
 // The live host registry + server-side relay (docs/TUNNEL.md §5, §11). AddTunnelBackplane registers the
-// in-memory registry + relay directly for a single instance (the default), or — when Tunnel:Backplane is
-// enabled (docs/DESIGN.md §7, P8.1) — fronts them with the Redis pub/sub backplane so a host tunnel pinned
+// in-memory registry + relay directly for a single instance (the default), or -- when Tunnel:Backplane is
+// enabled (docs/DESIGN.md §7, P8.1) -- fronts them with the Redis pub/sub backplane so a host tunnel pinned
 // to one instance can be driven from any other. Consumers see the same IHostRegistry/ITunnelRelay either way.
 builder.Services.AddTunnelBackplane(builder.Configuration);
 // IHostCapabilitySource is registered inside AddTunnelBackplane: RegistryHostCapabilitySource (single
@@ -164,7 +168,7 @@ builder.Services.AddSingleton<IAgentTunnelCloser, RegistryAgentTunnelCloser>();
 // advertised wisp capability. Behind interfaces + the persistence repos above; no Postgres/tunnel needed to test.
 builder.Services.AddSingleton<HostService>();
 
-// Admin API (docs/API.md §8, P7.2): the admin-group-gated operations surface — platform overview, the
+// Admin API (docs/API.md §8, P7.2): the admin-group-gated operations surface -- platform overview, the
 // versioned platform policy (read + publish), host/user search + suspend/unsuspend moderation, manual
 // refunds, the balanced ledger `adjustment` (the only hand-correction of money), the audit trail, and
 // read-only ledger forensics. Every admin write records an audit_log row (docs/DATA_MODEL.md §12). Depends
@@ -192,7 +196,7 @@ await app.SeedInMemoryDefaultsAsync();
 app.UseMiddleware<RequestIdMiddleware>();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
-// Raw WebSockets are core to Wisper — the agent tunnel (docs/TUNNEL.md) and the
+// Raw WebSockets are core to Wisper -- the agent tunnel (docs/TUNNEL.md) and the
 // consumer console relay (docs/API.md §7) both live on this server. Enable here so
 // later work only has to map endpoints.
 app.UseWebSockets();
@@ -224,7 +228,7 @@ app.MapGet("/healthz", health);
 app.MapAgentTunnel();
 
 // DEV-ONLY, money-free lease drive endpoints (Phase-1 test harness). Structurally gated on the
-// hosting environment being Development — the deployed container runs as Production, so these
+// hosting environment being Development -- the deployed container runs as Production, so these
 // endpoints are unreachable in any deployed environment regardless of secret misconfiguration
 // (unauthenticated RCE against any connected host). The Tunnel:EnableDevEndpoints flag is still
 // honoured on top so a local `dotnet run` can leave them off. Replaced by the real /v1/leases
@@ -247,7 +251,7 @@ v1.MapGet("/", () => Results.Json(new { service = "wisper-api", version = "v1" }
 app.MapMeEndpoints();
 
 // Self-serve API-key surface (docs/API.md §5): POST/GET/DELETE /v1/me/api-keys, consumer-gated. Mint is
-// JWT-only (a key cannot mint more keys — privilege containment, §2) and scope-capped by the caller's roles;
+// JWT-only (a key cannot mint more keys -- privilege containment, §2) and scope-capped by the caller's roles;
 // the full key is shown once, stored hashed. List returns the prefix only; revoke is idempotent + 404-scoped.
 app.MapApiKeyEndpoints();
 
@@ -261,7 +265,7 @@ app.MapLeaseEndpoints();
 
 // Consumer interactive shell surface (docs/API.md §7): POST /v1/leases/:id/shell-ticket (consumer-gated,
 // mints a one-time WS ticket) and WS /v1/leases/:id/shell?ticket=… (ticket-authenticated, bridges to the
-// tunnel shell stream). The JWT never lands in a URL — the single-use, short-TTL ticket does.
+// tunnel shell stream). The JWT never lands in a URL -- the single-use, short-TTL ticket does.
 app.MapShellEndpoints();
 
 // Consumer billing surface (docs/API.md §5, docs/PAYMENTS.md §3): POST /v1/billing/topup (create a
@@ -286,7 +290,7 @@ app.MapHostConnectEndpoints();
 // Idempotency-Key required, connect_incomplete → 403). Host-gated; the same path the scheduled run uses.
 app.MapHostEarningsEndpoints();
 
-// Admin API surface (docs/API.md §8, P7.2): /v1/admin/* — GET /overview, GET/PUT /policy (versioned,
+// Admin API surface (docs/API.md §8, P7.2): /v1/admin/* -- GET /overview, GET/PUT /policy (versioned,
 // audited), GET /hosts · /users (search), POST /hosts|users/:id/suspend|unsuspend (moderation, audited),
 // POST /refunds · /adjustments (Idempotency-Key required, audited), GET /audit, and GET
 // /ledger/accounts/:id (read-only forensics). All admin-group-gated; every write records an audit_log row.

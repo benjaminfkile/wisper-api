@@ -8,7 +8,7 @@ namespace Wisper.Api.Auth;
 
 /// <summary>
 /// The endpoint filter behind the route-group role gates (docs/API.md §2). It authenticates
-/// the caller from the <c>Authorization: Bearer</c> header (once per request — a later gate
+/// the caller from the <c>Authorization: Bearer</c> header (once per request -- a later gate
 /// in the same group reuses the resolved principal) and enforces the minimum role.
 /// A bearer that looks like an API key (a <c>wck_</c> prefix, <see cref="ApiKeyToken.LooksLikeApiKey"/>)
 /// is resolved by the <see cref="IApiKeyAuthenticator"/>; anything else is validated as a Cognito JWT by
@@ -19,7 +19,7 @@ namespace Wisper.Api.Auth;
 /// The <c>host</c> gate additionally honors DB host-ownership (docs/API.md §184): a JWT caller who owns ≥1
 /// host is treated as holding <c>host</c> even if their current token predates the Cognito group add, so
 /// becoming a host is effective on the same token with no re-login. This is additive (it never removes a
-/// role) and JWT-only — api-key principals authorize purely by their explicit scopes (docs/API.md §2) — and
+/// role) and JWT-only -- api-key principals authorize purely by their explicit scopes (docs/API.md §2) -- and
 /// the ownership check runs only for the host gate, at most once per request (see <see cref="HostRoleDerivation"/>).
 /// </para>
 /// </summary>
@@ -65,7 +65,7 @@ public sealed class WisperAuthFilter : IEndpointFilter
     /// Whether the caller passes the gate despite lacking the required role via DB host-ownership
     /// (docs/API.md §184): the <c>host</c> gate treats a JWT caller who owns ≥1 host as holding <c>host</c>, so
     /// becoming a host is effective on the current token with no re-login. Only the host gate consults ownership
-    /// — consumer/admin gates return early, adding no DB round-trip — and api-key principals never override
+    /// -- consumer/admin gates return early, adding no DB round-trip -- and api-key principals never override
     /// their explicit scopes (docs/API.md §2). The ownership answer is resolved at most once per request
     /// (cached on <see cref="HttpContext.Items"/>, see <see cref="HostRoleDerivation"/>).
     /// </summary>

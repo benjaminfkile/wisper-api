@@ -1,7 +1,7 @@
 namespace Wisper.Api.Ledger;
 
 /// <summary>
-/// State-independent validation of a <see cref="TransactionDraft"/> — the C# mirror of the SQL entry
+/// State-independent validation of a <see cref="TransactionDraft"/> -- the C# mirror of the SQL entry
 /// checks and the deferred balanced-transaction trigger (docs/DATA_MODEL.md §7a, §7 <c>ledger_entries</c>
 /// checks). "Balanced" and "exactly one side per entry" depend only on the draft, so they are checked
 /// here up front; the balance-dependent non-negative guard (§7d) is enforced at commit time by the
@@ -33,7 +33,7 @@ public static class LedgerInvariants
                     $"ledger entry amounts must be non-negative (account {entry.AccountId})");
             }
 
-            // Exactly one side is non-zero — the SQL CHECK ((debit = 0) <> (credit = 0)).
+            // Exactly one side is non-zero -- the SQL CHECK ((debit = 0) <> (credit = 0)).
             if ((entry.DebitCents == 0) == (entry.CreditCents == 0))
             {
                 throw new LedgerException(LedgerViolation.MalformedEntry,

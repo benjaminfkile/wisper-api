@@ -12,7 +12,7 @@ namespace Wisper.Api.Catalog;
 /// <c>effective_cpus</c>/<c>effective_memory_mb</c> plus <c>resources_source</c> (task #578) resolve a
 /// NULL-profile offer against the host's advertised per-lease cap so the consumer never shops blind: they
 /// carry the offer's own value when set, else the host's per-lease cap, else <c>null</c> (an offline host,
-/// or one advertising no cap) — <c>resources_source</c> annotates which. The raw <c>cpus</c>/<c>memory_mb</c>
+/// or one advertising no cap) -- <c>resources_source</c> annotates which. The raw <c>cpus</c>/<c>memory_mb</c>
 /// are kept verbatim (the host editor needs them); the effective fields are display-only resolution.
 /// </summary>
 public sealed record CatalogImage(
@@ -32,7 +32,7 @@ public sealed record CatalogImage(
     [property: JsonPropertyName("effective_memory_mb")] int? EffectiveMemoryMb,
     [property: JsonPropertyName("resources_source")] string ResourcesSource)
 {
-    /// <summary>Currency is USD-only in v0 (docs/API.md §1 — integer cents + <c>"usd"</c>).</summary>
+    /// <summary>Currency is USD-only in v0 (docs/API.md §1 -- integer cents + <c>"usd"</c>).</summary>
     private const string Usd = "usd";
 
     /// <summary>
@@ -71,16 +71,16 @@ public sealed record CatalogImage(
 /// <summary>
 /// One catalog entry (docs/API.md §5): an online host and its priced, enabled images. The wire
 /// <c>label</c> carries the host's display name and <c>region</c> its region/label
-/// (docs/DATA_MODEL.md §4 — <c>hosts.name</c> is the display, <c>hosts.label</c> the region). Only
+/// (docs/DATA_MODEL.md §4 -- <c>hosts.name</c> is the display, <c>hosts.label</c> the region). Only
 /// hosts confirmed online by the live tunnel registry are emitted, so <c>online</c> is always true.
 /// <c>os</c> carries the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>, mirroring
-/// the wisp <c>/images</c> document), or <c>null</c> when the live capability has none — a client can
+/// the wisp <c>/images</c> document), or <c>null</c> when the live capability has none -- a client can
 /// adapt to a Windows host without a separate fetch, and an older agent that omits it never errors.
 /// <c>gpu_classes</c>/<c>gpu_count</c> mirror the host's advertised GPU (task #523) so a consumer can
 /// filter/size without a per-host fetch; empty/0 for a host that advertises none. <c>at_capacity</c> (task
 /// #571) tells the frontend to badge a full host; when the host advertises a concurrent-contract ceiling it
 /// also carries <c>active_leases</c>/<c>max_leases</c>. A host with no advertised ceiling (or offline) is never
-/// at capacity and omits the counts (null) — the tolerant-optional-field discipline the frontend relies on.
+/// at capacity and omits the counts (null) -- the tolerant-optional-field discipline the frontend relies on.
 /// </summary>
 public sealed record CatalogItem(
     [property: JsonPropertyName("host_id")] Guid HostId,
@@ -101,14 +101,14 @@ public sealed record CatalogItem(
     /// Projects a host plus its already-filtered priced images into the catalog wire shape. <paramref
     /// name="activeLeases"/>/<paramref name="maxLeases"/> carry the host's live admission state (task #571):
     /// pass both when the host advertises a positive contract ceiling, or leave them null for an unlimited/offline
-    /// host — <see cref="CatalogCapacity.Badge"/> folds them into the wire fields with the tolerant-optional rule.
+    /// host -- <see cref="CatalogCapacity.Badge"/> folds them into the wire fields with the tolerant-optional rule.
     /// </summary>
     public static CatalogItem From(
         Host host, IReadOnlyList<CatalogImage> images, bool online, string? os = null,
         int? activeLeases = null, int? maxLeases = null)
     {
         // Surface the persisted advertised isolation, normalized so a legacy row that stored nothing still
-        // reads as ["shared"]/"shared" — a consumer can filter on the level without a separate fetch (task #417).
+        // reads as ["shared"]/"shared" -- a consumer can filter on the level without a separate fetch (task #417).
         var (levels, defaultIsolation) = HostIsolation.Normalize(host.IsolationLevels, host.DefaultIsolation);
         var (atCapacity, active, max) = CatalogCapacity.Badge(activeLeases, maxLeases);
         return new(
@@ -164,7 +164,7 @@ public sealed record CatalogPage(
 /// The public detail of one host (docs/API.md §5, <c>GET /v1/hosts/:id</c>): the same public
 /// identity as a catalog entry plus its full priced, enabled image list and per-image limits.
 /// <c>os</c> is the host's advertised container OS (<c>"linux"</c> | <c>"windows"</c>), or <c>null</c>
-/// when the host is offline or its (older) agent advertised none — surfacing only, back-compatible.
+/// when the host is offline or its (older) agent advertised none -- surfacing only, back-compatible.
 /// <c>at_capacity</c>/<c>active_leases</c>/<c>max_leases</c> mirror the catalog entry's admission badge
 /// (task #571): the counts appear only when the host advertises a concurrent-contract ceiling, and an
 /// unlimited/offline host is never at capacity and omits them (null).

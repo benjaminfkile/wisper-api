@@ -18,7 +18,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// The DEV-ONLY <c>POST /dev/leases</c> response surfaces the target host's advertised container OS
 /// (task #316): it is read from the live <c>hello.capability</c> the tunnel registry tracks for that
 /// dev host id (a plain string like <c>dev-host-1</c>, so it keys the registry directly, not by Guid).
-/// It is additive and null-safe — a host with no live tunnel, or one whose (older) agent advertised no
+/// It is additive and null-safe -- a host with no live tunnel, or one whose (older) agent advertised no
 /// <c>os</c>, leaves the field <c>null</c> and never faults. The relay is faked, so no live agent is
 /// needed; only the registry-tracked capability drives the surfaced <c>os</c>.
 /// </summary>
@@ -68,7 +68,7 @@ public class DevLeaseOsTests
     {
         var relay = new FakeTunnelRelay();
         using var factory = CreateFactory(relay);
-        // No connection registered for the dev host — the relay still creates the lease (faked), but the
+        // No connection registered for the dev host -- the relay still creates the lease (faked), but the
         // registry has no capability, so os is absent.
 
         var body = await CreateLeaseAsync(factory);

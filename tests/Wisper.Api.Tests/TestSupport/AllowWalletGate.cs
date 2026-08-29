@@ -5,7 +5,7 @@ namespace Wisper.Api.Tests.TestSupport;
 /// <summary>
 /// A permissive <see cref="ILeaseWalletGate"/> test double: it always authorizes, places no ledger hold
 /// (returns a <c>null</c> hold txn id), and releases nothing. Used by the lease-surface tests that exercise
-/// the HTTP/validation/relay paths without wiring the ledger — the real hold/charge/release behaviour is
+/// the HTTP/validation/relay paths without wiring the ledger -- the real hold/charge/release behaviour is
 /// covered by <c>WalletLeaseGateTests</c> against the in-memory ledger.
 /// </summary>
 public sealed class AllowWalletGate : ILeaseWalletGate

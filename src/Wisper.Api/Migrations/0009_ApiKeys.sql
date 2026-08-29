@@ -1,10 +1,10 @@
--- 0009_ApiKeys.sql — consumer API keys (docs/DATA_MODEL.md §3, docs/API.md §2).
+-- 0009_ApiKeys.sql -- consumer API keys (docs/DATA_MODEL.md §3, docs/API.md §2).
 --
 -- A long-lived machine bearer for the authenticated /v1 surface (first client: the orchestrator app),
 -- so a machine can drive the API with one credential instead of the Cognito JWT flow. The key value is
 -- shown to the user exactly once at mint; only its SHA-256 hash and a short non-secret display prefix
 -- (e.g. `wck_live_ab12`) are stored, mirroring the host agent token (§4). Because a key's roles cannot
--- come from Cognito groups, the granted scopes travel on the row — constrained to the role labels. A key
+-- come from Cognito groups, the granted scopes travel on the row -- constrained to the role labels. A key
 -- is revocable (revoked_at) and carries a best-effort last_used_at stamp. Indexes: keys by owner, plus
 -- the UNIQUE token_hash which backs the O(1) hashed lookup the auth gate uses.
 

@@ -17,7 +17,7 @@ namespace Wisper.Api.Tests.Leases;
 /// prices their own image at <c>0</c>, so the wallet gate must pass a <b>0-cent hold with an empty wallet</b>,
 /// metering must be <b>ledger-safe at 0 cents</b>, and lease-end release of a 0 hold must be a <b>no-op that
 /// does not throw</b>. This wires the <em>real</em> <see cref="WalletLeaseGate"/> and <see cref="MeteringService"/>
-/// over the same in-memory ledger (Grunt has no Postgres) so the composition — not just each piece — is proven:
+/// over the same in-memory ledger (Grunt has no Postgres) so the composition -- not just each piece -- is proven:
 /// a free lease moves the ledger zero times and drives no balance negative.
 /// </summary>
 public class ZeroPriceLeasePathTests
@@ -89,7 +89,7 @@ public class ZeroPriceLeasePathTests
         var holdCents = LeaseHoldPricing.EstimateHoldCents(3600, priceCentsPerMin: 0);
         Assert.Equal(0, holdCents);
 
-        // 1. Authorize with an EMPTY wallet: a zero hold always allows — nothing to gate on.
+        // 1. Authorize with an EMPTY wallet: a zero hold always allows -- nothing to gate on.
         var decision = await fx.Gate.AuthorizeHoldAsync(fx.ConsumerId, holdCents, "usd");
         Assert.True(decision.Allowed);
 
@@ -109,7 +109,7 @@ public class ZeroPriceLeasePathTests
         // 4. End the lease: releasing a 0 hold is a no-op that does not throw.
         await fx.Gate.ReleaseHoldAsync(lease.Id);
 
-        // The whole loop moved the ledger zero times — every account is flat at zero and internally consistent.
+        // The whole loop moved the ledger zero times -- every account is flat at zero and internally consistent.
         Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.UserWallet, fx.ConsumerId));
         Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
         foreach (var account in await fx.Ledger.ReconcileAsync())
@@ -124,7 +124,7 @@ public class ZeroPriceLeasePathTests
     {
         var fx = new Fixture();
 
-        // No topup, no wallet account created — the gate must not require one for a zero hold.
+        // No topup, no wallet account created -- the gate must not require one for a zero hold.
         var decision = await fx.Gate.AuthorizeHoldAsync(fx.ConsumerId, holdCents: 0, "usd");
 
         Assert.True(decision.Allowed);

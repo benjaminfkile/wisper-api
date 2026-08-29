@@ -58,7 +58,7 @@ public sealed class UserAccountService : IUserAccountService
         }
         catch (Exception)
         {
-            // Lost the race to a concurrent first request (the unique cognito_sub insert failed) — if a
+            // Lost the race to a concurrent first request (the unique cognito_sub insert failed) -- if a
             // row now exists it's the winner's, so return it; otherwise the failure was something else.
             var raced = await _users.GetByCognitoSubAsync(subject, ct);
             if (raced is not null)
@@ -101,7 +101,7 @@ public sealed class UserAccountService : IUserAccountService
         }
         catch (InvalidOperationException ex)
         {
-            // A unique column (email) collided with another account — mirror the DB constraint as a conflict.
+            // A unique column (email) collided with another account -- mirror the DB constraint as a conflict.
             throw new ApiException(ApiErrorCode.Conflict, ex.Message);
         }
     }

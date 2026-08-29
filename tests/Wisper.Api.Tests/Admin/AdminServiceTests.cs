@@ -51,6 +51,7 @@ public class AdminServiceTests
         public MeteringService Meter { get; }
         public WalletLeaseGate WalletGate { get; }
         public LedgerReconcileMonitor ReconcileMonitor { get; } = new();
+        public PolicyFallbackMonitor PolicyFallback { get; } = new();
         public AdminService Service { get; }
 
         public Fixture()
@@ -64,12 +65,13 @@ public class AdminServiceTests
                 Ledger, Leases, Users, policy, fraud, Audit, Stripe, Clock,
                 NullLogger<BillingService>.Instance);
             Meter = new MeteringService(
-                Leases, Usage, Hosts, Ledger, policy, Clock, NullLogger<MeteringService>.Instance);
+                Leases, Usage, Hosts, Ledger, policy, Clock, NullLogger<MeteringService>.Instance,
+                policyFallback: PolicyFallback);
             WalletGate = new WalletLeaseGate(
                 Ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             Service = new AdminService(
                 Users, Hosts, Leases, Ledger, policy, Audit, billing,
-                Meter, WalletGate, Relay, ReconcileMonitor, Clock, NullLogger<AdminService>.Instance);
+                Meter, WalletGate, Relay, ReconcileMonitor, PolicyFallback, Clock, NullLogger<AdminService>.Instance);
         }
 
         public async Task<Guid> SeedUserAsync(string email = "user@example.com")
@@ -108,7 +110,7 @@ public class AdminServiceTests
 
         /// <summary>
         /// Seeds a lease in <paramref name="status"/> with a funded up-front hold sized against a 1-hour TTL
-        /// at 60¢/min — the readable price where 1s = 1¢. Also publishes the active policy so charges land.
+        /// at 60¢/min -- the readable price where 1s = 1¢. Also publishes the active policy so charges land.
         /// Returns the persisted <see cref="Lease"/>.
         /// </summary>
         public async Task<Lease> SeedLeaseAsync(
@@ -207,6 +209,76 @@ public class AdminServiceTests
         Assert.Null(overview.LedgerReconcile.RanAt);
         Assert.False(overview.LedgerReconcile.HasDrift);
         Assert.Equal(0, overview.LedgerReconcile.DriftAccountCount);
+    }
+
+    [Fact]
+    public async Task Overview_reports_platform_policy_healthy_when_active_and_no_fallback()
+    {
+        // Task #206: a healthy platform_policy row + zero fallbacks reports active=true, count=0, and
+        // the overview stays health=ok.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        await fx.Service.PublishPolicyAsync(admin, new PolicyUpdateRequest(FeeBps: 1500));
+
+        var overview = await fx.Service.GetOverviewAsync();
+
+        Assert.True(overview.PlatformPolicy.Active);
+        Assert.Equal(0, overview.PlatformPolicy.FallbackCount);
+        Assert.Null(overview.PlatformPolicy.LastFallbackAt);
+        Assert.Null(overview.PlatformPolicy.LastFallbackPolicyId);
+        Assert.Equal("ok", overview.Health);
+    }
+
+    [Fact]
+    public async Task Overview_flips_health_to_policy_fallback_when_the_monitor_recorded_one()
+    {
+        // Task #206: any fallback since boot flips health to policy_fallback and surfaces the recorded
+        // count + timestamp + policy id on the overview.
+        var fx = new Fixture();
+        var admin = await fx.SeedUserAsync("admin@example.com");
+        await fx.Service.PublishPolicyAsync(admin, new PolicyUpdateRequest(FeeBps: 1500));
+        var policyId = Guid.NewGuid();
+        var at = T0.AddMinutes(-2);
+        fx.PolicyFallback.Record(at, policyId);
+
+        var overview = await fx.Service.GetOverviewAsync();
+
+        Assert.True(overview.PlatformPolicy.Active);
+        Assert.Equal(1, overview.PlatformPolicy.FallbackCount);
+        Assert.Equal(at, overview.PlatformPolicy.LastFallbackAt);
+        Assert.Equal(policyId, overview.PlatformPolicy.LastFallbackPolicyId);
+        Assert.Equal("policy_fallback", overview.Health);
+    }
+
+    [Fact]
+    public async Task Overview_reports_platform_policy_active_false_when_no_row_exists()
+    {
+        // Task #206: no platform_policy row at all reports active=false; combined with a recorded
+        // missing_at_flush fallback (policy id null), health flips to policy_fallback.
+        var fx = new Fixture();
+        fx.PolicyFallback.Record(T0, policyId: null);
+
+        var overview = await fx.Service.GetOverviewAsync();
+
+        Assert.False(overview.PlatformPolicy.Active);
+        Assert.Equal(1, overview.PlatformPolicy.FallbackCount);
+        Assert.Null(overview.PlatformPolicy.LastFallbackPolicyId);
+        Assert.Equal("policy_fallback", overview.Health);
+    }
+
+    [Fact]
+    public async Task Overview_ledger_drift_outranks_policy_fallback_on_health()
+    {
+        // Task #206: a drift in the balance cache is a strictly worse operator signal than a policy
+        // fallback, so ledger_drift outranks policy_fallback when both are true.
+        var fx = new Fixture();
+        fx.ReconcileMonitor.Record(new LedgerReconcileSummary(
+            RanAt: T0, AccountsChecked: 3, DriftAccountCount: 1, TotalAbsoluteDriftCents: 10));
+        fx.PolicyFallback.Record(T0, policyId: null);
+
+        var overview = await fx.Service.GetOverviewAsync();
+
+        Assert.Equal("ledger_drift", overview.Health);
     }
 
     [Fact]
@@ -507,7 +579,7 @@ public class AdminServiceTests
     [Fact]
     public async Task Force_end_on_an_active_lease_finalizes_billing_ends_admin_releases_hold_and_relays_release()
     {
-        // Acceptance criterion #189: active lease with a connected host — billing finalized, ended(admin),
+        // Acceptance criterion #189: active lease with a connected host -- billing finalized, ended(admin),
         // hold released, release relayed to the host.
         var fx = new Fixture();
         var admin = await fx.SeedUserAsync("admin@example.com");
@@ -525,7 +597,7 @@ public class AdminServiceTests
         Assert.Equal("ended", view.Status);
         Assert.Equal("admin", view.EndReason);
 
-        // The row itself is terminal, and billing was finalized to the full 90-second healthy interval —
+        // The row itself is terminal, and billing was finalized to the full 90-second healthy interval --
         // FinalizeLeaseAsync ran with a null liveness source, so `now` was the cap (task #54).
         var stored = await fx.Leases.GetByIdAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
@@ -541,7 +613,7 @@ public class AdminServiceTests
         // (hold - charge) = 3510¢ back on release.
         Assert.Equal(3510, walletAcct.BalanceCents);
 
-        // Release relayed to the host — the fake relay recorded exactly one lease.release for this lease.
+        // Release relayed to the host -- the fake relay recorded exactly one lease.release for this lease.
         var call = Assert.Single(fx.Relay.ReleaseCalls);
         Assert.Equal(host.Id.ToString(), call.HostId);
         Assert.Equal(TunnelLeaseId.Format(lease.Id), call.LeaseId);
@@ -556,7 +628,7 @@ public class AdminServiceTests
     [Fact]
     public async Task Force_end_on_a_suspended_lease_succeeds_without_a_live_host_and_releases_the_hold()
     {
-        // Acceptance criterion #190: suspended lease with no connected host — succeeds, finalizes to
+        // Acceptance criterion #190: suspended lease with no connected host -- succeeds, finalizes to
         // last-healthy watermark (already flushed at suspend), releases hold. wisp's TTL reaper covers the
         // container so the tunnel notify is a no-op when the relay reports host_offline.
         var fx = new Fixture();
@@ -584,7 +656,7 @@ public class AdminServiceTests
         var stored = await fx.Leases.GetByIdAsync(lease.Id);
         Assert.Equal(LeaseStatus.Ended, stored!.Status);
         Assert.Equal(LeaseEndReason.Admin, stored.EndReason);
-        Assert.Equal(60, stored.BillableSeconds); // pinned at last-healthy — the gap never billed
+        Assert.Equal(60, stored.BillableSeconds); // pinned at last-healthy -- the gap never billed
 
         // Hold released: the wallet gets back exactly (hold - charged-cents-so-far) = 3600 - 60 = 3540¢
         // (a suspended lease was already flushed at suspend time, so no fresh finalize runs here). Wallet
@@ -592,7 +664,7 @@ public class AdminServiceTests
         var walletAcct = await fx.Ledger.GetOrCreateAccountAsync(LedgerAccountKind.UserWallet, consumer);
         Assert.Equal(3540, walletAcct.BalanceCents);
 
-        // Tunnel notify was attempted (best-effort) and the host_offline was swallowed — the operation
+        // Tunnel notify was attempted (best-effort) and the host_offline was swallowed -- the operation
         // still succeeded. Recorded once so we can prove we did try.
         Assert.Single(fx.Relay.ReleaseCalls);
     }
@@ -600,7 +672,7 @@ public class AdminServiceTests
     [Fact]
     public async Task Force_end_on_an_already_ended_lease_is_idempotent_no_op_no_double_release()
     {
-        // Acceptance criterion #191: an already-ended lease is a no-op — no double hold release, no
+        // Acceptance criterion #191: an already-ended lease is a no-op -- no double hold release, no
         // duplicate audit row, no fresh tunnel notify.
         var fx = new Fixture();
         var admin = await fx.SeedUserAsync("admin@example.com");
@@ -653,9 +725,9 @@ public class AdminServiceTests
         var owner = await fx.SeedUserAsync("owner@example.com");
         var host = await fx.SeedHostAsync(owner);
 
-        // A fresh active lease (well within its 1h TTL) — will NOT appear under past_ttl=true.
+        // A fresh active lease (well within its 1h TTL) -- will NOT appear under past_ttl=true.
         var freshActive = await fx.SeedLeaseAsync(consumer, host.Id, LeaseStatus.Active, T0);
-        // An active lease that started 3 hours ago — past its 1h TTL.
+        // An active lease that started 3 hours ago -- past its 1h TTL.
         var pastTtlActive = await fx.SeedLeaseAsync(
             consumer, host.Id, LeaseStatus.Active, T0.AddHours(-3));
         // A suspended lease still within grace.
@@ -684,7 +756,7 @@ public class AdminServiceTests
         var only = Assert.Single(suspendedOnly.Data);
         Assert.Equal(suspended.Id, ParseLease(only.Id));
 
-        // past_ttl=true surfaces exactly the leases whose started_at + ttl has elapsed on the fake clock —
+        // past_ttl=true surfaces exactly the leases whose started_at + ttl has elapsed on the fake clock --
         // both the past-TTL active AND (given seed data) the suspended row that was seeded 30m ago with a
         // 1h TTL is still within TTL, so it must NOT be included.
         var pastTtlOnly = await fx.Service.ListLeasesAsync(

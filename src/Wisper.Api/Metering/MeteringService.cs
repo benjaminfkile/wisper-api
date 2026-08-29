@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Extensions.Logging;
+using Wisper.Api.Billing;
 using Wisper.Api.Domain;
 using Wisper.Api.Ledger;
 using Wisper.Api.Persistence.Hosts;
@@ -9,17 +10,17 @@ using Wisper.Api.Policy;
 namespace Wisper.Api.Metering;
 
 /// <summary>
-/// The manager-authoritative metering engine (docs/DATA_MODEL.md §14, docs/PAYMENTS.md §4). Wisper — not
-/// the host — owns billable time: for each active lease the meter accrues <see cref="Lease.BillableSeconds"/>
+/// The manager-authoritative metering engine (docs/DATA_MODEL.md §14, docs/PAYMENTS.md §4). Wisper -- not
+/// the host -- owns billable time: for each active lease the meter accrues <see cref="Lease.BillableSeconds"/>
 /// over healthy-liveness intervals only (Wisper's clock), starting at <c>lease.ready</c>
 /// (<see cref="Lease.StartedAt"/>). A suspended gap never bills (docs/TUNNEL.md §8).
 /// <para>
-/// On each flush — the fixed tick (default 60s) and on lease end — it posts a <c>lease_charge</c> ledger
+/// On each flush -- the fixed tick (default 60s) and on lease end -- it posts a <c>lease_charge</c> ledger
 /// transaction (hold → host_earnings + platform_revenue, split by <c>platform_policy.fee_bps</c>) and
 /// writes a <c>lease_usage</c> row, both idempotent on <c>(lease_id, period_start)</c>, then advances the
 /// lease's <see cref="Lease.LastMeteredAt"/> watermark. A manager crash loses at most one un-flushed tick;
 /// on restart the active set is reloaded and each lease resumes from its persisted watermark
-/// (docs/DATA_MODEL.md §14). This is the internal ledger only — no Stripe (docs/PAYMENTS.md §2).
+/// (docs/DATA_MODEL.md §14). This is the internal ledger only -- no Stripe (docs/PAYMENTS.md §2).
 /// </para>
 /// </summary>
 public sealed class MeteringService
@@ -34,6 +35,7 @@ public sealed class MeteringService
     private readonly TimeProvider _time;
     private readonly ILogger<MeteringService> _logger;
     private readonly IMeterLivenessSource? _liveness;
+    private readonly PolicyFallbackMonitor? _policyFallback;
 
     public MeteringService(
         ILeaseRepository leases,
@@ -43,7 +45,8 @@ public sealed class MeteringService
         PlatformPolicyService policy,
         TimeProvider time,
         ILogger<MeteringService> logger,
-        IMeterLivenessSource? liveness = null)
+        IMeterLivenessSource? liveness = null,
+        PolicyFallbackMonitor? policyFallback = null)
     {
         _leases = leases;
         _usage = usage;
@@ -53,6 +56,7 @@ public sealed class MeteringService
         _time = time;
         _logger = logger;
         _liveness = liveness;
+        _policyFallback = policyFallback;
     }
 
     /// <summary>
@@ -76,7 +80,7 @@ public sealed class MeteringService
                 continue;
             }
 
-            // The tick applies the SAME caps (TTL + liveness) as the on-end finalize path — a single source
+            // The tick applies the SAME caps (TTL + liveness) as the on-end finalize path -- a single source
             // of truth (task #54) means a runaway "still reported" lease past its TTL cannot accrue billable
             // seconds past started_at + ttl_seconds. A ceiling-hit lease is a cheap no-op this tick: the
             // watermark won't advance (elapsedSeconds == 0), no ledger post is attempted, and lifecycle
@@ -115,10 +119,10 @@ public sealed class MeteringService
     }
 
     /// <summary>
-    /// Loads the lease by id and flushes its accrued interval up to <paramref name="asOf"/> — the raw
+    /// Loads the lease by id and flushes its accrued interval up to <paramref name="asOf"/> -- the raw
     /// uncapped primitive underneath the on-end path. <b>Internal</b>: production drivers MUST route
     /// through <see cref="FinalizeLeaseAsync(Guid, DateTimeOffset, CancellationToken)"/> so the shared
-    /// TTL + last-healthy cap always applies (task #60 — a single source of truth is the whole point of
+    /// TTL + last-healthy cap always applies (task #60 -- a single source of truth is the whole point of
     /// <see cref="ComputeCappedWatermark"/>; a raw uncapped flush from a suspend/end driver could bill
     /// past <c>started_at + ttl</c> and drain other leases' held cents through the shared
     /// <c>lease_holds</c> aggregate account). Exposed to the unit suite only.
@@ -132,12 +136,12 @@ public sealed class MeteringService
 
     /// <summary>
     /// The on-lease-end flush every finalization driver (consumer DELETE, TTL expiry / container-lost)
-    /// must run BEFORE the wallet hold release, so the final billable interval — the tail between the
-    /// last 60s tick and the stop — is charged and <see cref="Lease.BillableSeconds"/> reflects the full
+    /// must run BEFORE the wallet hold release, so the final billable interval -- the tail between the
+    /// last 60s tick and the stop -- is charged and <see cref="Lease.BillableSeconds"/> reflects the full
     /// metered runtime the hold release sizes off (task #34). The flush watermark is
-    /// <paramref name="now"/> capped at the lease's TTL (<c>started_at + ttl_seconds</c> — the lease was
+    /// <paramref name="now"/> capped at the lease's TTL (<c>started_at + ttl_seconds</c> -- the lease was
     /// not entitled to run past it, so any post-TTL tail is not billable) and at the host's last-healthy
-    /// liveness point (the same cap <see cref="RunTickAsync"/> applies — a blind window is structurally
+    /// liveness point (the same cap <see cref="RunTickAsync"/> applies -- a blind window is structurally
     /// un-billable). Returns the flush result, or <c>null</c> when there is no such lease / no billable
     /// tail / the lease is no longer active (a suspended lease was already flushed to last-healthy).
     /// </summary>
@@ -161,8 +165,8 @@ public sealed class MeteringService
 
     /// <summary>
     /// The single source of truth for the "as-of" watermark a flush is allowed to bill up to (task #54).
-    /// Applies the TTL cap (<c>started_at + ttl_seconds</c> — the lease was not entitled to run past it,
-    /// so a post-TTL tail is not billable, task #34) and the liveness cap (last-healthy — a blind window
+    /// Applies the TTL cap (<c>started_at + ttl_seconds</c> -- the lease was not entitled to run past it,
+    /// so a post-TTL tail is not billable, task #34) and the liveness cap (last-healthy -- a blind window
     /// past that is structurally un-billable, docs/TUNNEL.md §8). Both the periodic tick and the on-end
     /// finalize call this so the two cannot drift: if the tick capped less strictly than finalize, the
     /// finalize's shorter watermark would land BEHIND <c>last_metered_at</c> and short-circuit to null,
@@ -182,7 +186,7 @@ public sealed class MeteringService
         }
 
         // A null liveness source (unit tests) means no gating; a liveness source that returns null (no
-        // live tunnel) leaves the cap at whatever TTL/`now` gave — the tick handles the "no live tunnel"
+        // live tunnel) leaves the cap at whatever TTL/`now` gave -- the tick handles the "no live tunnel"
         // case by skipping the lease entirely, but the finalize path still needs to bill up to TTL.
         if (_liveness?.LastHealthyAt(lease.HostId) is { } lastHealthy && lastHealthy < asOf)
         {
@@ -196,16 +200,16 @@ public sealed class MeteringService
     /// The raw uncapped flush primitive: accrues the healthy seconds since the watermark up to
     /// <paramref name="asOf"/>, posts the <c>lease_charge</c> (fee-split from the active policy), writes
     /// the <c>lease_usage</c> row, and advances the watermark. Idempotent on
-    /// <c>(lease_id, period_start)</c> — a replay after a crash between the charge and the watermark write
+    /// <c>(lease_id, period_start)</c> -- a replay after a crash between the charge and the watermark write
     /// moves no new money and preserves the cumulative-charge invariant. Returns the flush result, or
     /// <c>null</c> when nothing was billable.
     /// <para>
-    /// <b>Internal</b>: production callers MUST NOT invoke this directly — the whole reason
+    /// <b>Internal</b>: production callers MUST NOT invoke this directly -- the whole reason
     /// <see cref="ComputeCappedWatermark"/> is the single source of truth for the "as-of" watermark
     /// (task #54, task #60) is that every tick, on-end finalize, and disconnect-suspend flush shares
     /// exactly the same TTL + last-healthy cap. Reach for
     /// <see cref="RunTickAsync"/> or <see cref="FinalizeLeaseAsync(Lease, DateTimeOffset, CancellationToken)"/>
-    /// instead — they compute the cap and call through. Exposed to the unit suite so the flush
+    /// instead -- they compute the cap and call through. Exposed to the unit suite so the flush
     /// primitive itself (idempotency, sub-cent deferral, zero-price accrual) can be exercised.
     /// </para>
     /// </summary>
@@ -214,15 +218,15 @@ public sealed class MeteringService
     {
         ArgumentNullException.ThrowIfNull(lease);
 
-        // Meter only over a healthy-liveness interval — an active lease. A suspended gap never bills
+        // Meter only over a healthy-liveness interval -- an active lease. A suspended gap never bills
         // (docs/TUNNEL.md §8); a pending/ended/failed lease has no live interval to accrue.
         if (lease.Status != LeaseStatus.Active)
         {
             return null;
         }
 
-        // The interval runs from the billed watermark (last_metered_at) — or the meter start (started_at)
-        // for the very first tick — up to asOf on Wisper's clock (docs/DATA_MODEL.md §5).
+        // The interval runs from the billed watermark (last_metered_at) -- or the meter start (started_at)
+        // for the very first tick -- up to asOf on Wisper's clock (docs/DATA_MODEL.md §5).
         if ((lease.LastMeteredAt ?? lease.StartedAt) is not { } periodStart)
         {
             return null; // no lease.ready yet: nothing to meter
@@ -236,9 +240,9 @@ public sealed class MeteringService
 
         // INVARIANT (task #46, billing integrity): the rate used for every metering tick, revive re-hold,
         // end-of-lease settlement, and host payout accrual for this lease is the immutable snapshot
-        // `lease.PriceCentsPerMin` stamped on the lease row at create time — NEVER the current host_images
+        // `lease.PriceCentsPerMin` stamped on the lease row at create time -- NEVER the current host_images
         // price. A host that reprices an image mid-lease must not be able to change what an open lease is
-        // charged. Do not read `image.PriceCentsPerMin` here (or JOIN host_images) — the snapshot is the
+        // charged. Do not read `image.PriceCentsPerMin` here (or JOIN host_images) -- the snapshot is the
         // single source of truth (docs/DATA_MODEL.md §5, §6).
         var priceCentsPerMin = lease.PriceCentsPerMin;
 
@@ -251,7 +255,7 @@ public sealed class MeteringService
             - ChargeCentsFor(lease.BillableSeconds, priceCentsPerMin);
 
         // A sub-cent interval on a priced image bills nothing yet: leave the watermark where it is so the
-        // seconds accumulate into the next tick until they are worth at least one cent — no value is lost.
+        // seconds accumulate into the next tick until they are worth at least one cent -- no value is lost.
         if (amountCents <= 0 && priceCentsPerMin > 0)
         {
             return null;
@@ -304,7 +308,7 @@ public sealed class MeteringService
             memo: $"lease_charge {lease.Id} [{Iso(periodStart)} → {Iso(asOf)}] {elapsedSeconds}s");
         var posted = await _ledger.PostAsync(draft, ct);
 
-        // Write the lease_usage row, idempotent on (lease_id, period_start) — a replay returns the
+        // Write the lease_usage row, idempotent on (lease_id, period_start) -- a replay returns the
         // first-written row unchanged (docs/DATA_MODEL.md §6). Advance the watermark from the STORED row so
         // a de-duplicated replay preserves the cumulative-charge invariant (bill == ⌊billable·price/60⌋).
         var usage = await _usage.AppendAsync(
@@ -362,17 +366,21 @@ public sealed class MeteringService
         {
             var latest = versions[0]; // newest effective_from first (docs/DATA_MODEL.md §11)
             _logger.LogError(
+                BillingEventIds.PolicyStaleFallback,
                 "billing.policy.stale_fallback: no active platform_policy for lease {LeaseId} at flush; " +
                 "falling back to newest version {PolicyId} (effective_from {EffectiveFrom:O}, fee_bps={FeeBps})",
                 lease.Id, latest.Id, latest.EffectiveFrom, latest.FeeBps);
+            _policyFallback?.Record(_time.GetUtcNow(), latest.Id);
             return latest;
         }
 
         _logger.LogCritical(
+            BillingEventIds.PolicyMissingAtFlush,
             "billing.policy.missing_at_flush: no platform_policy row exists at all for lease {LeaseId}; " +
             "skipping lease_charge, so the caller's end path will release the full hold to the wallet " +
             "(billing-integrity alert: publish a platform_policy row)",
             lease.Id);
+        _policyFallback?.Record(_time.GetUtcNow(), policyId: null);
         return null;
     }
 
@@ -391,7 +399,7 @@ public sealed class MeteringService
         return billableSeconds * priceCentsPerMin / SecondsPerMinute; // integer floor
     }
 
-    /// <summary>The <c>lease_charge</c> idempotency key — stable per <c>(lease_id, period_start)</c>.</summary>
+    /// <summary>The <c>lease_charge</c> idempotency key -- stable per <c>(lease_id, period_start)</c>.</summary>
     public static string ChargeIdempotencyKey(Guid leaseId, DateTimeOffset periodStart) =>
         $"lease_charge:{leaseId:D}:{Iso(periodStart)}";
 

@@ -6,16 +6,16 @@ namespace Wisper.Api.Infrastructure.Idempotency;
 /// </summary>
 public enum IdempotencyOutcome
 {
-    /// <summary>The key was free — the caller holds the lock and must run the operation, then complete it.</summary>
+    /// <summary>The key was free -- the caller holds the lock and must run the operation, then complete it.</summary>
     Began,
 
-    /// <summary>A completed record with a matching body exists — replay its stored response verbatim.</summary>
+    /// <summary>A completed record with a matching body exists -- replay its stored response verbatim.</summary>
     Replay,
 
-    /// <summary>The key was reused with a <b>different</b> body — a <c>409 conflict</c>.</summary>
+    /// <summary>The key was reused with a <b>different</b> body -- a <c>409 conflict</c>.</summary>
     Conflict,
 
-    /// <summary>A first request under this key is still running — a <c>409</c> in-progress lock.</summary>
+    /// <summary>A first request under this key is still running -- a <c>409</c> in-progress lock.</summary>
     InProgress,
 }
 

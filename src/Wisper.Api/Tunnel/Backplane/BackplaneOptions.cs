@@ -13,14 +13,14 @@ public sealed class BackplaneOptions
     public const string SectionName = "Tunnel:Backplane";
 
     /// <summary>
-    /// Turns on the distributed backplane. Off by default — a single manager instance needs no Redis
+    /// Turns on the distributed backplane. Off by default -- a single manager instance needs no Redis
     /// (docs/DESIGN.md §7: "Not required until &gt;1 instance runs"). The registry/relay interfaces are
     /// unchanged either way, so callers are oblivious to which mode is active.
     /// </summary>
     public bool Enabled { get; set; }
 
     /// <summary>
-    /// Stable identifier for this manager instance — the key hosts' presence records point at and the
+    /// Stable identifier for this manager instance -- the key hosts' presence records point at and the
     /// address its RPC request/reply channels are named after. When blank a random id is generated at
     /// startup (fine for autoscaled pods, which are ephemeral).
     /// </summary>
@@ -29,7 +29,7 @@ public sealed class BackplaneOptions
     /// <summary>
     /// StackExchange.Redis connection string. When set (and <see cref="Enabled"/>), a real Redis
     /// backplane + presence store are used; when blank the in-process loopback backplane is used
-    /// instead (single-process dev/testing — no Redis required to build or run).
+    /// instead (single-process dev/testing -- no Redis required to build or run).
     /// </summary>
     public string? RedisConfiguration { get; set; }
 
@@ -46,10 +46,10 @@ public sealed class BackplaneOptions
     /// <summary>
     /// TTL applied to each Redis degraded entry, refreshed by every degraded heartbeat (task #65).
     /// Ensures a host whose instance crashed (Redis mode: the disconnect handler never runs) does not
-    /// leave a stuck-degraded entry behind forever, while sized generously enough — many multiples of
-    /// the heartbeat interval — that a live degraded host is refreshed long before this expires, so it
+    /// leave a stuck-degraded entry behind forever, while sized generously enough -- many multiples of
+    /// the heartbeat interval -- that a live degraded host is refreshed long before this expires, so it
     /// never flaps healthy from TTL alone. Default 600s (~20× the 30s heartbeat cadence and ~8× the
-    /// 75s default liveness timeout — a live degraded host that gets its tunnel closed on liveness has
+    /// 75s default liveness timeout -- a live degraded host that gets its tunnel closed on liveness has
     /// its entry cleared by the disconnect path long before this hits).
     /// </summary>
     public int DegradedTtlSeconds { get; set; } = 600;

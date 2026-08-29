@@ -10,11 +10,11 @@ namespace Wisper.Api.Metering;
 /// The durable grace backstop (task #55, docs/TUNNEL.md §8). On a fixed tick, sweeps the DB for leases
 /// whose <c>suspended_at</c> is older than the grace window (plus a safety margin) and whose host is not
 /// currently under an active in-process grace timer on THIS instance, ending each one as
-/// <c>host_disconnect</c> and releasing its wallet hold — the same terminal path the in-memory grace
+/// <c>host_disconnect</c> and releasing its wallet hold -- the same terminal path the in-memory grace
 /// timer takes. Turns the 90s in-memory grace window into a durable, restart-safe policy: a wisper-api
 /// restart / crash / scale-in wipes <see cref="TunnelDisconnectCoordinator"/>'s timer state, but the
 /// durable <see cref="Wisper.Api.Domain.Lease.SuspendedAt"/> stamp lets the next sweep tick reap the
-/// stranded lease within one interval — no more wallet holds / concurrency slots stuck forever waiting
+/// stranded lease within one interval -- no more wallet holds / concurrency slots stuck forever waiting
 /// on a timer that is never coming.
 /// <para>
 /// Idempotent under concurrent instances: the underlying <c>suspended → ended</c> transition is
@@ -34,7 +34,7 @@ public sealed class SuspensionSweepService : BackgroundService
     private static readonly TimeSpan SafetyMargin = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Sweep cadence — long enough that the query load is negligible, short enough that a stranded
+    /// Sweep cadence -- long enough that the query load is negligible, short enough that a stranded
     /// suspended lease is reaped within roughly one interval past its grace edge.
     /// </summary>
     private static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(30);
@@ -72,13 +72,13 @@ public sealed class SuspensionSweepService : BackgroundService
         // background surface (the sweep touches lease_holds).
         if (!_meteringOptions.Value.Enabled)
         {
-            _logger.LogInformation("metering disabled by config — suspension sweep loop not started");
+            _logger.LogInformation("metering disabled by config -- suspension sweep loop not started");
             return;
         }
 
         if (!_db.IsConfigured)
         {
-            _logger.LogInformation("no database configured — suspension sweep loop not started");
+            _logger.LogInformation("no database configured -- suspension sweep loop not started");
             return;
         }
 
@@ -99,7 +99,7 @@ public sealed class SuspensionSweepService : BackgroundService
             }
             catch (Exception ex)
             {
-                // Idempotent + CAS-guarded — the next tick simply retries the same query.
+                // Idempotent + CAS-guarded -- the next tick simply retries the same query.
                 _logger.LogError(ex, "suspension sweep tick failed; will retry on the next tick");
             }
         }

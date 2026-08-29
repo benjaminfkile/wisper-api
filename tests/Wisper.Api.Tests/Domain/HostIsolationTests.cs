@@ -4,7 +4,7 @@ using Xunit;
 namespace Wisper.Api.Tests.Domain;
 
 /// <summary>
-/// <see cref="HostIsolation.Normalize"/> — the single place a host's advertised isolation capability is
+/// <see cref="HostIsolation.Normalize"/> -- the single place a host's advertised isolation capability is
 /// canonicalized before it is persisted/surfaced (task #417): fallback to <c>["shared"]</c>/<c>"shared"</c>
 /// for a host that reports nothing, blank/dupe trimming, and forcing the default to be one of the levels.
 /// </summary>

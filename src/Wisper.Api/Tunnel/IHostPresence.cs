@@ -67,7 +67,7 @@ public interface IHostPresence
 
     /// <summary>
     /// Refreshes a host's persisted advertised GPU capability (<c>gpu_classes</c> + <c>gpu_count</c>) from a
-    /// mid-session source (a heartbeat that re-advertises its <c>gpu</c> block, task #521) — the GPU sibling
+    /// mid-session source (a heartbeat that re-advertises its <c>gpu</c> block, task #521) -- the GPU sibling
     /// of <see cref="RefreshAdvertisedIsolationAsync"/>. Normalizes the classes (distinct), skips the write
     /// when nothing changed, and never touches presence. A suspended, unknown, or non-Guid dev host id is a
     /// no-op.
@@ -81,7 +81,7 @@ public interface IHostPresence
     /// <summary>
     /// On durable tunnel loss (grace expired, or a close with no leases to protect): flip
     /// <paramref name="hostId"/> to <see cref="HostStatus.Offline"/>, stamping last-seen at
-    /// <paramref name="lastHealthyAt"/>. Only a currently-online host is flipped — a suspended or
+    /// <paramref name="lastHealthyAt"/>. Only a currently-online host is flipped -- a suspended or
     /// already-offline host is left as-is.
     /// </summary>
     Task GoOfflineAsync(Guid hostId, DateTimeOffset lastHealthyAt, CancellationToken ct = default);

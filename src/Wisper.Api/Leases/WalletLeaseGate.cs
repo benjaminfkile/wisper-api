@@ -9,13 +9,13 @@ using Wisper.Api.Policy;
 namespace Wisper.Api.Leases;
 
 /// <summary>
-/// The real <see cref="ILeaseWalletGate"/> (docs/PAYMENTS.md §4, docs/DATA_MODEL.md §8) — the wallet-hold
+/// The real <see cref="ILeaseWalletGate"/> (docs/PAYMENTS.md §4, docs/DATA_MODEL.md §8) -- the wallet-hold
 /// lifecycle for a consumer lease, pure internal ledger against pre-funded wallet money (no Stripe). It
 /// replaces the Phase-4 allow-hook: at <c>POST /leases</c> it enforces the per-user concurrency cap and
 /// gates on the wallet balance (denying <c>402</c> before any <c>lease.create</c> reaches the host), then
 /// earmarks the <c>⌈ttl/60⌉·price</c> hold once the lease id exists; at lease end it releases the unused
 /// remainder. The ledger's non-negative guard on <c>lease_holds</c> (§7d) backs the guarantee the hold can
-/// never be over-drawn — because it covers the whole max lease, "insufficient funds mid-lease" cannot
+/// never be over-drawn -- because it covers the whole max lease, "insufficient funds mid-lease" cannot
 /// happen (docs/PAYMENTS.md §4).
 /// </summary>
 public sealed class WalletLeaseGate : ILeaseWalletGate
@@ -47,11 +47,11 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         // at_capacity (409), regardless of wallet balance.
         await EnforceConcurrencyCapAsync(consumerUserId, ct);
 
-        // The per-user daily spend cap (docs/PAYMENTS.md §7) — the fraud guard measured by up-front holds,
+        // The per-user daily spend cap (docs/PAYMENTS.md §7) -- the fraud guard measured by up-front holds,
         // refused with limit_exceeded (429) before any wallet check or tunnel frame.
         await _fraud.EnforceLeaseSpendAllowedAsync(consumerUserId, holdCents, ct);
 
-        // A free image needs no hold — nothing to gate on.
+        // A free image needs no hold -- nothing to gate on.
         if (holdCents <= 0)
         {
             return WalletGateDecision.Allow();
@@ -59,7 +59,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
 
         // The hard gate: the wallet must be able to cover the whole hold up front (docs/PAYMENTS.md §4).
         // Checking the maintained balance here means an unaffordable lease is refused BEFORE any
-        // lease.create frame is sent — no compute is provisioned that can't be paid for.
+        // lease.create frame is sent -- no compute is provisioned that can't be paid for.
         var wallet = await _ledger.GetOrCreateAccountAsync(
             LedgerAccountKind.UserWallet, consumerUserId, currency, ct);
         return wallet.BalanceCents >= holdCents
@@ -97,8 +97,8 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
         {
             // AuthorizeHoldAsync already gated on balance; reaching the non-negative guard here means the
-            // wallet was drained between the gate and the post (a rare race). Surface it as 402 — the same
-            // hard gate, one step later — rather than a 500.
+            // wallet was drained between the gate and the post (a rare race). Surface it as 402 -- the same
+            // hard gate, one step later -- rather than a 500.
             throw new ApiException(
                 ApiErrorCode.InsufficientFunds,
                 "Wallet balance is below the required hold.",
@@ -119,7 +119,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         // what is still earmarked in lease_holds for this lease, so releasing it zeroes the lease's hold.
         // (For a lease that was revived after a grace-expiry release, the pre-revive remainder already
         // returned to the wallet under a distinct release key; this second release, keyed to the revival
-        // hold generation via lease.HoldTxnId, unwinds only what is still earmarked now — the ledger's
+        // hold generation via lease.HoldTxnId, unwinds only what is still earmarked now -- the ledger's
         // non-negative guard on lease_holds is the backstop if the arithmetic is ever wrong.)
         var holdCents = LeaseHoldPricing.EstimateHoldCents(lease.TtlSeconds, lease.PriceCentsPerMin);
         if (holdCents <= 0)
@@ -141,7 +141,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
             LedgerAccountKind.LeaseHolds, null, currency, ct);
 
         // Keyed per hold generation (lease id + current lease.HoldTxnId) so the several lease-end drivers
-        // (consumer DELETE, grace expiry, container-lost) converge on a single release — a second attempt
+        // (consumer DELETE, grace expiry, container-lost) converge on a single release -- a second attempt
         // dedupes and moves no new money. Bundling the hold txn id in also means a post-revive end does
         // NOT collide with the original hold's release (task #23): after revive stamps the new
         // hold_txn_id, this key becomes distinct from the pre-revive release key, so the second cycle's
@@ -168,7 +168,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         // Mirror the create-time balance gate (docs/PAYMENTS.md §4): a revived paid lease must not run
         // active without a wallet hold covering its remaining time. A shortfall denies the revive so the
         // caller ends the lease rather than silently reviving into an unbacked active state
-        // (docs/TUNNEL.md §8 — wisp's TTL reaper reclaims the container regardless).
+        // (docs/TUNNEL.md §8 -- wisp's TTL reaper reclaims the container regardless).
         var wallet = await _ledger.GetOrCreateAccountAsync(
             LedgerAccountKind.UserWallet, consumerUserId, currency, ct);
         if (wallet.BalanceCents < holdCents)
@@ -200,7 +200,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         catch (LedgerException ex) when (ex.Reason == LedgerViolation.InsufficientFunds)
         {
             // Wallet drained between the balance check and the post (a rare race). Surface as a denied
-            // outcome — same hard gate, one step later — so the reconciler ends the lease rather than
+            // outcome -- same hard gate, one step later -- so the reconciler ends the lease rather than
             // reviving unbacked.
             _logger.LogWarning(ex,
                 "revive denied for lease {LeaseId}: wallet drained between check and post (required {Required}¢)",
@@ -209,11 +209,11 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
         }
     }
 
-    /// <summary>The <c>lease_hold</c> idempotency key — stable per lease id.</summary>
+    /// <summary>The <c>lease_hold</c> idempotency key -- stable per lease id.</summary>
     public static string HoldIdempotencyKey(Guid leaseId) => $"lease_hold:{leaseId:D}";
 
     /// <summary>
-    /// The <c>lease_hold</c> idempotency key for a post-grace revival — a distinct slot per lease id so a
+    /// The <c>lease_hold</c> idempotency key for a post-grace revival -- a distinct slot per lease id so a
     /// revive after the pre-drop hold was already released (grace expiry) posts a fresh earmark rather than
     /// dedup-replaying the original. Repeated revive attempts for the same lease still dedupe on this key,
     /// so a flap cannot stack duplicate holds.
@@ -221,7 +221,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
     public static string RevivalHoldIdempotencyKey(Guid leaseId) => $"lease_hold:{leaseId:D}:revive";
 
     /// <summary>
-    /// The <c>hold_release</c> idempotency key — stable per hold generation, so multiple lease-end drivers
+    /// The <c>hold_release</c> idempotency key -- stable per hold generation, so multiple lease-end drivers
     /// converge on a single release and a post-revive end does not collide with the pre-revive release.
     /// Falls back to the lease-id-only form when the hold txn id is unknown (a lease whose hold never
     /// posted, e.g. a free image or a create that failed before stamping the txn id).
@@ -233,7 +233,7 @@ public sealed class WalletLeaseGate : ILeaseWalletGate
 
     /// <summary>
     /// Enforces <c>platform_policy.max_concurrent_leases_per_user</c> (docs/API.md §11): counts the caller's
-    /// leases that still hold a slot (pending/provisioning/active/suspended — terminal ended/failed do not)
+    /// leases that still hold a slot (pending/provisioning/active/suspended -- terminal ended/failed do not)
     /// and throws <c>at_capacity</c> when the cap is reached. No policy or an unset cap ⇒ unlimited.
     /// </summary>
     private async Task EnforceConcurrencyCapAsync(Guid consumerUserId, CancellationToken ct)

@@ -6,7 +6,7 @@ namespace Wisper.Api.Tests.Domain;
 /// <summary>
 /// The Connect capability rules (docs/PAYMENTS.md §5): deriving <see cref="ConnectStatus"/> from a Stripe
 /// account's flags (<see cref="ConnectStatusEvaluator"/>) and gating online/payouts on it
-/// (<see cref="ConnectGate"/>). Pure logic — the single place the "enabled ⇒ earn, restricted ⇒ hold payouts"
+/// (<see cref="ConnectGate"/>). Pure logic -- the single place the "enabled ⇒ earn, restricted ⇒ hold payouts"
 /// rule is verified.
 /// </summary>
 public class ConnectGateTests
@@ -22,7 +22,7 @@ public class ConnectGateTests
     [Fact]
     public void Details_submitted_but_not_fully_enabled_is_restricted()
     {
-        // Finished intake, Stripe holds the account (needs more info / reviewing) — restricted, not pending.
+        // Finished intake, Stripe holds the account (needs more info / reviewing) -- restricted, not pending.
         Assert.Equal(
             ConnectStatus.Restricted,
             ConnectStatusEvaluator.Evaluate(chargesEnabled: false, payoutsEnabled: true, detailsSubmitted: true));

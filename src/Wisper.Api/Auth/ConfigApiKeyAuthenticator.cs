@@ -11,7 +11,7 @@ namespace Wisper.Api.Auth;
 /// Config-backed <see cref="IApiKeyAuthenticator"/>: the allowed keys, their identities and scopes come
 /// from <see cref="CognitoAuthOptions.ApiKeys"/>. Comparison is constant-time
 /// (<see cref="CryptographicOperations.FixedTimeEquals"/>). If no keys are configured it <b>fails
-/// closed</b> — every key is rejected. It is not the primary authenticator: the DB-backed
+/// closed</b> -- every key is rejected. It is not the primary authenticator: the DB-backed
 /// <see cref="DbApiKeyAuthenticator"/> resolves keys against the <c>api_keys</c> table and delegates here
 /// only as a dev/bootstrap fallback for a key the DB does not know about (empty, and thus fail-closed, in
 /// production). This mirrors <see cref="Tunnel.ConfigHostTokenValidator"/> for the tunnel's host tokens.
@@ -166,7 +166,7 @@ public sealed class ConfigApiKeyAuthenticator : IApiKeyAuthenticator
         }
     }
 
-    /// <summary>A safe-to-log prefix of the raw key — enough to identify which allow-list entry, not enough to replay it.</summary>
+    /// <summary>A safe-to-log prefix of the raw key -- enough to identify which allow-list entry, not enough to replay it.</summary>
     private static string KeyPrefix(string? raw) =>
         string.IsNullOrEmpty(raw) ? "<unknown>" : raw.Length <= 8 ? raw : raw[..8] + "…";
 }

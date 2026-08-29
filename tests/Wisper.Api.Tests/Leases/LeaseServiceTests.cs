@@ -151,7 +151,7 @@ public class LeaseServiceTests
 
         /// <summary>
         /// Declares the seeded host's live capability with a concurrent-contract ceiling (task #571). A ceiling
-        /// of 0 leaves the host unlimited — the absent-block/pre-#571 behavior.
+        /// of 0 leaves the host unlimited -- the absent-block/pre-#571 behavior.
         /// </summary>
         public void SetHostMaxContracts(int maxContracts) => Capabilities.Set(Host!.Id, new HostCapabilitySnapshot(
             Array.Empty<string>(), Array.Empty<NetworkMode>(),
@@ -205,12 +205,12 @@ public class LeaseServiceTests
             int gpus = 0)
         {
             // Seed a default platform policy so the on-release meter flush (task #34) has a fee_bps to
-            // split by. Idempotent per fixture — later tests may still publish a superseding version.
+            // split by. Idempotent per fixture -- later tests may still publish a superseding version.
             await EnsureDefaultPolicyAsync();
 
             // Pre-fund the consumer wallet generously so the real WalletLeaseGate can cover any up-front
             // hold under test (create tests exercise a range of TTL/price combos). Free images (price 0)
-            // pass through — the topup is a no-op there because the hold gate does not require funds.
+            // pass through -- the topup is a no-op there because the hold gate does not require funds.
             await EnsureWalletFundedAsync();
 
             var host = await Hosts.CreateAsync(new Host
@@ -336,21 +336,21 @@ public class LeaseServiceTests
     {
         // task #578: a NULL-profile offer no longer records an unknown size. It stamps the host's advertised
         // per-lease cap (limits.max_cpus/max_memory_mb) onto the row so the consumer can see what they leased
-        // even after the fact — while the lease.create frame STILL omits cpus/memory (host defaults apply).
+        // even after the fact -- while the lease.create frame STILL omits cpus/memory (host defaults apply).
         var fx = new Fixture();
         await fx.SeedImageAsync(cpus: null, memoryMb: null, gpus: 0);
         fx.SetHostLimits(maxCpus: 4, maxMemoryMb: 8192);
 
         var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
 
-        // The frame is unchanged — the offer pinned nothing, so cpus/memory_mb are omitted (host defaults).
+        // The frame is unchanged -- the offer pinned nothing, so cpus/memory_mb are omitted (host defaults).
         var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
         var resources = System.Text.Json.JsonDocument
             .Parse(ControlJson.Serialize(spec)).RootElement.GetProperty("resources");
         Assert.False(resources.TryGetProperty("cpus", out _));
         Assert.False(resources.TryGetProperty("memory_mb", out _));
 
-        // But the row records the resolved size from the host cap — never NULL when a cap exists.
+        // But the row records the resolved size from the host cap -- never NULL when a cap exists.
         var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
         Assert.Equal(4, stored!.Cpus);
         Assert.Equal(8192, stored.MemoryMb);
@@ -386,7 +386,7 @@ public class LeaseServiceTests
     public async Task Create_leaves_the_profile_null_when_offline_and_the_offer_is_null()
     {
         // task #578: an offline host advertises no cap, so a NULL-profile offer degrades to a genuinely unknown
-        // size — the row stays NULL (no cap to record) and the view marks resources_source "unknown".
+        // size -- the row stays NULL (no cap to record) and the view marks resources_source "unknown".
         var fx = new Fixture();
         await fx.SeedImageAsync(cpus: null, memoryMb: null, gpus: 0);
         // No capability declared for the host ⇒ offline (no per-lease cap available).
@@ -408,7 +408,7 @@ public class LeaseServiceTests
     {
         // task #578: an existing NULL-stamped row (created before this task, or under an offline host) still
         // serializes. On read, its effective size is resolved compute-on-read from the host's live per-lease
-        // cap so the consumer is no longer shown a blank — no migration, no re-stamp of the raw column.
+        // cap so the consumer is no longer shown a blank -- no migration, no re-stamp of the raw column.
         var fx = new Fixture();
         await fx.SeedImageAsync(cpus: null, memoryMb: null);
         var legacy = await fx.Leases.CreateAsync(new Lease
@@ -620,7 +620,7 @@ public class LeaseServiceTests
     [Fact]
     public async Task Create_treats_a_null_platform_policy_cap_as_no_ceiling()
     {
-        // A policy that leaves max_ttl_seconds_cap NULL means "no global ceiling" — the per-image cap
+        // A policy that leaves max_ttl_seconds_cap NULL means "no global ceiling" -- the per-image cap
         // remains the only bound. A TTL above the (absent) policy cap but under the image's max provisions.
         var fx = new Fixture();
         await fx.SeedImageAsync(maxTtl: 14400);
@@ -678,7 +678,7 @@ public class LeaseServiceTests
     [Fact]
     public async Task Create_rejects_a_request_that_carries_a_gpu_count()
     {
-        // A top-level gpu-count knob is likewise refused — the offer fixes the GPU count, the consumer cannot.
+        // A top-level gpu-count knob is likewise refused -- the offer fixes the GPU count, the consumer cannot.
         var fx = new Fixture();
         await fx.SeedImageAsync(gpus: 2);
 
@@ -694,7 +694,7 @@ public class LeaseServiceTests
     public async Task Create_provisions_the_offer_gpu_count_downstream_and_on_the_snapshot()
     {
         // GPU is priced into the offer (task #522, #570): the offer's exact gpus count travels down the
-        // lease.create frame, snapshots on the row, and surfaces in the read view — no consumer choice involved.
+        // lease.create frame, snapshots on the row, and surfaces in the read view -- no consumer choice involved.
         var fx = new Fixture();
         await fx.SeedImageAsync(gpus: 2);
 
@@ -734,7 +734,7 @@ public class LeaseServiceTests
     public async Task Create_fast_fails_at_capacity_when_the_host_contract_ceiling_is_reached()
     {
         // task #571: the host advertises max_contracts=2 and already runs 2 live leases. The create is refused
-        // with at_capacity (409) BEFORE the wallet gate — the fixture's AllowWalletGate would otherwise provision.
+        // with at_capacity (409) BEFORE the wallet gate -- the fixture's AllowWalletGate would otherwise provision.
         var fx = new Fixture();
         await fx.SeedImageAsync(price: 5);
         fx.SetHostMaxContracts(2);
@@ -746,13 +746,13 @@ public class LeaseServiceTests
         Assert.Equal(ApiErrorCode.AtCapacity, ex.Code);
         // The message distinguishes host-at-capacity from the per-user concurrency cap that shares the code.
         Assert.Contains("host", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(fx.Relay.CreateCalls); // no tunnel frame — the fast-fail is before provisioning
+        Assert.Empty(fx.Relay.CreateCalls); // no tunnel frame -- the fast-fail is before provisioning
     }
 
     [Fact]
     public async Task Create_at_capacity_posts_no_hold_and_leaves_no_lease_row()
     {
-        // The fast-fail must post no wallet hold and persist nothing — a recording gate proves PlaceHold is
+        // The fast-fail must post no wallet hold and persist nothing -- a recording gate proves PlaceHold is
         // never called, and only the seeded live leases remain (no new row for the refused create).
         var gate = new RecordingWalletGate();
         var fx = new Fixture { WalletGate = gate };
@@ -780,7 +780,7 @@ public class LeaseServiceTests
         var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
 
         Assert.Equal(LeaseStatus.Active, (await fx.Leases.GetByIdAsync(created.Lease.Id))!.Status);
-        Assert.Single(fx.Relay.CreateCalls); // provisioned — the ceiling was not yet reached
+        Assert.Single(fx.Relay.CreateCalls); // provisioned -- the ceiling was not yet reached
     }
 
     [Theory]
@@ -832,7 +832,7 @@ public class LeaseServiceTests
     {
         // Task #62: an agent whose local wisp is unreachable reports "degraded"; the shared store
         // carries the flag, so admission MUST refuse the create with the retryable host_offline (409)
-        // before any tunnel frame is sent — no relay call, no wallet hold, no lease row.
+        // before any tunnel frame is sent -- no relay call, no wallet hold, no lease row.
         var fx = new Fixture();
         await fx.SeedImageAsync(price: 5);
         await fx.DegradedStore.SetDegradedAsync(fx.Host!.Id.ToString());
@@ -866,7 +866,7 @@ public class LeaseServiceTests
     [Fact]
     public async Task Degraded_admission_reject_does_not_touch_existing_active_leases()
     {
-        // The docs are explicit (docs/TUNNEL.md §5): degraded MUST NOT end/suspend existing leases —
+        // The docs are explicit (docs/TUNNEL.md §5): degraded MUST NOT end/suspend existing leases --
         // the containers may still be running fine, the agent just cannot reach wisp's API. Prove it:
         // seed an active lease on the host owned by the SAME consumer (so ListByConsumerAsync can
         // read it back), mark the host degraded, then confirm a new create is rejected while the
@@ -906,7 +906,7 @@ public class LeaseServiceTests
     public async Task Create_treats_an_offline_host_with_no_live_capability_as_unlimited()
     {
         // A host with no live capability snapshot (offline) has no advertised ceiling, so the manager-side
-        // fast-fail never fires — wisp is the enforcer. (The relay itself would surface host_offline here.)
+        // fast-fail never fires -- wisp is the enforcer. (The relay itself would surface host_offline here.)
         var fx = new Fixture();
         await fx.SeedImageAsync(price: 5);
         await fx.SeedActiveLeasesOnHostAsync(5);
@@ -921,8 +921,8 @@ public class LeaseServiceTests
     public async Task Create_maps_an_agent_reported_at_capacity_to_409_and_persists_nothing()
     {
         // Race window (task #571): the manager admitted, but wisp reports 409 → the relay raises at_capacity.
-        // It must surface as the 409 at_capacity API error (not lease_failed/upstream), and — since the frame
-        // failed before any lease row or hold — nothing is persisted.
+        // It must surface as the 409 at_capacity API error (not lease_failed/upstream), and -- since the frame
+        // failed before any lease row or hold -- nothing is persisted.
         var fx = new Fixture();
         await fx.SeedImageAsync(price: 5);
         fx.Relay.CreateError = new ApiException(ApiErrorCode.AtCapacity, "wisp reported 409 at capacity");
@@ -932,7 +932,7 @@ public class LeaseServiceTests
 
         Assert.Equal(ApiErrorCode.AtCapacity, ex.Code);
         Assert.Empty(await fx.Leases.ListByConsumerAsync(fx.ConsumerId));
-        Assert.Empty(fx.Relay.ReleaseCalls); // the frame failed pre-provision — nothing to tear down
+        Assert.Empty(fx.Relay.ReleaseCalls); // the frame failed pre-provision -- nothing to tear down
     }
 
     [Fact]
@@ -964,7 +964,7 @@ public class LeaseServiceTests
             fx.Service().CreateAsync(fx.ConsumerId, fx.Request()));
         Assert.Equal(ApiErrorCode.InsufficientFunds, ex.Code);
 
-        // The container was provisioned, so exactly one lease.create reached the host — and its contract was
+        // The container was provisioned, so exactly one lease.create reached the host -- and its contract was
         // torn down with a matching lease.release addressed by the same lease id.
         var (_, createdSpec) = Assert.Single(fx.Relay.CreateCalls);
         var (releaseHostId, releaseLeaseId) = Assert.Single(fx.Relay.ReleaseCalls);
@@ -984,7 +984,7 @@ public class LeaseServiceTests
     public async Task Create_still_fails_when_the_hold_fails_and_the_host_is_already_offline_for_teardown()
     {
         // The teardown is best-effort: if the host has since gone offline, the container is already gone, so a
-        // host_offline on lease.release must not mask the original hold failure — the create still fails and
+        // host_offline on lease.release must not mask the original hold failure -- the create still fails and
         // the lease row is still marked failed.
         var fx = new Fixture
         {
@@ -1092,7 +1092,7 @@ public class LeaseServiceTests
 
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
         Assert.Empty(fx.Relay.CreateCalls);
-        // The env value is a secret-in-transit — it must never surface in the error message or details.
+        // The env value is a secret-in-transit -- it must never surface in the error message or details.
         var rendered = ex.Message + System.Text.Json.JsonSerializer.Serialize(ex.Details);
         Assert.DoesNotContain(big, rendered);
     }
@@ -1233,7 +1233,7 @@ public class LeaseServiceTests
     {
         var fx = new Fixture();
         await fx.SeedImageAsync();
-        // No capability declared for the host — offline (or a legacy agent that never advertised os).
+        // No capability declared for the host -- offline (or a legacy agent that never advertised os).
 
         var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
 
@@ -1274,7 +1274,7 @@ public class LeaseServiceTests
         var fx = new Fixture();
         await fx.SeedImageAsync();
         var created = await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
-        // No capability declared for the host — offline (or a legacy agent that never advertised os).
+        // No capability declared for the host -- offline (or a legacy agent that never advertised os).
 
         var view = await fx.Service().GetAsync(fx.ConsumerId, created.Lease.Id);
 
@@ -1418,7 +1418,7 @@ public class LeaseServiceTests
         // (capped at ttl) BEFORE computing the hold release, so billable_seconds reflects the whole
         // metered runtime and the hold_release remainder is sized off it.
         var fx = new Fixture();
-        // Price 60¢/min = 1¢/s so the numbers line up with the E2E report — every billable second is a
+        // Price 60¢/min = 1¢/s so the numbers line up with the E2E report -- every billable second is a
         // billable cent. TTL 180s → hold = ⌈180/60⌉·60 = 180¢.
         await fx.SeedImageAsync(price: 60, maxTtl: 3600);
         var created = await fx.Service().CreateAsync(
@@ -1426,7 +1426,7 @@ public class LeaseServiceTests
         var meter = fx.Meter();
 
         // Run one 60s tick (mirrors the periodic MeteringHostedService), then release mid-interval at
-        // 90s — the exact shape of the bug: last_metered_at at 60s, release 30s later.
+        // 90s -- the exact shape of the bug: last_metered_at at 60s, release 30s later.
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         Assert.Equal(1, await meter.RunTickAsync());
         var afterTick = await fx.Leases.GetByIdAsync(created.Lease.Id);
@@ -1436,7 +1436,7 @@ public class LeaseServiceTests
         await fx.Service().ReleaseAsync(fx.ConsumerId, created.Lease.Id);
 
         // The final 30s tail was billed on release (billable_seconds advanced past the stale watermark),
-        // so the total charged equals the full metered runtime — no unbilled tail.
+        // so the total charged equals the full metered runtime -- no unbilled tail.
         var stored = await fx.Leases.GetByIdAsync(created.Lease.Id);
         Assert.Equal(90, stored!.BillableSeconds);
         Assert.Equal(LeaseStatus.Ended, stored.Status);
@@ -1451,7 +1451,7 @@ public class LeaseServiceTests
     [Fact]
     public async Task Release_caps_the_final_flush_at_the_lease_ttl()
     {
-        // A lease released AFTER its TTL (the E2E bug scenario — DELETE arrived 6s past TTL) must not
+        // A lease released AFTER its TTL (the E2E bug scenario -- DELETE arrived 6s past TTL) must not
         // bill for the post-TTL tail: the lease was not entitled to run past its TTL, so the flush
         // caps at started_at + ttl_seconds even when the caller stops later.
         var fx = new Fixture();
@@ -1460,7 +1460,7 @@ public class LeaseServiceTests
             fx.ConsumerId, fx.Request(ttlSeconds: 180));
 
         // Two ticks land 60s and 120s in; the second half of the run is unmetered (last_metered_at at
-        // 120s). Then advance 66s past that — 6s past the 180s TTL — and release.
+        // 120s). Then advance 66s past that -- 6s past the 180s TTL -- and release.
         var meter = fx.Meter();
         fx.Clock.Advance(TimeSpan.FromSeconds(60));
         await meter.RunTickAsync();
@@ -1481,13 +1481,13 @@ public class LeaseServiceTests
     public async Task Release_before_any_tick_still_bills_the_short_runtime()
     {
         // A lease released before its first 60s tick fires (a sub-minute lifetime) must still bill for
-        // the seconds it ran — the on-end flush is the only chance to charge for that runtime.
+        // the seconds it ran -- the on-end flush is the only chance to charge for that runtime.
         var fx = new Fixture();
         await fx.SeedImageAsync(price: 60, maxTtl: 3600);
         var created = await fx.Service().CreateAsync(
             fx.ConsumerId, fx.Request(ttlSeconds: 180));
 
-        // 20s in, released — no periodic tick has run yet. At 60¢/min (1¢/s), that's a 20¢ bill.
+        // 20s in, released -- no periodic tick has run yet. At 60¢/min (1¢/s), that's a 20¢ bill.
         fx.Clock.Advance(TimeSpan.FromSeconds(20));
         await fx.Service().ReleaseAsync(fx.ConsumerId, created.Lease.Id);
 
@@ -1528,7 +1528,7 @@ public class LeaseServiceTests
     {
         var fx = new Fixture();
         await fx.SeedImageAsync();
-        // A provisioning lease is not yet ready for exec — seed it directly (create always yields active).
+        // A provisioning lease is not yet ready for exec -- seed it directly (create always yields active).
         var lease = await fx.Leases.CreateAsync(new Lease
         {
             Id = Guid.NewGuid(),
@@ -1552,7 +1552,7 @@ public class LeaseServiceTests
     }
 
     /// <summary>
-    /// A permissive gate that records whether it was asked to authorize/place a hold — used to prove the
+    /// A permissive gate that records whether it was asked to authorize/place a hold -- used to prove the
     /// per-host fast-fail (task #571) refuses BEFORE the wallet gate is consulted (no authorize, no hold).
     /// </summary>
     private sealed class RecordingWalletGate : ILeaseWalletGate
@@ -1598,7 +1598,7 @@ public class LeaseServiceTests
 
         public Task<Guid?> PlaceHoldAsync(
             Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
-            Task.FromResult<Guid?>(null); // never reached — the deny gates before provisioning
+            Task.FromResult<Guid?>(null); // never reached -- the deny gates before provisioning
 
         public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
 
@@ -1609,7 +1609,7 @@ public class LeaseServiceTests
 
     /// <summary>
     /// A gate that authorizes the hold (so the create provisions the container) but then throws when the hold
-    /// is placed — the post-provision failure the task-#540 teardown must handle (tear the contract down, mark
+    /// is placed -- the post-provision failure the task-#540 teardown must handle (tear the contract down, mark
     /// the lease failed). Models the rare AuthorizeHold→PlaceHold drain race and any ledger error.
     /// </summary>
     private sealed class HoldFailsWalletGate : ILeaseWalletGate

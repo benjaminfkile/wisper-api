@@ -5,7 +5,7 @@ namespace Wisper.Api.Tests.Payments;
 
 /// <summary>
 /// Sanity checks for the <see cref="FakeStripeClient"/> test double: it satisfies the
-/// <see cref="Wisper.Api.Payments.IStripeClient"/> contract that downstream billing tests build on —
+/// <see cref="Wisper.Api.Payments.IStripeClient"/> contract that downstream billing tests build on --
 /// configured by default with a usable SDK client, and fail-closed when flipped unconfigured.
 /// </summary>
 public class FakeStripeClientTests

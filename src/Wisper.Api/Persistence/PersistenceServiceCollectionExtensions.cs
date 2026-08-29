@@ -29,7 +29,7 @@ namespace Wisper.Api.Persistence;
 ///   <item><b>In-memory</b> (no connection string, an explicit dev mode): the same in-memory repository
 ///   doubles the test suite uses, promoted to first class so the whole <c>/v1</c> path runs with no
 ///   Postgres. <see cref="Db"/> is unconfigured, migrations are a no-op, and the health probe reports
-///   <c>in-memory</c>. <b>State resets on every restart — never for production.</b></item>
+///   <c>in-memory</c>. <b>State resets on every restart -- never for production.</b></item>
 /// </list>
 /// The higher-level services over the repositories (ledger, idempotency, policy, audit, fraud) and the
 /// health-check registration are backend-agnostic; only the repository set differs.
@@ -96,15 +96,15 @@ public static class PersistenceServiceCollectionExtensions
         // lease start (WalletLeaseGate). Depends on the ledger, lease repo, active policy, and the clock.
         services.AddSingleton<FraudGuardService>();
 
-        // Extend the health surface with the DB probe (reports in-memory in the dev mode — see DbHealthCheck).
+        // Extend the health surface with the DB probe (reports in-memory in the dev mode -- see DbHealthCheck).
         services.AddHealthChecks().AddCheck<DbHealthCheck>(DbHealthCheck.Name);
 
         return services;
     }
 
     /// <summary>
-    /// Registers the Dapper/Postgres repositories over the pooled <see cref="Db"/> — the production path
-    /// (docs/DATA_MODEL.md §3–§12). They only open a connection when a query runs.
+    /// Registers the Dapper/Postgres repositories over the pooled <see cref="Db"/> -- the production path
+    /// (docs/DATA_MODEL.md §3-§12). They only open a connection when a query runs.
     /// </summary>
     private static void AddPostgresRepositories(IServiceCollection services)
     {
@@ -113,18 +113,18 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IHostRepository, HostRepository>();
         services.AddSingleton<IHostImageRepository, HostImageRepository>();
 
-        // Consumer API keys — long-lived machine bearers for the /v1 surface (docs/DATA_MODEL.md §3).
+        // Consumer API keys -- long-lived machine bearers for the /v1 surface (docs/DATA_MODEL.md §3).
         services.AddSingleton<IApiKeyRepository, ApiKeyRepository>();
 
         // Lease + metering repositories (docs/DATA_MODEL.md §5, §6).
         services.AddSingleton<ILeaseRepository, LeaseRepository>();
         services.AddSingleton<ILeaseUsageRepository, LeaseUsageRepository>();
 
-        // The double-entry ledger store — the money source of truth (docs/DATA_MODEL.md §7, §8). The Dapper
+        // The double-entry ledger store -- the money source of truth (docs/DATA_MODEL.md §7, §8). The Dapper
         // store leans on the schema's triggers as defense-in-depth.
         services.AddSingleton<ILedgerStore, LedgerStore>();
 
-        // Stripe/idempotency/policy/audit infra (docs/DATA_MODEL.md §9–§12): the webhook dedupe store, host
+        // Stripe/idempotency/policy/audit infra (docs/DATA_MODEL.md §9-§12): the webhook dedupe store, host
         // payouts, API idempotency, the versioned platform policy, and the append-only audit log.
         services.AddSingleton<IStripeEventRepository, StripeEventRepository>();
         services.AddSingleton<IPayoutRepository, PayoutRepository>();
@@ -134,7 +134,7 @@ public static class PersistenceServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers the in-memory repository doubles for every interface — the DB-less dev mode
+    /// Registers the in-memory repository doubles for every interface -- the DB-less dev mode
     /// (docs/DATA_MODEL.md §1). These are the same doubles the test suite drives; here they are promoted to
     /// first class so a boot with no connection string still serves the full <c>/v1</c> path. Every double
     /// keeps its state for the process lifetime only, so the store is empty again on the next restart.
@@ -173,7 +173,7 @@ public static class PersistenceServiceCollectionExtensions
         else
         {
             logger.LogWarning(
-                "persistence: in-memory (no connection string) — state resets on restart");
+                "persistence: in-memory (no connection string) -- state resets on restart");
         }
     }
 
@@ -221,13 +221,13 @@ public static class PersistenceServiceCollectionExtensions
 
         if (!db.IsConfigured)
         {
-            logger.LogInformation("no database configured — skipping migrations (tunnel-only boot)");
+            logger.LogInformation("no database configured -- skipping migrations (tunnel-only boot)");
             return;
         }
 
         if (!options.RunMigrationsAtStartup)
         {
-            logger.LogInformation("RunMigrationsAtStartup is disabled — skipping migrations");
+            logger.LogInformation("RunMigrationsAtStartup is disabled -- skipping migrations");
             return;
         }
 

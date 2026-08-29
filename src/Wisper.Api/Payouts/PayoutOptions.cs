@@ -22,7 +22,7 @@ public sealed class PayoutOptions
     /// </summary>
     public long PayoutMinCents { get; set; } = 100;
 
-    /// <summary>The scheduled cadence in hours (docs/PAYMENTS.md §6 — default <b>daily</b>).</summary>
+    /// <summary>The scheduled cadence in hours (docs/PAYMENTS.md §6 -- default <b>daily</b>).</summary>
     public int IntervalHours { get; set; } = 24;
 
     /// <summary>The scheduled cadence as a <see cref="TimeSpan"/> (clamped to at least one hour).</summary>

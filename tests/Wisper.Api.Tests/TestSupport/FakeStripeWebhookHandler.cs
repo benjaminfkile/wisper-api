@@ -5,7 +5,7 @@ namespace Wisper.Api.Tests.TestSupport;
 /// <summary>
 /// A recording <see cref="IStripeWebhookHandler"/> for dispatcher/ingest tests. It claims a configurable
 /// set of event types and counts invocations so a test can prove idempotent dedupe (a duplicate must not
-/// re-invoke) and retry (a re-delivered failure must). Flip <see cref="Throw"/> to make it fail — the next
+/// re-invoke) and retry (a re-delivered failure must). Flip <see cref="Throw"/> to make it fail -- the next
 /// call throws, exercising the retry-safe <c>failed</c> recording path.
 /// </summary>
 public sealed class FakeStripeWebhookHandler : IStripeWebhookHandler

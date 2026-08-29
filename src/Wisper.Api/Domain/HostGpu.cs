@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// The GPU capability a host advertises — the distinct hardware classes its wisp exposes and how many
+/// The GPU capability a host advertises -- the distinct hardware classes its wisp exposes and how many
 /// devices it offers (docs/TUNNEL.md §5, task #521). Classes are <b>opaque strings</b> mirrored from the
 /// agent's capability report (the wire <c>gpu</c> block), exactly like the isolation levels
 /// (<see cref="HostIsolation"/>): the manager stores and surfaces them without interpreting the hardware, so

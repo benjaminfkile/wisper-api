@@ -3,8 +3,8 @@ using Wisper.Api.Domain;
 namespace Wisper.Api.Persistence.HostImages;
 
 /// <summary>
-/// Data access for <see cref="HostImage"/> rows — a host's priced allow-list (docs/DATA_MODEL.md §4).
-/// CRUD is per host: the host API (P7.1) manages entries; the catalog/lease paths (P4.1–P4.3) read
+/// Data access for <see cref="HostImage"/> rows -- a host's priced allow-list (docs/DATA_MODEL.md §4).
+/// CRUD is per host: the host API (P7.1) manages entries; the catalog/lease paths (P4.1-P4.3) read
 /// the enabled set and resolve a specific <c>(host, image_ref)</c>. A Dapper + explicit-SQL
 /// implementation backs Postgres; an in-memory double backs the unit suite. The
 /// <c>(host_id, image_ref)</c> uniqueness is enforced by both.

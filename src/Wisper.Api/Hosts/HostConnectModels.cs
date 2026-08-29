@@ -5,7 +5,7 @@ namespace Wisper.Api.Hosts;
 /// <summary>
 /// Response of <c>POST /v1/hosts/connect</c> (docs/API.md §6, docs/PAYMENTS.md §5): the hosted-onboarding URL
 /// the host is redirected to, plus the caller's current <c>connect_status</c>. Completion is confirmed by the
-/// <c>account.updated</c> webhook, never by the redirect — so this status is the state <i>before</i> the host
+/// <c>account.updated</c> webhook, never by the redirect -- so this status is the state <i>before</i> the host
 /// finishes on Stripe.
 /// </summary>
 public sealed record HostConnectResponse(
@@ -26,7 +26,7 @@ public sealed record HostConnectStatusResponse(
     [property: JsonPropertyName("requirements")] HostConnectRequirements Requirements);
 
 /// <summary>
-/// The outstanding Connect onboarding requirements (docs/PAYMENTS.md §5) — "what's still required": the
+/// The outstanding Connect onboarding requirements (docs/PAYMENTS.md §5) -- "what's still required": the
 /// fields Stripe needs now (<see cref="CurrentlyDue"/>/<see cref="PastDue"/>), soon
 /// (<see cref="EventuallyDue"/>), what it's verifying (<see cref="PendingVerification"/>), and the reason the
 /// account is blocked if any (<see cref="DisabledReason"/>).
@@ -38,7 +38,7 @@ public sealed record HostConnectRequirements(
     [property: JsonPropertyName("eventually_due")] IReadOnlyList<string> EventuallyDue,
     [property: JsonPropertyName("pending_verification")] IReadOnlyList<string> PendingVerification)
 {
-    /// <summary>An empty requirements set — for a host that has no Connect account yet.</summary>
+    /// <summary>An empty requirements set -- for a host that has no Connect account yet.</summary>
     public static HostConnectRequirements Empty { get; } = new(
         DisabledReason: null,
         CurrentlyDue: Array.Empty<string>(),

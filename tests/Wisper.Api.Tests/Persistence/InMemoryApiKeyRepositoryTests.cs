@@ -45,7 +45,7 @@ public class InMemoryApiKeyRepositoryTests
 
         await repo.RevokeAsync(created.Id, T0.AddMinutes(1));
 
-        // A revoked key fails closed — it no longer resolves.
+        // A revoked key fails closed -- it no longer resolves.
         Assert.Null(await repo.GetByTokenHashAsync("live-hash"));
     }
 
@@ -75,7 +75,7 @@ public class InMemoryApiKeyRepositoryTests
         Assert.NotNull(revoked);
         Assert.Equal(T0.AddMinutes(5), revoked!.RevokedAt);
 
-        // Re-revoking an already-revoked (or missing) key returns null — no second stamp.
+        // Re-revoking an already-revoked (or missing) key returns null -- no second stamp.
         Assert.Null(await repo.RevokeAsync(created.Id, T0.AddMinutes(9)));
         Assert.Null(await repo.RevokeAsync(Guid.NewGuid(), T0));
     }

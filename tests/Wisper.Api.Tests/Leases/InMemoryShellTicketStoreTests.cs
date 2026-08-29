@@ -47,7 +47,7 @@ public class InMemoryShellTicketStoreTests
         var ticket = store.Mint(Guid.NewGuid(), lease);
 
         Assert.NotNull(store.Redeem(ticket.Value, lease));
-        // A second redemption of the same ticket fails — it was consumed by the first.
+        // A second redemption of the same ticket fails -- it was consumed by the first.
         Assert.Null(store.Redeem(ticket.Value, lease));
     }
 
@@ -75,7 +75,7 @@ public class InMemoryShellTicketStoreTests
 
         // Presenting the ticket at a different lease's socket is rejected...
         Assert.Null(store.Redeem(ticket.Value, otherLease));
-        // ...and burns it — a mismatched presentation is single-use too, so the right lease can't reuse it.
+        // ...and burns it -- a mismatched presentation is single-use too, so the right lease can't reuse it.
         Assert.Null(store.Redeem(ticket.Value, lease));
     }
 

@@ -155,6 +155,6 @@ public class AccountWebhookHandlerTests
             Data = new Stripe.EventData { Object = new Stripe.PaymentIntent { Id = "pi_1" } },
         };
 
-        await fx.Handler.HandleAsync(evt); // recognised type, wrong object — benign no-op
+        await fx.Handler.HandleAsync(evt); // recognised type, wrong object -- benign no-op
     }
 }

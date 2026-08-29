@@ -8,8 +8,8 @@ namespace Wisper.Api.Tests.Infrastructure;
 
 /// <summary>
 /// Unit tests for the <c>Idempotency-Key</c> helper (docs/API.md §9, docs/DATA_MODEL.md §10): the four
-/// outcomes — begin, replay the stored response on same key+body, 409 conflict on same key+different body,
-/// 409 in-progress lock while the first request is still running — plus the TTL sweep. Runs entirely on
+/// outcomes -- begin, replay the stored response on same key+body, 409 conflict on same key+different body,
+/// 409 in-progress lock while the first request is still running -- plus the TTL sweep. Runs entirely on
 /// the in-memory repository and a fake clock (Grunt has no Postgres).
 /// </summary>
 public class IdempotencyServiceTests
@@ -99,7 +99,7 @@ public class IdempotencyServiceTests
 
         clock.Advance(IdempotencyService.DefaultTtl + TimeSpan.FromMinutes(1));
 
-        // Past the TTL, the same key with a *different* body no longer conflicts — the stale row is gone.
+        // Past the TTL, the same key with a *different* body no longer conflicts -- the stale row is gone.
         var reused = await svc.BeginAsync(user, "k1", "hashB");
 
         Assert.Equal(IdempotencyOutcome.Began, reused.Outcome);

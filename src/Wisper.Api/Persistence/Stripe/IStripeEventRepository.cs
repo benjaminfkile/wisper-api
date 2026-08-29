@@ -3,7 +3,7 @@ using Wisper.Api.Domain;
 namespace Wisper.Api.Persistence.Stripe;
 
 /// <summary>
-/// Data access for <see cref="StripeEvent"/> rows — the webhook dedupe store that makes Stripe processing
+/// Data access for <see cref="StripeEvent"/> rows -- the webhook dedupe store that makes Stripe processing
 /// exactly-once (docs/DATA_MODEL.md §9, docs/PAYMENTS.md §9). The ingest path
 /// <see cref="TryInsertReceivedAsync"/>s the event keyed by its Stripe id: a first sight is stored and
 /// handed to a handler; a re-delivery is a no-op. Handlers then move the row to a terminal state with
@@ -16,7 +16,7 @@ public interface IStripeEventRepository : IRepository
     /// Inserts <paramref name="evt"/> as <see cref="StripeEventStatus.Received"/> if its id is new
     /// (mirroring <c>INSERT … ON CONFLICT (id) DO NOTHING</c>). Returns <c>true</c> when the row was
     /// newly inserted (the caller should process it), or <c>false</c> when the id already existed (a
-    /// re-delivery to ack and drop — the dedupe hit).
+    /// re-delivery to ack and drop -- the dedupe hit).
     /// </summary>
     Task<bool> TryInsertReceivedAsync(StripeEvent evt, CancellationToken ct = default);
 

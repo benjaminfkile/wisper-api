@@ -1,14 +1,14 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// A persisted Stripe webhook event (docs/DATA_MODEL.md §9, <c>stripe_events</c>) — the store that makes
+/// A persisted Stripe webhook event (docs/DATA_MODEL.md §9, <c>stripe_events</c>) -- the store that makes
 /// webhook processing exactly-once. The ingest path upserts on <see cref="Id"/> (the Stripe event id, PK):
 /// a first sight is stored <see cref="StripeEventStatus.Received"/> and handed to an idempotent handler;
 /// a re-delivery of the same id is a dedupe hit and acked without re-processing (docs/PAYMENTS.md §9).
 /// </summary>
 public sealed record StripeEvent
 {
-    /// <summary>Stripe event id — the PK and dedupe key.</summary>
+    /// <summary>Stripe event id -- the PK and dedupe key.</summary>
     public required string Id { get; init; }
 
     /// <summary>Event type (<c>payment_intent.succeeded</c>, <c>account.updated</c>, <c>transfer.*</c>, …).</summary>

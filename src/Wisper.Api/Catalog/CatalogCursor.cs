@@ -4,7 +4,7 @@ namespace Wisper.Api.Catalog;
 
 /// <summary>
 /// The opaque cursor that paginates the consumer catalog (docs/API.md §10). It encodes the stable
-/// sort key of the last host on the page — <c>(created_at, id)</c>, descending — so inserts during
+/// sort key of the last host on the page -- <c>(created_at, id)</c>, descending -- so inserts during
 /// paging can neither duplicate nor skip a host. The wire form is URL-safe Base64 of
 /// <c>"{utcTicks}:{guid}"</c>; it is deliberately treated as an opaque token by clients.
 /// </summary>
@@ -58,7 +58,7 @@ public sealed record CatalogCursor(DateTimeOffset CreatedAt, Guid Id)
 
     /// <summary>
     /// Orders <paramref name="a"/> against <paramref name="b"/> by the catalog's stable
-    /// descending key — newer <c>created_at</c> first, ties broken by the larger id. Negative when
+    /// descending key -- newer <c>created_at</c> first, ties broken by the larger id. Negative when
     /// <paramref name="a"/> sorts before <paramref name="b"/>.
     /// </summary>
     public static int Compare(DateTimeOffset aCreatedAt, Guid aId, DateTimeOffset bCreatedAt, Guid bId)

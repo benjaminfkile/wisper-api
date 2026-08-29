@@ -7,7 +7,7 @@ namespace Wisper.Api.Payments;
 /// claims its <c>type</c> (docs/PAYMENTS.md §8.5). A recognised type is handed to its handler and reported
 /// <see cref="StripeEventStatus.Processed"/>; an unrecognised type is a no-op reported
 /// <see cref="StripeEventStatus.Ignored"/> (we still store it, so reconciliation can see everything Stripe
-/// sent). A handler that throws propagates — the webhook service records the event <c>failed</c> for retry.
+/// sent). A handler that throws propagates -- the webhook service records the event <c>failed</c> for retry.
 /// The type→handler map is built once at construction; a type claimed by two handlers is a wiring bug and
 /// fails fast here.
 /// </summary>

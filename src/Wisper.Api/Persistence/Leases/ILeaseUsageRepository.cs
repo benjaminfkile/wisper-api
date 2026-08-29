@@ -3,7 +3,7 @@ using Wisper.Api.Domain;
 namespace Wisper.Api.Persistence.Leases;
 
 /// <summary>
-/// Data access for <see cref="LeaseUsage"/> rows — the flushed metering intervals (docs/DATA_MODEL.md
+/// Data access for <see cref="LeaseUsage"/> rows -- the flushed metering intervals (docs/DATA_MODEL.md
 /// §6). The meter appends one row per tick and on lease end; <see cref="AppendAsync"/> is idempotent on
 /// <c>(lease_id, period_start)</c> so a retried flush can't double-charge (§14). A Dapper +
 /// explicit-SQL implementation backs Postgres; an in-memory double backs the unit suite.

@@ -19,7 +19,7 @@ internal static class ExecStreamSse
     /// <summary>
     /// Opens a streamed exec of <paramref name="command"/> in <paramref name="leaseId"/> on
     /// <paramref name="hostId"/> and writes its output as SSE onto <paramref name="context"/>'s response.
-    /// The caller must have already validated the request (ownership/ready state) — once this starts the
+    /// The caller must have already validated the request (ownership/ready state) -- once this starts the
     /// response is <c>200 text/event-stream</c>, so relay failures are reported as an <c>error</c> event,
     /// not the uniform error envelope.
     /// </summary>
@@ -40,7 +40,7 @@ internal static class ExecStreamSse
         }
         catch (ApiException ex)
         {
-            // host_offline / upstream_timeout etc. — the exec never opened; report a terminal error.
+            // host_offline / upstream_timeout etc. -- the exec never opened; report a terminal error.
             var (_, wire) = ApiErrors.Map(ex.Code);
             await WriteEventAsync(response, "error", new { error = wire }, ct);
             return;
@@ -72,7 +72,7 @@ internal static class ExecStreamSse
         }
         catch (OperationCanceledException)
         {
-            // The consumer went away — nothing more to write.
+            // The consumer went away -- nothing more to write.
         }
         finally
         {

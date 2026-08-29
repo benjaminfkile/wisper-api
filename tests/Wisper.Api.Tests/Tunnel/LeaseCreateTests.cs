@@ -93,7 +93,7 @@ public class LeaseCreateTests
     [Fact]
     public void Resources_gpus_is_omitted_from_the_wire_when_zero()
     {
-        // Like cpus/memory_mb/pids, a zero gpus count is omitted (WhenWritingDefault) — the agent/wisp then
+        // Like cpus/memory_mb/pids, a zero gpus count is omitted (WhenWritingDefault) -- the agent/wisp then
         // apply their own default. Only a non-zero booked count travels on the frame.
         var frame = new LeaseCreate { Image = "alpine", Resources = new LeaseResources { Cpus = 2 } };
 

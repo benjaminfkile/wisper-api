@@ -5,7 +5,7 @@ namespace Wisper.Api.Persistence.Idempotency;
 /// <summary>
 /// In-memory <see cref="IIdempotencyKeyRepository"/> double for unit tests (Grunt has no Postgres).
 /// Semantics mirror the SQL side: <see cref="TryBeginAsync"/> is a first-writer-wins insert on the key
-/// (like <c>ON CONFLICT (key) DO NOTHING</c>) — the winner gets <c>null</c> back and holds the
+/// (like <c>ON CONFLICT (key) DO NOTHING</c>) -- the winner gets <c>null</c> back and holds the
 /// in-progress lock; a loser gets the existing row. The insert is guarded by a lock so two concurrent
 /// begins can't both win (the atomicity the DB gives for free).
 /// </summary>

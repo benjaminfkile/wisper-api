@@ -66,7 +66,7 @@ public class DistributedHostCapabilitySourceTests
         var (registryA, _) = BuildInstance("inst-A", store, presence);
         await registryA.RegisterAsync(ConnectionWith(SampleCapability));
 
-        // Instance B has an empty local registry — host tunnel is not local.
+        // Instance B has an empty local registry -- host tunnel is not local.
         var (_, localSrcB) = BuildInstance("inst-B", new InMemoryHostCapabilityStore(), new InMemoryHostPresenceStore());
         var sourceB = new DistributedHostCapabilitySource(localSrcB, store);
 

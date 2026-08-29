@@ -30,7 +30,7 @@ public class TunnelConnection
     private int _sidCounter;
 
     // Readiness gate (docs/TUNNEL.md §3): a host is only usable AFTER its hello handshake fully
-    // completes — the connection registered AND hello.ack sent. Completes with true on
+    // completes -- the connection registered AND hello.ack sent. Completes with true on
     // MarkReady, or false on MarkUnavailable (the handshake aborted / the tunnel tore down first).
     // The relay awaits this before resolving a host, so a create right after the agent connects
     // waits briefly for readiness instead of racing to host_offline.
@@ -78,7 +78,7 @@ public class TunnelConnection
     /// as <c>"degraded"</c> (task #62): the tunnel is up but the agent cannot reach its local wisp
     /// daemon, so the shared <see cref="Wisper.Api.Tunnel.Backplane.IHostDegradedStore"/> currently
     /// lists this host and placement excludes it. Used by the heartbeat handler to log the transition
-    /// exactly once (steady state is a no-op) — cross-instance readers consult the store, not this
+    /// exactly once (steady state is a no-op) -- cross-instance readers consult the store, not this
     /// field. A fresh connection starts <c>false</c>; the first degraded beat sets it and the first
     /// non-degraded beat clears it. Not persisted across tunnels: a supersede/reconnect starts clean,
     /// and the very next heartbeat re-establishes the correct state (and re-emits the log line).
@@ -88,7 +88,7 @@ public class TunnelConnection
     /// <summary>
     /// True once <see cref="HeartbeatDegradedApply"/> has reconciled this connection's degraded state
     /// against the shared store at least once (task #65). The first heartbeat of every connection MUST
-    /// write the store authoritatively — a stale degraded entry left behind by a superseded/crashed
+    /// write the store authoritatively -- a stale degraded entry left behind by a superseded/crashed
     /// prior connection (or a disconnect-time clear that lost the race, or threw) would otherwise keep
     /// a returning HEALTHY agent excluded from placement forever: a fresh connection starts
     /// <see cref="IsDegraded"/> = false, and the transition-edge fast-path guard skips the store write
@@ -104,10 +104,10 @@ public class TunnelConnection
     /// reason other than <c>host_disconnect</c>, or unknown to the manager entirely) as orphaned; the
     /// coordinator best-effort relays a <c>lease.release</c> so the container is torn down immediately
     /// instead of lingering until wisp's TTL reaper. Membership here means "already tried this
-    /// connection" — subsequent heartbeats that keep reporting the same id skip the relay AND the log
+    /// connection" -- subsequent heartbeats that keep reporting the same id skip the relay AND the log
     /// line, mirroring the transition-edge logging discipline in <see cref="HeartbeatDegradedApply"/>.
     /// The set is per-connection so a supersede/reconnect naturally resets it and the next connection
-    /// gets one fresh attempt per lease. Used as a set — the byte value is always <c>0</c>.
+    /// gets one fresh attempt per lease. Used as a set -- the byte value is always <c>0</c>.
     /// </summary>
     public ConcurrentDictionary<Guid, byte> TerminalTeardownRelayed { get; } = new();
 
@@ -128,12 +128,12 @@ public class TunnelConnection
 
     /// <summary>
     /// Allocates the next monotonic per-connection request id (docs/TUNNEL.md §2). Starts at 1
-    /// so it is never 0 — <see cref="ControlEnvelope.Rid"/> treats 0 as "omitted".
+    /// so it is never 0 -- <see cref="ControlEnvelope.Rid"/> treats 0 as "omitted".
     /// </summary>
     public uint NextRid() => (uint)Interlocked.Increment(ref _ridCounter);
 
     /// <summary>
-    /// Allocates the next monotonic per-connection stream id (docs/TUNNEL.md §1, §2 — Wisper owns
+    /// Allocates the next monotonic per-connection stream id (docs/TUNNEL.md §1, §2 -- Wisper owns
     /// the id space). Starts at 1 so it is never 0 (<see cref="ControlEnvelope.Sid"/> treats 0 as
     /// "omitted").
     /// </summary>
@@ -151,7 +151,7 @@ public class TunnelConnection
     /// <summary>
     /// Marks the handshake complete: the tunnel is now available to the relay (docs/TUNNEL.md §3).
     /// Called by the endpoint once the connection is registered and <c>hello.ack</c> has been sent.
-    /// Idempotent — the first of <see cref="MarkReady"/>/<see cref="MarkUnavailable"/> wins.
+    /// Idempotent -- the first of <see cref="MarkReady"/>/<see cref="MarkUnavailable"/> wins.
     /// </summary>
     public void MarkReady() => _ready.TrySetResult(true);
 
@@ -187,7 +187,7 @@ public class TunnelConnection
     /// <summary>When the connection was accepted (UTC).</summary>
     public DateTime ConnectedAtUtc { get; }
 
-    /// <summary>UTC time of the most recently received frame (any opcode) — the liveness clock.</summary>
+    /// <summary>UTC time of the most recently received frame (any opcode) -- the liveness clock.</summary>
     public DateTime LastActivityUtc =>
         new(Interlocked.Read(ref _lastActivityTicks), DateTimeKind.Utc);
 
@@ -386,7 +386,7 @@ public class TunnelConnection
 
     /// <summary>
     /// Hook for control frames this task does not handle (lease/exec/shell/stream). The default
-    /// logs and ignores — unknown control frames are never fatal (docs/TUNNEL.md §4). The next
+    /// logs and ignores -- unknown control frames are never fatal (docs/TUNNEL.md §4). The next
     /// task's relay overrides this to dispatch by <paramref name="type"/>.
     /// </summary>
     protected virtual Task OnControlFrameAsync(string type, ReadOnlyMemory<byte> payload, CancellationToken ct)

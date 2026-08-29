@@ -80,7 +80,7 @@ public enum LeaseEndReason
 
 /// <summary>
 /// The kind of a <c>ledger_account</c> (docs/DATA_MODEL.md §2, §7, <c>ledger_account_kind</c>). The
-/// <b>normal side</b> of each — how a positive balance accrues — is fixed:
+/// <b>normal side</b> of each -- how a positive balance accrues -- is fixed:
 /// <see cref="UserWallet"/>, <see cref="HostEarnings"/>, <see cref="LeaseHolds"/> and
 /// <see cref="PlatformRevenue"/> are <i>credit-normal</i>; <see cref="PlatformCash"/> and
 /// <see cref="StripeFees"/> are <i>debit-normal</i>. The two earmarked liabilities
@@ -97,7 +97,7 @@ public enum LedgerAccountKind
 }
 
 /// <summary>
-/// The kind of a <c>ledger_transaction</c> (docs/DATA_MODEL.md §2, §8, <c>ledger_txn_kind</c>) — the
+/// The kind of a <c>ledger_transaction</c> (docs/DATA_MODEL.md §2, §8, <c>ledger_txn_kind</c>) -- the
 /// money flow a balanced set of entries represents. <see cref="Topup"/>/<see cref="Refund"/> pair with
 /// Stripe; the lease inner loop (<see cref="LeaseHold"/> → <see cref="LeaseCharge"/> →
 /// <see cref="HoldRelease"/>) is pure internal ledger; <see cref="Payout"/> drains host earnings;
@@ -116,7 +116,7 @@ public enum LedgerTxnKind
 }
 
 /// <summary>
-/// Lifecycle of a host <see cref="Payout"/> (docs/DATA_MODEL.md §2, §9, <c>payout_status</c>) — a Connect
+/// Lifecycle of a host <see cref="Payout"/> (docs/DATA_MODEL.md §2, §9, <c>payout_status</c>) -- a Connect
 /// transfer draining <see cref="LedgerAccountKind.HostEarnings"/>. <see cref="Pending"/> is created before
 /// the Stripe call; <see cref="InTransit"/>/<see cref="Paid"/> track the transfer; <see cref="Failed"/>/
 /// <see cref="Canceled"/> are terminal non-success states. The multi-word <see cref="InTransit"/> maps to
@@ -164,7 +164,7 @@ public static class PgEnum
         Enum.Parse<TEnum>(label, ignoreCase: true);
 
     /// <summary>
-    /// The snake_case PostgreSQL enum label for <paramref name="value"/> — the enum name with an
+    /// The snake_case PostgreSQL enum label for <paramref name="value"/> -- the enum name with an
     /// underscore before each interior capital, lowercased (<c>HostDisconnect</c> → <c>host_disconnect</c>).
     /// </summary>
     public static string ToSnakeLabel<TEnum>(TEnum value) where TEnum : struct, Enum

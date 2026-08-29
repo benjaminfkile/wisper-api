@@ -1,8 +1,8 @@
--- 0003_Users.sql — identity & accounts (docs/DATA_MODEL.md §3, §13).
+-- 0003_Users.sql -- identity & accounts (docs/DATA_MODEL.md §3, §13).
 --
 -- Roles are additive and authoritative in Cognito groups; this row mirrors identity plus payment
 -- linkage. The four unique columns (cognito_sub, email, stripe_customer_id, connect_account_id) each
--- get an implicit unique index — the lookups in §13. Money lives in the ledger, never here.
+-- get an implicit unique index -- the lookups in §13. Money lives in the ledger, never here.
 
 CREATE TABLE users (
     id                 uuid          PRIMARY KEY DEFAULT gen_random_uuid(),

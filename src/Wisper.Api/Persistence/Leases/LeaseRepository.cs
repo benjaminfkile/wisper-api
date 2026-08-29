@@ -6,7 +6,7 @@ namespace Wisper.Api.Persistence.Leases;
 /// <summary>
 /// Dapper + explicit-SQL <see cref="ILeaseRepository"/> over Postgres (docs/DATA_MODEL.md §5). The enum
 /// columns (<c>network</c>, <c>status</c>, <c>lease_end_reason</c>) are written as text parameters cast
-/// to their enum type and read back via <c>::text</c> into a <see cref="Row"/>, then parsed — the
+/// to their enum type and read back via <c>::text</c> into a <see cref="Row"/>, then parsed -- the
 /// multi-word <c>end_reason</c> uses the snake_case pair on <see cref="PgEnum"/> since Dapper's built-in
 /// enum parse can't bridge <c>host_disconnect</c> ↔ <c>HostDisconnect</c>. The <c>hold_txn_id</c> FK to
 /// <c>ledger_transactions</c> is added in P2.4 (circular dependency). Not exercised by the unit suite

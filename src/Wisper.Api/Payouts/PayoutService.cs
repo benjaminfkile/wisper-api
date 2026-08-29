@@ -94,7 +94,7 @@ public sealed class PayoutService
             }
             catch (Exception ex)
             {
-                // One host's failure must not stop the run — earnings are retained and retried next run (§6).
+                // One host's failure must not stop the run -- earnings are retained and retried next run (§6).
                 _logger.LogError(ex, "scheduled payout for host {Host} threw; continuing", hostUserId);
             }
         }
@@ -104,7 +104,7 @@ public sealed class PayoutService
     }
 
     /// <summary>
-    /// On-demand payout of the caller's accrued earnings (docs/API.md §6, docs/PAYMENTS.md §6) — the same path
+    /// On-demand payout of the caller's accrued earnings (docs/API.md §6, docs/PAYMENTS.md §6) -- the same path
     /// and guard as the scheduled run. Throws <see cref="ApiErrorCode.ConnectIncomplete"/> (403) when Connect
     /// is not enabled, and <see cref="ApiErrorCode.PaymentRequired"/> when the accrued balance is below the
     /// payout minimum. Otherwise returns the created payout (which may itself be <c>failed</c> if the transfer

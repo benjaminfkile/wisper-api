@@ -9,7 +9,7 @@ namespace Wisper.Api.Persistence;
 /// </summary>
 /// <remarks>
 /// Grunt/dev may run with <b>no</b> database configured (the tunnel needs no DB). In that case
-/// <see cref="IsConfigured"/> is <c>false</c> and <see cref="DataSource"/> throws — callers that
+/// <see cref="IsConfigured"/> is <c>false</c> and <see cref="DataSource"/> throws -- callers that
 /// need the DB must degrade gracefully (see the DB health probe and the migration runner), so the
 /// app still boots for the tunnel. Repositories are unit-tested against in-memory doubles, never
 /// this type, so no live database is required to build or test.
@@ -31,7 +31,7 @@ public sealed class Db : IAsyncDisposable
 
     /// <summary>
     /// The pooled data source. Throws <see cref="InvalidOperationException"/> when no database is
-    /// configured — guard with <see cref="IsConfigured"/> (or <see cref="TryGetDataSource"/>) on
+    /// configured -- guard with <see cref="IsConfigured"/> (or <see cref="TryGetDataSource"/>) on
     /// paths that must tolerate a DB-less boot.
     /// </summary>
     public NpgsqlDataSource DataSource =>

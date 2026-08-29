@@ -6,7 +6,7 @@ namespace Wisper.Api.Auth;
 /// Validates a Bearer Cognito JWT (issuer, audience, expiry, signature via the pool's
 /// JWKS) and maps its claims to a Wisper principal (docs/API.md §2). The interface is
 /// deliberately narrow so the real JWKS-backed <see cref="CognitoJwtValidator"/> and a
-/// test fake are interchangeable — Grunt has no Cognito, so tests use signed test tokens.
+/// test fake are interchangeable -- Grunt has no Cognito, so tests use signed test tokens.
 /// </summary>
 public interface IJwtValidator
 {

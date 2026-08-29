@@ -1,6 +1,6 @@
 # wisper-api
 
-The **Wisper** control-plane API — the hosted broker/marketplace for **wisp**. Hosts run wisp on their own machines and dial out to Wisper over a persistent WebSocket; consumers buy metered, per-minute container leases from any host; hosts get paid for the compute they rent out.
+The **Wisper** control-plane API -- the hosted broker/marketplace for **wisp**. Hosts run wisp on their own machines and dial out to Wisper over a persistent WebSocket; consumers buy metered, per-minute container leases from any host; hosts get paid for the compute they rent out.
 
 This repo is the **C# / ASP.NET Core** service. It runs behind an API gateway / load balancer and is reachable at your Wisper host (e.g. `https://<wisper-host>/...`).
 
@@ -20,8 +20,8 @@ The full architecture lives in [`docs/`](./docs):
 
 ## Stack
 
-- **.NET 8 (LTS)** / ASP.NET Core (Kestrel) — pinned via [`global.json`](./global.json). **The SDK must be .NET 8.**
-- Raw **WebSockets** (`System.Net.WebSockets`) for the agent tunnel and console relay — no SignalR (see `TUNNEL.md`).
+- **.NET 8 (LTS)** / ASP.NET Core (Kestrel) -- pinned via [`global.json`](./global.json). **The SDK must be .NET 8.**
+- Raw **WebSockets** (`System.Net.WebSockets`) for the agent tunnel and console relay -- no SignalR (see `TUNNEL.md`).
 - **PostgreSQL** (managed) via Dapper + DbUp raw-SQL migrations (money-ledger control; no heavy ORM).
 - **Redis** (managed) as the multi-instance WebSocket backplane.
 - **Stripe + Stripe Connect** for billing and host payouts.
@@ -64,9 +64,9 @@ dotnet run --project src/Wisper.Api   # serves on http://localhost:5214 (launchS
 
 **Postgres regression (opt-in).** A couple of tests exercise the paid-lease create against a *real* throwaway
 Postgres cluster (`EphemeralPostgres`) to catch the ledger `lease_id` FK ordering bug (task #540) that the
-in-memory doubles can't — an FK the in-memory ledger doesn't enforce. They stand up a server, so they are gated
+in-memory doubles can't -- an FK the in-memory ledger doesn't enforce. They stand up a server, so they are gated
 behind an explicit opt-in and are reported **skipped** otherwise (a visible `[SkippableFact]` skip, not a hidden
-no-op). `dotnet test` on its own never touches Postgres — deterministic regardless of whatever server binaries
+no-op). `dotnet test` on its own never touches Postgres -- deterministic regardless of whatever server binaries
 the machine/CI runner happens to ship. To run the full regression locally (needs the PostgreSQL **server** tools
 `initdb`/`pg_ctl` installed on the box; the service image itself ships no Postgres):
 
@@ -96,7 +96,7 @@ Long-running background work is broken into small, restartable loops. Each loop 
 
 ## In-memory persistence mode (DB-less dev boot)
 
-With **no** `ConnectionStrings:Wisper` set (the default for `dotnet run` and the whole test suite), the app boots in **in-memory persistence mode**: it registers in-memory doubles for *every* repository, so the full `/v1` path runs with no Postgres. Set the connection string (`ConnectionStrings__Wisper`) to switch to the Postgres path — production behaviour is unchanged.
+With **no** `ConnectionStrings:Wisper` set (the default for `dotnet run` and the whole test suite), the app boots in **in-memory persistence mode**: it registers in-memory doubles for *every* repository, so the full `/v1` path runs with no Postgres. Set the connection string (`ConnectionStrings__Wisper`) to switch to the Postgres path -- production behaviour is unchanged.
 
 - **Loud:** a single startup warning line (`persistence: in-memory (no connection string) ... state resets on restart`), and `GET /api/health` reports the `database` check as `in-memory`. Migrations are a no-op. The metering flush loop, the durable suspension sweep, the scheduled payout loop, the scheduled ledger reconciliation loop, and the scheduled idempotency-key TTL sweep do **not** start in this mode (all gate on a configured database), so leases run and hold but usage/ledger charges never accrue and expired idempotency-key rows are swept only lazily on retry.
 - **Self-hosted flow with no Cognito/Postgres:** configure a config API key (`Auth:ApiKeys`) with `consumer`+`host` scopes and drive `POST /v1/hosts` → `PUT /v1/hosts/:id/images` (0-cent pricing allowed) → `GET /v1/catalog` → `POST /v1/leases`. A config key authenticates only when its `UserId` resolves to an active `users` row; if no row exists yet, the authenticator seeds one on first sight from the grant's `Email` (idempotent, and only for config-map keys). The seed runs in **every** persistence mode (in-memory and Postgres), because `Auth:ApiKeys` is **empty by default outside self-hosted/dev**, so any key that reaches this branch is operator-controlled and the seed is bounded by that allow-list. A single key therefore drives the whole flow without out-of-band seeding. An `Email` is therefore **required** to make the bootstrap work (a grant with no `Email` still fails `401` instead of a downstream `500`, see `docs/API.md` §2). A pre-existing suspended row also fails `401`. Example `appsettings.Development.json` / env:
@@ -115,7 +115,7 @@ With **no** `ConnectionStrings:Wisper` set (the default for `dotnet run` and the
 
   Then `Authorization: Bearer wck_live_dev_operator` on every `/v1` call. The matching `Tunnel:HostTokens` allow-list for agent tokens is honoured only when the process runs in the `Development` environment; in any other environment it fails closed regardless of config.
 - **Dev harness:** `POST /dev/leases`, `POST /dev/leases/{id}/exec`, `DELETE /dev/leases/{id}` and `WS /dev/leases/{id}/shell` (no auth, no billing) are mapped only when the environment is `Development` **and** `Tunnel:EnableDevEndpoints` is true (`appsettings.Development.json` sets it).
-- **State resets on every restart** (hosts, leases, wallet/ledger balances — everything lives in process memory). **Never use this mode in production** — no durability, no cross-instance sharing, no backups. See `docs/DESIGN.md` §16.
+- **State resets on every restart** (hosts, leases, wallet/ledger balances -- everything lives in process memory). **Never use this mode in production** -- no durability, no cross-instance sharing, no backups. See `docs/DESIGN.md` §16.
 
 ## Container
 

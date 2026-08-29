@@ -5,9 +5,9 @@ using Xunit;
 namespace Wisper.Api.Tests.Persistence;
 
 /// <summary>
-/// The §9–§12 infra migration (stripe_events, payouts, idempotency_keys, platform_policy, audit_log) must
+/// The §9-§12 infra migration (stripe_events, payouts, idempotency_keys, platform_policy, audit_log) must
 /// be embedded, discovered in order after the ledger, and define each table with the constraints the docs
-/// call for (docs/DATA_MODEL.md §9–§12): the two enums, the webhook dedupe PK, the unique Stripe transfer
+/// call for (docs/DATA_MODEL.md §9-§12): the two enums, the webhook dedupe PK, the unique Stripe transfer
 /// id, the idempotency status lock + TTL, the versioned policy with its fee-bps range, and the append-only
 /// audit log. Grunt has no Postgres, so this asserts the migration <b>content</b> the DbUp runner will
 /// apply rather than a live schema.

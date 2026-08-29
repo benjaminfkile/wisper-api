@@ -1,4 +1,4 @@
--- 0011_LeaseIsolation.sql — the isolation dimension end to end (task #418, docs/TUNNEL.md §5).
+-- 0011_LeaseIsolation.sql -- the isolation dimension end to end (task #418, docs/TUNNEL.md §5).
 --
 -- A lease is booked at a sandbox isolation level (ordered shared < sandboxed < vm); the level is an
 -- immutable snapshot taken at creation, resolved server-side (omitted request -> 'shared') after the
@@ -9,7 +9,7 @@ ALTER TABLE leases
 
 -- The admin-tunable minimum isolation level a lease may be created at (a versioned platform_policy knob,
 -- docs/DATA_MODEL.md §11): a floor over the per-host advertised levels using the same ordered ranking.
--- Nullable — NULL means no floor. Append-only like the rest of platform_policy, so this backfills existing
+-- Nullable -- NULL means no floor. Append-only like the rest of platform_policy, so this backfills existing
 -- versions to "no floor" and each new version carries its own value.
 ALTER TABLE platform_policy
     ADD COLUMN min_isolation text;

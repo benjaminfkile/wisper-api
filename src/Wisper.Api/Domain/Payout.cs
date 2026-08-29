@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// A host payout (docs/DATA_MODEL.md §9, <c>payouts</c>) — a Stripe Connect transfer that drains a host's
+/// A host payout (docs/DATA_MODEL.md §9, <c>payouts</c>) -- a Stripe Connect transfer that drains a host's
 /// accrued <see cref="LedgerAccountKind.HostEarnings"/> to their bank. The Stripe transfer's idempotency
 /// key is the row's <see cref="Id"/> and <see cref="StripeTransferId"/> is unique, so a retried run can't
 /// double-pay (docs/PAYMENTS.md §6). <see cref="PayoutTxnId"/> ties the row to its <c>payout</c> ledger
@@ -18,7 +18,7 @@ public sealed record Payout
     /// <summary>Amount transferred, in cents (<c>&gt; 0</c>).</summary>
     public required long AmountCents { get; init; }
 
-    /// <summary>Settlement currency (single-currency for now — <c>usd</c>).</summary>
+    /// <summary>Settlement currency (single-currency for now -- <c>usd</c>).</summary>
     public string Currency { get; init; } = "usd";
 
     /// <summary>Start of the earnings window paid (UTC), if scoped to a window.</summary>

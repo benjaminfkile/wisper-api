@@ -3,7 +3,7 @@ namespace Wisper.Api.Auth;
 /// <summary>
 /// The additive roles a Wisper account can hold (docs/DESIGN.md §10, docs/API.md §2),
 /// sourced from Cognito groups. Every authenticated user is implicitly
-/// <see cref="Consumer"/>; <see cref="Host"/> and <see cref="Admin"/> are added on top —
+/// <see cref="Consumer"/>; <see cref="Host"/> and <see cref="Admin"/> are added on top --
 /// they do not imply one another.
 /// </summary>
 public enum WisperRole

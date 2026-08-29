@@ -22,13 +22,13 @@ public enum IdempotencyStatus
 /// </summary>
 public sealed record IdempotencyKey
 {
-    /// <summary>The idempotency key (PK) — a client-generated UUID on the <c>Idempotency-Key</c> header.</summary>
+    /// <summary>The idempotency key (PK) -- a client-generated UUID on the <c>Idempotency-Key</c> header.</summary>
     public required string Key { get; init; }
 
     /// <summary>The user the key is scoped to.</summary>
     public required Guid UserId { get; init; }
 
-    /// <summary>Hash of the request body — a retry with a different body under the same key is a conflict.</summary>
+    /// <summary>Hash of the request body -- a retry with a different body under the same key is a conflict.</summary>
     public required string RequestHash { get; init; }
 
     /// <summary>The stored HTTP status to replay, or <c>null</c> while <see cref="IdempotencyStatus.InProgress"/>.</summary>
@@ -43,6 +43,6 @@ public sealed record IdempotencyKey
     /// <summary>When the record was created (UTC).</summary>
     public DateTimeOffset CreatedAt { get; init; }
 
-    /// <summary>When the record expires and may be swept (UTC) — the TTL.</summary>
+    /// <summary>When the record expires and may be swept (UTC) -- the TTL.</summary>
     public required DateTimeOffset ExpiresAt { get; init; }
 }

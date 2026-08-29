@@ -1,7 +1,7 @@
 namespace Wisper.Api.Domain;
 
 /// <summary>
-/// A single posting to one account (docs/DATA_MODEL.md §7, <c>ledger_entries</c>) — the atom of the
+/// A single posting to one account (docs/DATA_MODEL.md §7, <c>ledger_entries</c>) -- the atom of the
 /// journal. Exactly one of <see cref="DebitCents"/> / <see cref="CreditCents"/> is non-zero (the other
 /// is zero); which side moves the account's balance up or down depends on the account's normal side
 /// (§7c). Entries are append-only and immutable.

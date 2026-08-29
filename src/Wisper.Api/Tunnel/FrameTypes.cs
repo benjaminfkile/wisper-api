@@ -3,7 +3,7 @@ namespace Wisper.Api.Tunnel;
 /// <summary>
 /// Wire-protocol constants for the Wisper ⇄ wisp-agent tunnel (docs/TUNNEL.md).
 /// These values are part of the wire contract with the Go agent and MUST NOT
-/// change without a coordinated protocol-version bump — see §4.
+/// change without a coordinated protocol-version bump -- see §4.
 /// </summary>
 public static class FrameTypes
 {
@@ -57,7 +57,7 @@ public static class CloseCodes
 {
     /// <summary>Normal shutdown (either side).</summary>
     public const int Normal = 1000;
-    /// <summary>Bad / missing / expired host token — reauth needed.</summary>
+    /// <summary>Bad / missing / expired host token -- reauth needed.</summary>
     public const int BadToken = 4401;
     /// <summary>Host token revoked mid-session (agent must not auto-reconnect).</summary>
     public const int Revoked = 4402;

@@ -8,7 +8,7 @@ namespace Wisper.Api.Tests.Payments;
 /// Unit tests for the real <see cref="StripeSignatureVerifier"/> (docs/PAYMENTS.md §8.1). The HMAC check is
 /// local (no network), so the failure paths are testable offline: an unset signing secret is a server
 /// misconfiguration (<see cref="InvalidOperationException"/>), while a missing or non-matching
-/// <c>Stripe-Signature</c> is a caller error surfaced as <see cref="StripeSignatureException"/> — which the
+/// <c>Stripe-Signature</c> is a caller error surfaced as <see cref="StripeSignatureException"/> -- which the
 /// endpoint turns into a 400 with no processing.
 /// </summary>
 public class StripeSignatureVerifierTests

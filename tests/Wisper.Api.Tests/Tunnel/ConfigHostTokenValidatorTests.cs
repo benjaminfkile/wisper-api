@@ -8,7 +8,7 @@ namespace Wisper.Api.Tests.Tunnel;
 /// <summary>
 /// Unit tests for <see cref="ConfigHostTokenValidator"/>: token → host-id resolution, the
 /// fail-closed behavior when no tokens are configured (docs/TUNNEL.md §13), and the environment
-/// gate that fails closed outside Development regardless of the configured allow-list — the
+/// gate that fails closed outside Development regardless of the configured allow-list -- the
 /// static fallback is a local-dev convenience, not a deployed trust anchor (task #39).
 /// </summary>
 public class ConfigHostTokenValidatorTests
@@ -41,7 +41,7 @@ public class ConfigHostTokenValidatorTests
     }
 
     [Theory]
-    [InlineData("tok-a ")]     // trailing space — not a byte-for-byte match
+    [InlineData("tok-a ")]     // trailing space -- not a byte-for-byte match
     [InlineData("TOK-A")]      // wrong case
     [InlineData("unknown")]
     public async Task Unknown_token_fails(string token)

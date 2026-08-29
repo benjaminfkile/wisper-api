@@ -9,7 +9,7 @@ namespace Wisper.Api.Tunnel;
 /// <c>lease.ready</c>). Wisper owns the id space, so leaseIds and rids are allocated here.
 /// <para>
 /// SCOPE: lease lifecycle, <b>synchronous</b> exec, interactive <b>shell</b> streams, and
-/// <b>streamed</b> exec (<c>exec.open</c>/<c>exit</c>) — the last two share per-stream credit flow
+/// <b>streamed</b> exec (<c>exec.open</c>/<c>exit</c>) -- the last two share per-stream credit flow
 /// control over a <c>sid</c> (docs/TUNNEL.md §6, §9).
 /// </para>
 /// </summary>

@@ -11,7 +11,7 @@ public sealed class MeteringOptions
     /// <summary>Configuration section name.</summary>
     public const string SectionName = "Metering";
 
-    /// <summary>The flush cadence in seconds (docs/DATA_MODEL.md §14 — default <b>60s</b>).</summary>
+    /// <summary>The flush cadence in seconds (docs/DATA_MODEL.md §14 -- default <b>60s</b>).</summary>
     public int TickSeconds { get; set; } = 60;
 
     /// <summary>Whether the background flush loop runs. Off by default in a DB-less boot (see the host).</summary>

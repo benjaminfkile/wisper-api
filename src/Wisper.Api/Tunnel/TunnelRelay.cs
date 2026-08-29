@@ -66,7 +66,7 @@ public sealed class TunnelRelay : ITunnelRelay
             var acceptedPayload = await AwaitResponseAsync(acceptedWaiter.Task, ct);
             var accepted = Deserialize<LeaseAccepted>(acceptedPayload);
 
-            // The container isn't usable until wisp reaches ready — wait for it (or lease.failed).
+            // The container isn't usable until wisp reaches ready -- wait for it (or lease.failed).
             await AwaitResponseAsync(readyWaiter.Task, ct);
 
             _logger.LogInformation(
@@ -177,7 +177,7 @@ public sealed class TunnelRelay : ITunnelRelay
         var opts = _options.CurrentValue;
 
         // Streamed exec is unidirectional A→W: Wisper is the receiver, so the stream's receive
-        // accounting + credit flow control (docs/TUNNEL.md §9) is what matters — the send window
+        // accounting + credit flow control (docs/TUNNEL.md §9) is what matters -- the send window
         // goes unused. The exec wrapper reuses this stream as-is and layers channel preservation on
         // top (stdout ch 1 vs stderr ch 2, which the byte pipe alone discards).
         var stream = new TunnelStream(
@@ -296,8 +296,8 @@ public sealed class TunnelRelay : ITunnelRelay
 
     /// <summary>
     /// Resolves a host's live, <b>ready</b> tunnel (docs/TUNNEL.md §3). A ready tunnel returns on the
-    /// fast path. A freshly-connected agent that is still completing its hello handshake — either not
-    /// registered yet, or registered but not yet ready — is waited on for up to
+    /// fast path. A freshly-connected agent that is still completing its hello handshake -- either not
+    /// registered yet, or registered but not yet ready -- is waited on for up to
     /// <see cref="TunnelOptions.HostReadinessTimeoutMs"/>, closing the connection-readiness race so a
     /// create right after connect does not spuriously fail. A host that never becomes ready in that
     /// window (or is genuinely absent) surfaces the typed, retryable <c>host_offline</c> (409).
@@ -316,7 +316,7 @@ public sealed class TunnelRelay : ITunnelRelay
                     return connection;
                 }
 
-                // Registered but still completing its hello handshake — wait briefly for readiness
+                // Registered but still completing its hello handshake -- wait briefly for readiness
                 // instead of racing to host_offline. Returns false on timeout or if the tunnel was
                 // abandoned before it became ready; either way fall through and re-evaluate.
                 var remaining = deadline - DateTime.UtcNow;
@@ -332,7 +332,7 @@ public sealed class TunnelRelay : ITunnelRelay
             }
 
             // Not registered yet (the agent may still be mid-connect), or the connection we just saw
-            // was abandoned — a superseding one may register. Re-check after a short beat.
+            // was abandoned -- a superseding one may register. Re-check after a short beat.
             await Task.Delay(ReadinessPollInterval, ct);
         }
 
@@ -472,7 +472,7 @@ public sealed class TunnelRelay : ITunnelRelay
 
         // exec.exit terminates a streamed exec: hand the exit code to the owning exec stream so it
         // completes its output and surfaces the code (docs/TUNNEL.md §5, §6). Only route it to an
-        // exec stream — a shell sid never sees exec.exit.
+        // exec stream -- a shell sid never sees exec.exit.
         if (connection.Streams.TryGetValue(exit.Sid, out var sink) && sink is TunnelExec exec)
         {
             connection.Streams.TryRemove(exit.Sid, out _);
@@ -501,7 +501,7 @@ public sealed class TunnelRelay : ITunnelRelay
             connection.HostId, ended.LeaseId, ended.Reason);
 
         // Complete any waiter still blocked on this lease (e.g. a create awaiting ready that the host
-        // reaped first) — the existing Phase-1 behavior, preserved so the consumer's create call returns
+        // reaped first) -- the existing Phase-1 behavior, preserved so the consumer's create call returns
         // the typed lease_failed instead of stalling until the deadline.
         if (_leaseWaiters.TryRemove((connection, ended.LeaseId), out var tcs))
         {
@@ -525,7 +525,7 @@ public sealed class TunnelRelay : ITunnelRelay
 
     /// <summary>
     /// Maps the <c>lease.ended</c> frame's <c>reason</c> string (docs/TUNNEL.md §5) to the domain
-    /// <see cref="LeaseEndReason"/>. <c>expired</c> — wisp's TTL reaper fired — becomes the previously-
+    /// <see cref="LeaseEndReason"/>. <c>expired</c> -- wisp's TTL reaper fired -- becomes the previously-
     /// unused <see cref="LeaseEndReason.Expired"/>; <c>failed</c> and <c>gone</c> (and any unrecognised
     /// value) collapse to <see cref="LeaseEndReason.ContainerLost"/>, matching the semantics the heartbeat
     /// set-diff already applies to a silently-vanished container (docs/TUNNEL.md §8).
@@ -542,7 +542,7 @@ public sealed class TunnelRelay : ITunnelRelay
     /// call would hang until the full <see cref="TunnelOptions.RelayRequestTimeoutMs"/> deadline instead
     /// of failing fast: the rid waiter (lease.create-before-accepted, exec.run, lease.release,
     /// shell/exec.open) is completed with the mapped typed error, and any owning stream named by <c>sid</c>
-    /// is torn down so a bridged consumer unblocks. Idempotent — a late/duplicate error whose waiter and
+    /// is torn down so a bridged consumer unblocks. Idempotent -- a late/duplicate error whose waiter and
     /// stream are already gone is a no-op debug log.
     /// </summary>
     private void HandleError(TunnelConnection connection, ReadOnlyMemory<byte> payload)
@@ -595,7 +595,7 @@ public sealed class TunnelRelay : ITunnelRelay
     /// Maps a tunnel <c>error.code</c> (docs/TUNNEL.md §12) to the typed API error the consumer sees.
     /// Host-known request failures map to their specific code; everything else (a local wisp non-2xx,
     /// overflow, unsupported, internal, or an unrecognised code) surfaces as a <c>lease_failed</c> (502
-    /// bad-gateway) — the host could not fulfil the request.
+    /// bad-gateway) -- the host could not fulfil the request.
     /// </summary>
     private static ApiErrorCode MapAgentErrorCode(string? code) => code switch
     {

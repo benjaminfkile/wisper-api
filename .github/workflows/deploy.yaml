@@ -2,7 +2,7 @@ name: Build and Deploy Wisper API
 
 on:
   push:
-    # dev only for now — there is no prod deployment of wisper-api yet. When
+    # dev only for now -- there is no prod deployment of wisper-api yet. When
     # prod exists, restore "main" here (the branch-conditional env/environment
     # expressions below already handle it).
     branches: ["dev"]
@@ -24,6 +24,9 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+
+      - name: Check for em/en dashes
+        run: ./scripts/check-dashes.sh
 
       - name: Restore
         run: dotnet restore

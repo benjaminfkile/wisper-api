@@ -37,7 +37,7 @@ public class ApiKeyAuthEndpointsTests
 
     /// <summary>
     /// A factory whose <see cref="Db"/> reports configured (so the DB-backed hashed lookup path runs) but is
-    /// never opened — the in-memory api_keys/users doubles serve every lookup. Startup migrations are off.
+    /// never opened -- the in-memory api_keys/users doubles serve every lookup. Startup migrations are off.
     /// </summary>
     private static WebApplicationFactory<Program> DbBackedFactory(
         InMemoryApiKeyRepository keys, InMemoryUserRepository users) =>
@@ -114,7 +114,7 @@ public class ApiKeyAuthEndpointsTests
         var users = new InMemoryUserRepository();
         var keys = new InMemoryApiKeyRepository();
         var owner = await SeedUser(users, "cognito-owner");
-        var token = await SeedKey(keys, owner.Id, new[] { "host" }); // host only — no consumer scope
+        var token = await SeedKey(keys, owner.Id, new[] { "host" }); // host only -- no consumer scope
         using var factory = DbBackedFactory(keys, users);
 
         var response = await WithKey(factory, token).GetAsync("/v1/me");
@@ -163,7 +163,7 @@ public class ApiKeyAuthEndpointsTests
     }
 
     [Theory]
-    [InlineData("wck_")]                 // namespace only — looks like a key, resolves to nothing
+    [InlineData("wck_")]                 // namespace only -- looks like a key, resolves to nothing
     [InlineData("wck_live_")]            // prefix only, empty secret
     [InlineData("wck_live_not-hex-xx")]  // malformed key body
     public async Task Malformed_key_bearer_is_401_unauthenticated(string token)

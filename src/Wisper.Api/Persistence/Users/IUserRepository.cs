@@ -5,7 +5,7 @@ namespace Wisper.Api.Persistence.Users;
 /// <summary>
 /// Data access for <see cref="User"/> rows (docs/DATA_MODEL.md §3). The account bootstrap path
 /// (docs/API.md, P3.2) looks a user up by their Cognito subject and creates one on first sight; the
-/// billing/Connect paths update payment linkage and status. Two implementations exist — a Dapper +
+/// billing/Connect paths update payment linkage and status. Two implementations exist -- a Dapper +
 /// explicit-SQL one over Postgres and an in-memory double for unit tests (Grunt has no Postgres).
 /// Uniqueness of <c>cognito_sub</c>, <c>email</c>, <c>stripe_customer_id</c> and
 /// <c>connect_account_id</c> is enforced by both.
@@ -17,7 +17,7 @@ public interface IUserRepository : IRepository
 
     /// <summary>
     /// The admin user search (docs/API.md §8, <c>GET /v1/admin/users</c>): a page of users, newest first,
-    /// optionally narrowed by <paramref name="query"/> — an email substring (case-insensitive) or an exact
+    /// optionally narrowed by <paramref name="query"/> -- an email substring (case-insensitive) or an exact
     /// user id. A blank query lists all. <paramref name="limit"/>/<paramref name="offset"/> paginate.
     /// </summary>
     Task<IReadOnlyList<User>> SearchAsync(

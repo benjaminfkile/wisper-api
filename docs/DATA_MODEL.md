@@ -1,4 +1,4 @@
-# Wisper — Data Model
+# Wisper -- Data Model
 
 **Status:** Draft / v0 · **Companion to:** [`DESIGN.md`](./DESIGN.md), [`TUNNEL.md`](./TUNNEL.md) · **Store:** PostgreSQL 17 (managed; a separate logical DB per env)
 
@@ -10,13 +10,13 @@ This is the authoritative schema for Wisper. It is built to be correct under con
 
 1. **Money is integer `bigint` cents.** Never floats, never `numeric` arithmetic in app code. One currency for now (`usd`); a `currency` column exists on money tables so multi-currency is an additive change, not a migration of every row (see §16).
 2. **The ledger is the source of truth.** Wallet balances, host earnings, and platform revenue are all *account balances derived from* `ledger_entries`. There is no authoritative "balance" that lives outside the journal.
-3. **Double-entry, always balanced.** Every money movement is one `ledger_transaction` whose `ledger_entries` satisfy `Σ debit = Σ credit`. Enforced by a **deferred constraint trigger** — an unbalanced transaction cannot commit.
+3. **Double-entry, always balanced.** Every money movement is one `ledger_transaction` whose `ledger_entries` satisfy `Σ debit = Σ credit`. Enforced by a **deferred constraint trigger** -- an unbalanced transaction cannot commit.
 4. **Entries are immutable.** `ledger_entries` and `ledger_transactions` are append-only; `UPDATE`/`DELETE` are blocked by trigger. Corrections are *reversing* transactions, so history is complete and auditable.
 5. **Idempotency wherever money moves.** Every money-mutating path (top-up, lease start, Stripe webhook, payout) carries an idempotency key so a retry or duplicate webhook can never double-charge or double-pay.
 6. **UTC everywhere** (`timestamptz`). Metering time is Wisper's clock (`DESIGN.md` §2), stamped server-side.
 7. **Metering is crash-safe.** Usage is flushed to the DB on a fixed tick, so a manager crash risks at most one tick of billing, recoverable on restart (§14).
 
-**Access & migrations.** Wisper (C#/ASP.NET Core) uses **Dapper + explicit SQL** with **DbUp**-managed, ordered, raw-SQL migrations — not a heavyweight ORM. Rationale: a financial ledger with constraint triggers and hand-tuned transactions wants explicit, reviewable SQL and no ORM surprises around isolation or lazy loading. (EF Core would be acceptable for the non-financial CRUD tables, but one access pattern across the service is simpler to reason about.)
+**Access & migrations.** Wisper (C#/ASP.NET Core) uses **Dapper + explicit SQL** with **DbUp**-managed, ordered, raw-SQL migrations -- not a heavyweight ORM. Rationale: a financial ledger with constraint triggers and hand-tuned transactions wants explicit, reviewable SQL and no ORM surprises around isolation or lazy loading. (EF Core would be acceptable for the non-financial CRUD tables, but one access pattern across the service is simpler to reason about.)
 
 **Persistence backend (Postgres vs in-memory dev mode).** The backend is chosen at boot from `ConnectionStrings:Wisper`:
 
@@ -40,9 +40,9 @@ CREATE TYPE payout_status       AS ENUM ('pending','in_transit','paid','failed',
 CREATE TYPE stripe_event_status AS ENUM ('received','processed','ignored','failed');
 ```
 
-Native enums are self-documenting and cheap; new values are added with `ALTER TYPE … ADD VALUE` (append-only, which suits an audited system — you never *remove* a state that history references).
+Native enums are self-documenting and cheap; new values are added with `ALTER TYPE … ADD VALUE` (append-only, which suits an audited system -- you never *remove* a state that history references).
 
-## 3. Identity & accounts — `users`
+## 3. Identity & accounts -- `users`
 
 Roles are **additive** (`DESIGN.md` §10) and authoritative in Cognito groups; the row mirrors identity + payment linkage.
 
@@ -59,9 +59,9 @@ Roles are **additive** (`DESIGN.md` §10) and authoritative in Cognito groups; t
 
 Each user gets **exactly one `user_wallet`** and (if a host) **one `host_earnings`** ledger account, created lazily and pinned by the unique constraint in §8.
 
-### `api_keys` — consumer machine credentials
+### `api_keys` -- consumer machine credentials
 
-A long-lived **machine bearer** for the authenticated `/v1` surface (`API.md` §2) — a machine client (first: the orchestrator app) drives the API with one key instead of the Cognito JWT flow. The key value is **shown once** at mint and stored **hashed only** (SHA-256), exactly like the host agent token (§4). Roles cannot come from Cognito groups for a key, so its granted **scopes** ride on the row (constrained to the role labels). The auth layer tells a key from a JWT by its `wck_` prefix.
+A long-lived **machine bearer** for the authenticated `/v1` surface (`API.md` §2) -- a machine client (first: the orchestrator app) drives the API with one key instead of the Cognito JWT flow. The key value is **shown once** at mint and stored **hashed only** (SHA-256), exactly like the host agent token (§4). Roles cannot come from Cognito groups for a key, so its granted **scopes** ride on the row (constrained to the role labels). The auth layer tells a key from a JWT by its `wck_` prefix.
 
 | column | type | notes |
 |---|---|---|
@@ -91,7 +91,7 @@ Format `wck_live_<64-hex>` (256-bit CSPRNG). Lookup is `token_hash = … AND rev
 | `agent_token_prefix` | `text` | short non-secret prefix for identification/rotation UX (`wht_live_` + 4 hex chars) |
 | `wisp_version` / `agent_version` | `text` | mirror `hello.wispVersion` / `hello.agentVersion`; stamped at handshake by the tunnel presence hook (task #182), left `NULL` when the agent sends nothing or the value is blank. Surfaced read-only on the owner and admin host views |
 | `max_leases` / `max_streams` | `int` | the top-level `hello.capacity.{maxLeases,maxStreams}`; stamped at handshake by the tunnel presence hook (task #182) and surfaced on the owner and admin host views. A non-positive value is stored as `NULL`. These fields are **advisory only**: per-host admission is enforced against the live `capability.capacity.max_contracts` snapshot the heartbeat capability refresh maintains (`TUNNEL.md` §5, task #571). A heartbeat capability refresh (task #61) never rewrites them, so the live in-memory ceiling is authoritative for placement while the hosts row reflects what the agent last handshaked with |
-| `isolation_levels` | `text[]` NOT NULL DEFAULT `ARRAY['shared']` | effective isolation levels the host offers, from the `hello`/`heartbeat` capability (`TUNNEL.md` §5); surfaced in `GET /v1/catalog`. Stored as free-form `text` (like `host_images.networks`), not an enum. A hello / heartbeat with an **absent capability block, or a present block whose `isolation_levels` is absent or empty**, leaves the persisted list untouched (task #191): an agent cannot legitimately advertise zero tiers, so a kata/gVisor host reconnecting through a wisp blip is not overwritten with the DB default. The DB default is what surfaces only for a first-ever hello on a fresh row (nothing was persisted yet). Migration `0010_HostIsolation` |
+| `isolation_levels` | `text[]` NOT NULL DEFAULT `ARRAY['shared']` | effective isolation levels the host offers, from the `hello`/`heartbeat` capability (`TUNNEL.md` §5); surfaced in `GET /v1/catalog`. Stored as free-form `text` (like `host_images.networks`), not an enum. A hello / heartbeat with an **absent capability block, or a present block whose `isolation_levels` is absent or empty**, leaves the persisted list untouched (task #191): an agent cannot legitimately advertise zero tiers, so a kata/gVisor host reconnecting through a wisp blip is not overwritten with the DB default. The DB default is what surfaces only for a first-ever hello on a fresh row (nothing was persisted yet). **The persisted row is not the live snapshot** (task #206): a hello whose top-level `capability` block is absent keeps the persisted isolation here but resets the live capability snapshot for that tunnel session to `null` until the next heartbeat carries one; while it is `null`, `GET /v1/catalog` surfaces `os` / `max_leases` as `null` for the host and `PUT/PATCH /v1/hosts/:id/images` upserts fail `409 host_offline`. Migration `0010_HostIsolation` |
 | `default_isolation` | `text` NOT NULL DEFAULT `'shared'` | level applied when a lease omits `isolation`. Follows the same "absent = keep last known" rule as `isolation_levels` (task #191). Migration `0010_HostIsolation` |
 | `gpu_classes` | `text[]` NOT NULL DEFAULT `'{}'` | distinct GPU hardware classes the host advertises, from the `hello`/`heartbeat` `gpu` block (`TUNNEL.md` §5). Opaque free-form `text` (like `isolation_levels`), never interpreted; empty for a host with no GPU (an older agent). Migration `0012_HostGpu` |
 | `gpu_count` | `int` NOT NULL DEFAULT `0` | total GPU devices the host advertises (not distinct classes). Migration `0012_HostGpu` |
@@ -100,7 +100,7 @@ Format `wck_live_<64-hex>` (256-bit CSPRNG). Lookup is `token_hash = … AND rev
 
 Indexes: `(owner_user_id)`, partial `(status) WHERE status='online'` for the catalog, `(agent_token_hash)` for the tunnel's token lookup. Admin moderation sets `status='suspended'`; unsuspend returns the row to `offline` and the tunnel lifecycle brings it back `online`.
 
-### `host_images` — the priced allow-list
+### `host_images` -- the priced allow-list
 
 The overlay of *price* on wisp's capability (`DESIGN.md` §12); wisp itself stays money-blind.
 
@@ -112,18 +112,18 @@ The overlay of *price* on wisp's capability (`DESIGN.md` §12); wisp itself stay
 | `price_cents_per_min` | `bigint` NOT NULL CHECK (`>= 0`) | host-set |
 | `networks` | `network_mode[]` NOT NULL | subset the host permits for this image |
 | `max_ttl_seconds` | `int` NOT NULL | |
-| `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | legacy resource ceilings — vestigial since task #570 removed the free-form lease knobs they governed; kept on the offer row, no longer consulted at lease create |
+| `max_cpus` | `numeric(6,3)` · `max_memory_mb` `int` · `max_pids` `int` | legacy resource ceilings -- vestigial since task #570 removed the free-form lease knobs they governed; kept on the offer row, no longer consulted at lease create |
 | `cpus` | `int` NULL | **sized offer** (task #569): the EXACT vCPU count this offer provisions per lease. `NULL` = the host's own per-lease policy default applies downstream. Positive when present. Migration `0014_ImageResourceProfile` |
 | `memory_mb` | `int` NULL | **sized offer** (task #569): the EXACT memory (MB) this offer provisions per lease. `NULL` = the host's own per-lease policy default applies downstream. Positive when present. Migration `0014_ImageResourceProfile` |
-| `gpus` | `int` NOT NULL DEFAULT `0` | **sized offer** (task #569): the EXACT whole exclusive GPU devices this offer provisions per lease (0 = no GPU access on this offer); validated live against `hosts.gpu_count` — over-ask rejects, never clamps. GPU access is priced into this offer, not a separate rate table. Renamed from `max_gpus` (a consumer-chosen ceiling) in migration `0014_ImageResourceProfile`; the column originated in `0013_ImageAndLeaseGpu` (task #522) |
+| `gpus` | `int` NOT NULL DEFAULT `0` | **sized offer** (task #569): the EXACT whole exclusive GPU devices this offer provisions per lease (0 = no GPU access on this offer); validated live against `hosts.gpu_count` -- over-ask rejects, never clamps. GPU access is priced into this offer, not a separate rate table. Renamed from `max_gpus` (a consumer-chosen ceiling) in migration `0014_ImageResourceProfile`; the column originated in `0013_ImageAndLeaseGpu` (task #522) |
 | `enabled` | `bool` NOT NULL DEFAULT `true` | |
 | `created_at` / `updated_at` | `timestamptz` | |
 
-Unique `(host_id, image_ref)`. Pricing edits apply to **new** leases only (running leases keep their snapshot — §6).
+Unique `(host_id, image_ref)`. Pricing edits apply to **new** leases only (running leases keep their snapshot -- §6).
 
-An offer now **sells a size**: image + a fixed resource profile (`cpus`, `memory_mb`, `gpus`) at a price, like an instance type — so the price reflects the provisioned resources rather than a flat per-image rate over consumer-chosen knobs. A `NULL` `cpus`/`memory_mb` defers to the host's own per-lease policy default; `gpus` is always an exact count (`0` = none). A lease provisions **exactly** this profile and stamps it on the lease row (task #570): `POST /v1/leases` no longer accepts a `resources` object or `gpus` count (both `validation_error`), and the removed `disk_gb` knob is gone entirely.
+An offer now **sells a size**: image + a fixed resource profile (`cpus`, `memory_mb`, `gpus`) at a price, like an instance type -- so the price reflects the provisioned resources rather than a flat per-image rate over consumer-chosen knobs. A `NULL` `cpus`/`memory_mb` defers to the host's own per-lease policy default; `gpus` is always an exact count (`0` = none). A lease provisions **exactly** this profile and stamps it on the lease row (task #570): `POST /v1/leases` no longer accepts a `resources` object or `gpus` count (both `validation_error`), and the removed `disk_gb` knob is gone entirely.
 
-## 5. Leases — full DDL
+## 5. Leases -- full DDL
 
 ```sql
 CREATE TABLE leases (
@@ -175,7 +175,7 @@ pending → provisioning → active ⇄ suspended → ended
 ```
 As built: `POST /v1/leases` waits for `lease.ready` and then inserts the row directly as `active` (with `started_at`/`last_metered_at` set), so `pending`/`provisioning` are never persisted today. `active → failed` (`end_reason = payment_failed`) happens when the hold cannot be posted after provisioning (the container is torn down). `active → suspended` on tunnel loss; `suspended → active` on resume; `suspended → ended` with `host_disconnect` (grace expiry or the durable sweep), `container_lost` (reported gone on reconnect/heartbeat) or `admin`; `active → ended` with `released` (consumer DELETE), `expired` (`lease.ended` from wisp), `container_lost` (heartbeat set-diff) or `admin`; and `ended (host_disconnect) → active` on a **revive** when the container survived the outage (a paid lease is re-held first, else it ends `payment_failed`). Every end and resume transition is a compare-and-set on the status that was read, so concurrent drivers converge on one transition. `suspended` never bills; `billable_seconds` accrues only over healthy intervals, so the wallet is charged for real usage, not wall-clock through outages.
 
-## 6. Metering — `lease_usage`
+## 6. Metering -- `lease_usage`
 
 One row per **flushed metering interval** (tick + on lease end), each tied to the `lease_charge` ledger transaction that debited the hold. Idempotent on `(lease_id, period_start)`. An interval that is worth less than one whole cent at the lease price is not flushed; the watermark stays put and the seconds roll into the next tick (no value is lost). A free (`price 0`) lease advances its watermark and `billable_seconds` but writes no `lease_usage` row and no ledger transaction (`charge_txn_id` is NOT NULL).
 
@@ -246,7 +246,7 @@ CREATE INDEX ledger_entries_lease_idx   ON ledger_entries (lease_id) WHERE lease
 
 ### Invariants (enforced in the database, not just app code)
 
-**(a) Every transaction balances** — deferred so all entries of a txn are inserted first, checked at commit:
+**(a) Every transaction balances** -- deferred so all entries of a txn are inserted first, checked at commit:
 
 ```sql
 CREATE CONSTRAINT TRIGGER ledger_txn_balanced
@@ -258,12 +258,12 @@ FOR EACH ROW EXECUTE FUNCTION assert_txn_balanced();
 --   IF SUM(debit_cents) <> SUM(credit_cents) THEN RAISE EXCEPTION 'unbalanced ledger txn %'
 ```
 
-**(b) Entries & transactions are immutable** — `BEFORE UPDATE OR DELETE` triggers on both tables `RAISE EXCEPTION`. Corrections are reversing `adjustment`/`refund` transactions.
+**(b) Entries & transactions are immutable** -- `BEFORE UPDATE OR DELETE` triggers on both tables `RAISE EXCEPTION`. Corrections are reversing `adjustment`/`refund` transactions.
 
-**(c) Balances are maintained, never authored** — `AFTER INSERT` on `ledger_entries` updates `ledger_accounts.balance_cents` by the account's normal side:
+**(c) Balances are maintained, never authored** -- `AFTER INSERT` on `ledger_entries` updates `ledger_accounts.balance_cents` by the account's normal side:
 `credit-normal: balance += credit − debit; debit-normal: balance += debit − credit`.
 
-**(d) Non-negative earmarked liabilities** — the same trigger `RAISE`s if a `user_wallet` or `lease_holds` account would go **below zero**. This is the hard guarantee that a consumer can never outspend their wallet and a hold can't be over-drawn — with **one deliberate exception**: a `chargeback` transaction may drive a `user_wallet` negative (the trigger checks the transaction kind), because a chargeback is a genuine debt the platform records rather than refuses (`PAYMENTS.md` §7). `lease_holds` is guarded unconditionally.
+**(d) Non-negative earmarked liabilities** -- the same trigger `RAISE`s if a `user_wallet` or `lease_holds` account would go **below zero**. This is the hard guarantee that a consumer can never outspend their wallet and a hold can't be over-drawn -- with **one deliberate exception**: a `chargeback` transaction may drive a `user_wallet` negative (the trigger checks the transaction kind), because a chargeback is a genuine debt the platform records rather than refuses (`PAYMENTS.md` §7). `lease_holds` is guarded unconditionally.
 
 **(e) Reconciliation** re-derives `SUM` per account from `ledger_entries` and compares it to `balance_cents`; any drift should page an operator. Balances are a cache; the journal is truth. *Status:* a scheduled background loop (`LedgerReconcileHostedService`, `LedgerReconcile:Enabled` + `LedgerReconcile:IntervalMinutes`, default every 15 minutes) runs the pass, logs any drift at warning (per-account: kind, owner, maintained vs derived, drift), and records the outcome on the admin overview (`GET /v1/admin/overview` returns `ledger_reconcile.has_drift`, and `health` flips to `ledger_drift` when non-zero drift is seen). The loop is off in the in-memory persistence mode (no database to reconcile) and off when disabled by config; multi-instance safe via a Postgres session-scope advisory lock (`pg_try_advisory_lock`), so exactly one instance runs each pass and a crash releases the lock automatically.
 
@@ -276,7 +276,7 @@ Every flow is `Σ debit = Σ credit`. Debit/credit chosen by each account's norm
 | Flow (`kind`) | Debit | Credit | Guard |
 |---|---|---|---|
 | **top-up** (pay 1000, Stripe fee 59) | `platform_cash` 941, `stripe_fees` 59 | `user_wallet` 1000 | Stripe `payment_intent.succeeded` (idempotent on event id); platform absorbs the processor fee |
-| **lease_hold** (estimate = ⌈ttl/60⌉·price, e.g. 500) | `user_wallet` 500 | `lease_holds` 500 | requires `user_wallet.balance ≥ 500` — the non-negative trigger (d) is the backstop |
+| **lease_hold** (estimate = ⌈ttl/60⌉·price, e.g. 500) | `user_wallet` 500 | `lease_holds` 500 | requires `user_wallet.balance ≥ 500` -- the non-negative trigger (d) is the backstop |
 | **lease_charge** (tick 120 → host 102 + fee 18) | `lease_holds` 120 | `host_earnings` 102, `platform_revenue` 18 | fee split from `platform_policy.fee_bps` (§11), fee floored so `fee + host = amount` exactly; a zero leg is omitted. Requires an active policy row (a flush with no policy throws) |
 | **hold_release** (unused 380 at end) | `lease_holds` 380 | `user_wallet` 380 | returns the earmark to spendable balance |
 | **payout** (transfer 102 to host) | `host_earnings` 102 | `platform_cash` 102 | Stripe Connect transfer; money leaves platform |
@@ -285,13 +285,13 @@ Every flow is `Σ debit = Σ credit`. Debit/credit chosen by each account's norm
 
 The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper holds the estimated maximum out of the wallet (so the consumer is guaranteed able to pay for what they can consume), charges *actual* metered minutes out of the hold, and releases the remainder at end. A consumer literally cannot start a lease they can't afford, and a host is guaranteed funds exist for metered time.
 
-**Zero-priced images degenerate to zero flows.** A `price_cents_per_min = 0` image (a free tier or a self-hosted operator pricing their own box at cost) makes every figure above `0`: the `lease_hold`, each `lease_charge`, and the `hold_release` are all zero-amount and are therefore **skipped, not posted** — a `0=0` transaction carries no money, and the `ledger_entries` CHECK (`(debit_cents = 0) <> (credit_cents = 0)`, exactly one side per entry) hard-rejects a `0/0` row anyway, so writing one is impossible as well as vacuous. A free lease thus never touches the ledger, and no balance can go negative from it (`PAYMENTS.md` §4).
+**Zero-priced images degenerate to zero flows.** A `price_cents_per_min = 0` image (a free tier or a self-hosted operator pricing their own box at cost) makes every figure above `0`: the `lease_hold`, each `lease_charge`, and the `hold_release` are all zero-amount and are therefore **skipped, not posted** -- a `0=0` transaction carries no money, and the `ledger_entries` CHECK (`(debit_cents = 0) <> (credit_cents = 0)`, exactly one side per entry) hard-rejects a `0/0` row anyway, so writing one is impossible as well as vacuous. A free lease thus never touches the ledger, and no balance can go negative from it (`PAYMENTS.md` §4).
 
 ## 9. Stripe integration
 
 - **Consumer side:** `users.stripe_customer_id`; top-ups create `payment_intent`s; the `topup` ledger txn is keyed by the Stripe event id.
 - **Host side:** `users.connect_account_id` + `connect_status`; a host cannot go `online` until `connect_status = 'enabled'` **unless** every enabled image it offers is priced at 0 (the zero-earn arm, `PAYMENTS.md` §5), and cannot enable a priced image without Connect. Payouts require `enabled`. Onboarding/KYC is Stripe-hosted; we store only the account id + status (`pending` once an Express account is created, then `enabled`/`restricted` from `account.updated`; `disabled` is defined but never written today).
-- **`stripe_events`** — webhook idempotency and audit; **every webhook is processed exactly once**:
+- **`stripe_events`** -- webhook idempotency and audit; **every webhook is processed exactly once**:
 
 | column | type | notes |
 |---|---|---|
@@ -302,7 +302,7 @@ The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper
 | `received_at` / `processed_at` | `timestamptz` | `received_at` NOT NULL DEFAULT `now()` |
 | `error` | `text` | on failure, for retry/inspection |
 
-- **`payouts`** — draining `host_earnings` via Connect transfers:
+- **`payouts`** -- draining `host_earnings` via Connect transfers:
 
 | column | type | notes |
 |---|---|---|
@@ -317,7 +317,7 @@ The **hold model** is what makes prepaid billing safe: at `POST /leases`, Wisper
 | `error` | `text` | on failure, for retry/inspection |
 | `created_at` / `updated_at` | `timestamptz` | |
 
-## 10. Idempotency — `idempotency_keys`
+## 10. Idempotency -- `idempotency_keys`
 
 Guards money-mutating API endpoints (`POST /v1/leases`, `/v1/billing/topup`, `/v1/billing/refund`, `/v1/payouts`, `/v1/admin/refunds`, `/v1/admin/adjustments`) so client retries are safe.
 
@@ -332,7 +332,7 @@ Guards money-mutating API endpoints (`POST /v1/leases`, `/v1/billing/topup`, `/v
 
 (Ledger-level idempotency is *also* enforced by `ledger_transactions.idempotency_key`, so even a bug above the DB cannot double-post. The keys in use: `lease_hold:<lease>`, `lease_hold:<lease>:revive`, `hold_release:<lease>[:<hold_txn>]`, `lease_charge:<lease>:<period_start>`, `refund:<stripe refund id>`, `adjustment:<api key>`, the Stripe event id for top-ups and chargebacks, and `payouts.id` for payouts.)
 
-## 11. Platform policy — `platform_policy`
+## 11. Platform policy -- `platform_policy`
 
 Admin-tunable, **versioned** (append-only rows; the active row is the latest) so every pricing/limit change is auditable and a lease's fee basis is reproducible.
 
@@ -344,10 +344,10 @@ Admin-tunable, **versioned** (append-only rows; the active row is the latest) so
 | `max_concurrent_leases_per_user` | `int` | NULL = unlimited; counts `pending`/`provisioning`/`active`/`suspended` leases |
 | `max_ttl_seconds_cap` | `int` | global TTL ceiling in seconds over per-image `max_ttl_seconds` (task #181): a create whose `ttl_seconds` exceeds this cap is refused with `validation_error` naming the requested TTL and the cap (never silently clamped). NULL = no global ceiling; the per-image cap is then the only bound. With no active policy row at all, no cap applies either |
 | `min_isolation` | `text` | global minimum isolation floor, NULL = no floor; a lease below it is rejected (`API.md`). Must be one of `shared`/`sandboxed`/`vm`. Migration `0011_LeaseIsolation` |
-| `first_topup_max_cents` | `bigint` | fraud guard — first-top-up hold cap (`PAYMENTS.md` §7) |
-| `new_account_window_hours` | `int` | fraud guard — how long an account counts as "new" |
-| `new_account_max_topup_cents_per_day` | `bigint` | fraud guard — new-account top-up velocity (rolling 24h) |
-| `max_spend_cents_per_day` | `bigint` | fraud guard — per-user daily spend cap (by lease holds) |
+| `first_topup_max_cents` | `bigint` | fraud guard -- first-top-up hold cap (`PAYMENTS.md` §7) |
+| `new_account_window_hours` | `int` | fraud guard -- how long an account counts as "new" |
+| `new_account_max_topup_cents_per_day` | `bigint` | fraud guard -- new-account top-up velocity (rolling 24h) |
+| `max_spend_cents_per_day` | `bigint` | fraud guard -- per-user daily spend cap (by lease holds) |
 | `effective_from` | `timestamptz` NOT NULL DEFAULT `now()` | the active row is the newest `effective_from` at or before now, so a future value schedules a version |
 | `created_by` | `uuid` → `users(id)` | admin (NULL for a seed row) |
 
@@ -357,7 +357,7 @@ The four fraud-guard columns are all NULL-able (NULL = "no limit"), each with a 
 
 **Fail-safe (task #184, task #202).** Even with the seed, the paths that consume `platform_policy` refuse to proceed silently, but they also refuse to STRAND an active lease if a policy is somehow still missing at end time. The chosen rule: `POST /v1/leases` reads the active policy up front and, when none is present, refuses the create with a clear error (before any wallet hold or tunnel frame) rather than provision a lease no `lease_charge` can be split against. The metering flush (used by the periodic tick and every finalize driver: consumer DELETE, admin force-end, suspend / container-lost / `lease.ended`) resolves the policy through a two-step fallback instead of throwing (task #202): (1) the active version (newest `effective_from <= now`); (2) if none is active, the newest version regardless of `effective_from`, with the flush logging at Error under the `billing.policy.stale_fallback` event and splitting the charge against that version so money accounting stays correct; (3) if truly no policy row exists at all (impossible after `0017` but kept as a guard), the flush logs `billing.policy.missing_at_flush` at Critical as a billing-integrity alert, skips the `lease_charge`, and returns null so the caller's transition-to-ended + `hold_release` still runs. The full hold returns to the wallet and no lease is left active with a parked hold. The periodic tick additionally wraps each per-lease flush in its own try/catch (task #202): any transient exception on one lease (the fee split, a ledger post, a repository read) is logged with the lease id and skipped, `last_metered_at` stays behind on that lease, and the next tick retries the same interval, so the ledger idempotency on `(lease_id, period_start)` guarantees no double-charge.
 
-## 12. Audit — `audit_log`
+## 12. Audit -- `audit_log`
 
 Append-only record of every admin/policy/money-sensitive action. Append-only is DB-enforced, not just convention: a `BEFORE UPDATE OR DELETE` trigger (`audit_log_immutable`, reusing the ledger's `ledger_forbid_mutation()`) raises on any mutation.
 
@@ -372,8 +372,8 @@ Append-only record of every admin/policy/money-sensitive action. Append-only is 
 
 ## 13. Index & constraint summary (beyond PKs)
 
-- `users(cognito_sub)`, `users(email)`, `users(stripe_customer_id)`, `users(connect_account_id)` — unique.
-- `api_keys(token_hash)` — unique (backs the hashed auth lookup); `api_keys(user_id)`.
+- `users(cognito_sub)`, `users(email)`, `users(stripe_customer_id)`, `users(connect_account_id)` -- unique.
+- `api_keys(token_hash)` -- unique (backs the hashed auth lookup); `api_keys(user_id)`.
 - `hosts(owner_user_id)`; `hosts(agent_token_hash)`; partial `hosts(status) WHERE 'online'`; `host_images(host_id,image_ref)` unique; `host_images(host_id)`.
 - `leases(consumer_user_id, created_at DESC)`; partial `leases(host_id) WHERE status IN ('active','suspended')`; partial `leases(suspended_at) WHERE status = 'suspended'` (the durable grace sweep).
 - `lease_usage(lease_id, period_start)` unique; `lease_usage(lease_id)`.
@@ -389,15 +389,15 @@ Append-only record of every admin/policy/money-sensitive action. Append-only is 
 - **Transactional ledger writes.** A money movement = one DB transaction that inserts the `ledger_transaction` + all balanced `ledger_entries`; the deferred balance trigger and account-balance update commit atomically. Concurrent writers to the same account serialize on the `ledger_accounts` row, which the balance trigger locks `FOR UPDATE`; the service runs at the default `READ COMMITTED` and relies on that row lock plus the unique `idempotency_key` (a concurrent poster of the same key gets the winner's transaction back). A trigger `RAISE` is translated to a typed ledger violation (unbalanced, hold over-drawn, insufficient funds).
 - **Reconciliation.** The balance re-derivation (§7e) is the safety net that turns any silent drift into a page, not a loss. A scheduled background loop (`LedgerReconcileHostedService`, `LedgerReconcile:Enabled` + `LedgerReconcile:IntervalMinutes`, default every 15 minutes) runs the pass on every configured-database instance, coordinated via a Postgres session-scope advisory lock so exactly one instance runs each pass. Findings are logged (warning per drifted account) and surfaced on the admin overview: `GET /v1/admin/overview` returns `ledger_reconcile` (`ran_at`, `accounts_checked`, `drift_account_count`, `total_absolute_drift_cents`, `has_drift`) and flips `health` to `ledger_drift` when the last observed pass drifted. Off in the in-memory persistence mode (nothing to reconcile).
 - **Idempotency-key TTL sweep.** A scheduled background loop (`IdempotencySweepHostedService`, `IdempotencySweep:Enabled` + `IdempotencySweep:IntervalMinutes`, default every 60 minutes) deletes expired `idempotency_keys` rows so the table doesn't bloat between low-traffic windows (the lazy retry-path sweep still runs on every presented expired key). Coordinated by a Postgres advisory lock so exactly one instance runs each pass. Off in the in-memory persistence mode.
-- **Backpressure to consumers:** if a top-up/hold cannot be posted (e.g. wallet insufficient at hold time), `POST /leases` fails *before* any `lease.create` frame reaches the host — no compute is provisioned that can't be paid for.
+- **Backpressure to consumers:** if a top-up/hold cannot be posted (e.g. wallet insufficient at hold time), `POST /leases` fails *before* any `lease.create` frame reaches the host -- no compute is provisioned that can't be paid for.
 
 ## 15. Environments
 
-One managed PostgreSQL instance, **one logical database per environment** (`wisper_dev`, `wisper_prod`) with identical migrations; connection selected by env config. DbUp runs the same ordered migration set against each. (Dedicated instances per environment later — a deployment change, not a schema change.)
+One managed PostgreSQL instance, **one logical database per environment** (`wisper_dev`, `wisper_prod`) with identical migrations; connection selected by env config. DbUp runs the same ordered migration set against each. (Dedicated instances per environment later -- a deployment change, not a schema change.)
 
 ## 16. Deliberate scope boundaries
 
-- **Single currency (`usd`).** Every money table carries `currency` and accounts are currency-scoped, so adding a currency is new accounts + FX handling, never a backfill. Multi-currency *logic* (FX, per-currency payout) is out of scope until there's a non-USD host or consumer — not because it's hard, but because building FX with one currency in the system would be untested speculation.
+- **Single currency (`usd`).** Every money table carries `currency` and accounts are currency-scoped, so adding a currency is new accounts + FX handling, never a backfill. Multi-currency *logic* (FX, per-currency payout) is out of scope until there's a non-USD host or consumer -- not because it's hard, but because building FX with one currency in the system would be untested speculation.
 - **Pricing granularity.** Prices are quoted per minute (`price_cents_per_min`) and the hold is sized per whole minute (`⌈ttl/60⌉ × price`), but the charge itself is computed from `billable_seconds` as `⌊seconds × price / 60⌋` integer cents (§14, `DESIGN.md` §11), i.e. per-second accrual with a whole-cent floor and no 1-minute minimum. Changing that rule is a pricing-rule change, not a schema migration.
 - **Tax handling** is delegated to Stripe (Stripe Tax / Connect handles host tax reporting); Wisper does not compute or store tax tables. If direct tax calculation is ever required it attaches to `lease_usage`/`payouts` additively.
 ```

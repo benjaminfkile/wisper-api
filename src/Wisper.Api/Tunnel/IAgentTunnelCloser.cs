@@ -11,7 +11,7 @@ public interface IAgentTunnelCloser
     /// <summary>
     /// Closes the live tunnel for <paramref name="hostId"/> with <paramref name="closeCode"/> and
     /// <paramref name="reason"/>. Returns <c>true</c> if a live tunnel was found and closed; <c>false</c>
-    /// if the host had none (already offline — nothing to do).
+    /// if the host had none (already offline -- nothing to do).
     /// </summary>
     Task<bool> CloseAsync(Guid hostId, int closeCode, string reason, CancellationToken ct = default);
 }

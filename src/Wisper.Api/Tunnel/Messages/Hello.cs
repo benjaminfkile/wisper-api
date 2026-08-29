@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Wisper.Api.Tunnel.Messages;
 
 /// <summary>
-/// <c>hello</c> (A→W) — the first control frame the agent sends after the WebSocket
+/// <c>hello</c> (A→W) -- the first control frame the agent sends after the WebSocket
 /// upgrade (docs/TUNNEL.md §3, §5). It advertises the host's capability (the wisp
 /// <c>GET /images</c> document) plus versions and the concurrency the host will serve.
 /// </summary>
@@ -40,7 +40,7 @@ public record Hello : ControlEnvelope
     public HelloCapacity Capacity { get; init; } = new();
 }
 
-/// <summary>The <c>capability</c> block of a <see cref="Hello"/> — the wisp image allow-list.</summary>
+/// <summary>The <c>capability</c> block of a <see cref="Hello"/> -- the wisp image allow-list.</summary>
 public record HelloCapability
 {
     [JsonPropertyName("images")]
@@ -52,7 +52,7 @@ public record HelloCapability
     /// <summary>
     /// The host's container OS (<c>"linux"</c> | <c>"windows"</c>), mirroring wisp's <c>GET /images</c>
     /// (snake_case wire field <c>os</c>). Optional and back-compatible: an older agent that omits it leaves
-    /// this <c>null</c> (unknown). Surfacing only — it drives no lease-routing decision (docs/TUNNEL.md §5).
+    /// this <c>null</c> (unknown). Surfacing only -- it drives no lease-routing decision (docs/TUNNEL.md §5).
     /// </summary>
     [JsonPropertyName("os")]
     public string? Os { get; init; }
@@ -77,7 +77,7 @@ public record HelloCapability
 
     /// <summary>
     /// The host's advertised GPU capability (snake_case wire block <c>gpu</c>, task #521). Opaque to this
-    /// service — device classes and isolation strings inside it are mirrored, never interpreted. Null/absent
+    /// service -- device classes and isolation strings inside it are mirrored, never interpreted. Null/absent
     /// for an older agent, which the manager treats as <c>supported=false</c> (no GPU).
     /// </summary>
     [JsonPropertyName("gpu")]
@@ -87,7 +87,7 @@ public record HelloCapability
     /// The host's live contract capacity as wisp reports it (snake_case wire block <c>capacity</c>, task #571):
     /// the concurrent-contract ceiling the manager fast-fails against, plus the informational resource totals.
     /// Null/absent for an older agent that does not forward it, which the manager treats as <b>unlimited</b>
-    /// (the pre-#571 behavior) — a per-host admission decision is made only when a positive ceiling is present.
+    /// (the pre-#571 behavior) -- a per-host admission decision is made only when a positive ceiling is present.
     /// wisp remains the authoritative enforcer (its 409 surfaces as an <c>at_capacity</c> lease failure).
     /// </summary>
     [JsonPropertyName("capacity")]
@@ -100,8 +100,8 @@ public record HelloCapability
 /// <summary>
 /// The <c>capacity</c> block wisp forwards inside a hello/heartbeat capability (task #571): the host's real
 /// concurrent-contract ceiling and the live resource totals it is running against. Every field is snake_case,
-/// mirroring wisp's own API. Only <see cref="MaxContracts"/> drives a manager-side decision — the per-host
-/// fast-fail admission control — and only when it is positive; the resource totals are informational surfacing.
+/// mirroring wisp's own API. Only <see cref="MaxContracts"/> drives a manager-side decision -- the per-host
+/// fast-fail admission control -- and only when it is positive; the resource totals are informational surfacing.
 /// An absent block (older agent) ⇒ unlimited, so nothing here is enforced (docs/TUNNEL.md §5).
 /// </summary>
 public record HelloContractCapacity
@@ -110,23 +110,23 @@ public record HelloContractCapacity
     [JsonPropertyName("max_contracts")]
     public int MaxContracts { get; init; }
 
-    /// <summary>How many contracts wisp currently reports active — informational (the manager counts its own).</summary>
+    /// <summary>How many contracts wisp currently reports active -- informational (the manager counts its own).</summary>
     [JsonPropertyName("active_contracts")]
     public int ActiveContracts { get; init; }
 
-    /// <summary>The host's total advertised CPU capacity (cores) — informational surfacing.</summary>
+    /// <summary>The host's total advertised CPU capacity (cores) -- informational surfacing.</summary>
     [JsonPropertyName("total_cpus")]
     public double TotalCpus { get; init; }
 
-    /// <summary>How much CPU (cores) wisp reports in use — informational surfacing.</summary>
+    /// <summary>How much CPU (cores) wisp reports in use -- informational surfacing.</summary>
     [JsonPropertyName("used_cpus")]
     public double UsedCpus { get; init; }
 
-    /// <summary>The host's total advertised memory (MiB) — informational surfacing.</summary>
+    /// <summary>The host's total advertised memory (MiB) -- informational surfacing.</summary>
     [JsonPropertyName("total_memory_mb")]
     public long TotalMemoryMb { get; init; }
 
-    /// <summary>How much memory (MiB) wisp reports in use — informational surfacing.</summary>
+    /// <summary>How much memory (MiB) wisp reports in use -- informational surfacing.</summary>
     [JsonPropertyName("used_memory_mb")]
     public long UsedMemoryMb { get; init; }
 }
@@ -134,7 +134,7 @@ public record HelloContractCapacity
 /// <summary>
 /// The <c>gpu</c> block of a hello/heartbeat capability (task #521): whether the host serves GPU, the devices
 /// it exposes, its per-lease device ceiling, and the GPU isolation modes it offers. Every class and isolation
-/// string inside is <b>opaque</b> to this service — stored/surfaced, never interpreted (like the sandbox
+/// string inside is <b>opaque</b> to this service -- stored/surfaced, never interpreted (like the sandbox
 /// isolation levels). Absent for an older agent, which is treated as <c>supported=false</c>.
 /// </summary>
 public record HelloGpu
@@ -151,19 +151,19 @@ public record HelloGpu
     [JsonPropertyName("max_gpus")]
     public int MaxGpus { get; init; }
 
-    /// <summary>The GPU isolation modes this host offers — opaque strings, mirrored from the agent.</summary>
+    /// <summary>The GPU isolation modes this host offers -- opaque strings, mirrored from the agent.</summary>
     [JsonPropertyName("isolations")]
     public IReadOnlyList<string> Isolations { get; init; } = Array.Empty<string>();
 
     /// <summary>
-    /// The advertised device class strings in order (may contain duplicates across identical devices) — the
+    /// The advertised device class strings in order (may contain duplicates across identical devices) -- the
     /// input the manager de-dupes into the host's distinct <c>gpu_classes</c>. Never null.
     /// </summary>
     [JsonIgnore]
     public IReadOnlyList<string> DeviceClasses => Devices.Select(d => d.Class).ToList();
 }
 
-/// <summary>One GPU device in a <see cref="HelloGpu"/> — its opaque id, opaque hardware class, and VRAM.</summary>
+/// <summary>One GPU device in a <see cref="HelloGpu"/> -- its opaque id, opaque hardware class, and VRAM.</summary>
 public record HelloGpuDevice
 {
     [JsonPropertyName("id")]
