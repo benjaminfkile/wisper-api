@@ -480,4 +480,142 @@ public class MeteringServiceTests
         Assert.Equal(MeteringService.ChargeCentsFor(stored.BillableSeconds, stored.PriceCentsPerMin),
             view.CostCentsSoFar);
     }
+
+    [Fact]
+    public async Task RunTick_isolates_a_failing_lease_and_still_flushes_the_next_one()
+    {
+        // Task #202: a single lease that throws during flush must NOT abort the whole tick; the loop
+        // must continue with the next lease. Before the fix, an unhandled throw in FlushLeaseAsync
+        // (an unknown host row, a transient ledger error, etc.) leaked out of RunTickAsync and left
+        // every LATER lease unflushed for the tick interval. Money safety is unchanged: the failing
+        // lease's watermark stays put (the ledger post never ran) and its next tick retries the same
+        // interval, so no charge is lost.
+        var fx = await ReadyFixtureAsync();
+
+        // Seed the throwing lease FIRST (older CreatedAt is ordered first by ListActiveAsync). It
+        // references a host id that is NOT in the hosts repository, so FlushLeaseAsync's
+        // `_hosts.GetByIdAsync ?? throw` fires: a realistic proxy for "one lease's dependencies
+        // are momentarily broken."
+        var missingHostId = Guid.NewGuid();
+        var failingLease = await fx.Leases.CreateAsync(new Lease
+        {
+            Id = Guid.NewGuid(),
+            ConsumerUserId = fx.ConsumerId,
+            HostId = missingHostId,
+            HostImageId = Guid.NewGuid(),
+            ImageRef = "reg/wisp-base:latest",
+            Network = NetworkMode.Open,
+            TtlSeconds = 3600,
+            PriceCentsPerMin = PricePerMin,
+            Currency = "usd",
+            Status = LeaseStatus.Active,
+            CreatedAt = T0.AddSeconds(-1),
+            StartedAt = T0,
+            LastMeteredAt = T0,
+            BillableSeconds = 0,
+        });
+        await fx.FundHoldAsync(failingLease.Id, holdCents: 3600);
+
+        var goodLease = await fx.SeedActiveLeaseAsync();
+        await fx.FundHoldAsync(goodLease.Id, holdCents: 3600);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+
+        // The tick must NOT throw: the failing lease is logged and the loop proceeds. The good
+        // lease flushes normally.
+        var flushed = await fx.NewService().RunTickAsync();
+        Assert.Equal(1, flushed);
+
+        // Failing lease: watermark unchanged (money-safety preserved), no usage row.
+        var stillBroken = await fx.Leases.GetByIdAsync(failingLease.Id);
+        Assert.Equal(0, stillBroken!.BillableSeconds);
+        Assert.Equal(T0, stillBroken.LastMeteredAt);
+        Assert.Empty(await fx.Usage.ListByLeaseAsync(failingLease.Id));
+
+        // Good lease: flushed for the healthy minute.
+        var stored = await fx.Leases.GetByIdAsync(goodLease.Id);
+        Assert.Equal(60, stored!.BillableSeconds);
+        Assert.Equal(T0.AddSeconds(60), stored.LastMeteredAt);
+        var usage = Assert.Single(await fx.Usage.ListByLeaseAsync(goodLease.Id));
+        Assert.Equal(60, usage.AmountCents);
+    }
+
+    [Fact]
+    public async Task Finalize_falls_back_to_latest_policy_when_no_row_is_active_yet()
+    {
+        // Task #202: if the active-policy lookup returns null but a policy row exists (e.g. only a
+        // future-dated version, or an operator error) the finalize path must NOT throw. It charges
+        // against the newest version regardless of effective_from and logs the stale-fallback event.
+        // Without this fallback the finalize driver aborts, the lease stays active with its hold
+        // parked, and the consumer's DELETE cannot end it.
+        var fx = new Fixture();
+        await fx.SeedHostAsync();
+
+        // Publish a policy whose effective_from is far in the future: GetActiveAsync at T0 returns
+        // null, but ListVersionsAsync still returns the row (newest first).
+        var futurePolicy = await fx.Policy.PublishAsync(new PlatformPolicy
+        {
+            FeeBps = 2000, // 20%: chosen to be distinct from other tests' 15%
+            EffectiveFrom = T0.AddYears(10),
+        });
+
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.FundHoldAsync(lease.Id, holdCents: 3600);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        var result = await fx.NewService().FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+
+        // Finalize completed rather than throwing, and it split the charge against the fallback
+        // version (20% fee ⇒ 12¢ platform + 48¢ host on a 60¢ charge).
+        Assert.NotNull(result);
+        Assert.Equal(60, result!.AmountCents);
+        Assert.Equal(12, result.Usage.PlatformFeeCents);
+        Assert.Equal(48, result.Usage.HostPayoutCents);
+
+        // The lease is ready to be ended by the driver: watermark advanced, hold drawn down by the
+        // charged amount, and the ReleaseHoldAsync path can now return the remainder cleanly.
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.Equal(60, stored!.BillableSeconds);
+        Assert.Equal(T0.AddSeconds(60), stored.LastMeteredAt);
+        Assert.Equal(3600 - 60, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
+        Assert.Equal(48, await fx.BalanceAsync(LedgerAccountKind.HostEarnings, fx.HostOwnerId));
+        Assert.Equal(12, await fx.BalanceAsync(LedgerAccountKind.PlatformRevenue));
+
+        // Sanity: the fallback did use the row we published, not some phantom default.
+        Assert.Equal(2000, futurePolicy.FeeBps);
+    }
+
+    [Fact]
+    public async Task Finalize_when_no_policy_row_exists_at_all_returns_null_and_moves_no_money()
+    {
+        // Task #202: the truly-no-policy branch (impossible after migration 0017 but kept as a
+        // guard). FinalizeLeaseAsync must NOT throw. It logs the billing-integrity alert, skips
+        // the lease_charge, and returns null so the finalize driver's transition-to-ended and
+        // ReleaseHoldAsync still run. Because no charge was posted, the release returns the full
+        // hold to the wallet: no unbilled runtime is charged to the consumer and no lease is
+        // stranded with a parked hold.
+        var fx = new Fixture();
+        await fx.SeedHostAsync();
+        // Deliberately do NOT publish any policy: Policies is empty.
+
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.FundHoldAsync(lease.Id, holdCents: 3600);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        var result = await fx.NewService().FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+
+        // No charge could be split, so the flush returns null (rather than throwing).
+        Assert.Null(result);
+
+        // Watermark did not advance (nothing was posted); no usage row was written; the hold is
+        // still fully earmarked in lease_holds (the driver's own ReleaseHoldAsync will return the
+        // full 3600¢ to the wallet once the lease transitions to ended).
+        var stored = await fx.Leases.GetByIdAsync(lease.Id);
+        Assert.Equal(0, stored!.BillableSeconds);
+        Assert.Equal(T0, stored.LastMeteredAt);
+        Assert.Empty(await fx.Usage.ListByLeaseAsync(lease.Id));
+        Assert.Equal(3600, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.HostEarnings, fx.HostOwnerId));
+        Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.PlatformRevenue));
+    }
 }

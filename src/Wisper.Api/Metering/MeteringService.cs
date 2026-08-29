@@ -83,9 +83,31 @@ public sealed class MeteringService
             // transition is left to the reconciliation paths.
             var asOf = ComputeCappedWatermark(lease, now);
 
-            if (await FlushLeaseAsync(lease, asOf, ct) is not null)
+            // Isolate per-lease failures (task #202): a single lease that throws (unknown host row, a
+            // transient ledger/DB error, an unexpected invariant violation) must NOT abort the whole tick
+            // and leave every LATER lease unflushed until the next 60s interval. Catch, log the lease id
+            // and error, and continue with the next lease. Money-safety is preserved: the
+            // AdvanceWatermarkAsync call inside FlushLeaseAsync runs only after the ledger post succeeds,
+            // so a mid-flush throw leaves last_metered_at where it was and the next tick retries the same
+            // interval; the ledger idempotency key on (lease_id, period_start) dedupes on retry so no
+            // double-charge is possible.
+            try
             {
-                flushed++;
+                if (await FlushLeaseAsync(lease, asOf, ct) is not null)
+                {
+                    flushed++;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "metering tick: lease {LeaseId} flush failed; watermark unchanged, will retry next tick",
+                    lease.Id);
             }
         }
 
@@ -243,7 +265,19 @@ public sealed class MeteringService
             return null;
         }
 
-        var policy = await _policy.GetActiveOrThrowAsync(ct);
+        // Resolve the policy for the fee split. In steady state the active row exists (migration 0017
+        // seeds it), but we DO NOT throw when it's missing: the finalize drivers (consumer DELETE, admin
+        // force-end, suspend / container-lost / lease.ended) await this call unguarded, so a throw here
+        // would strand an active lease with its hold parked and the consumer could not end it (task #202).
+        // The resolver logs and falls back to the newest version regardless of effective_from; on the
+        // truly-no-policy branch it returns null and this flush is skipped so the caller's end + hold
+        // release still runs (the full hold returns to the wallet: no unbilled runtime is charged).
+        var policy = await ResolvePolicyForFlushAsync(lease, ct);
+        if (policy is null)
+        {
+            return null;
+        }
+
         var (platformFeeCents, hostPayoutCents) = LedgerFlows.SplitFee(amountCents, policy.FeeBps);
 
         // Resolve the three accounts of the charge split (docs/DATA_MODEL.md §7, §8): the singleton
@@ -295,6 +329,51 @@ public sealed class MeteringService
             posted.WasDeduplicated ? " [replay]" : string.Empty);
 
         return new MeteringFlushResult(usage, usage.ChargeTxnId, posted.WasDeduplicated);
+    }
+
+    /// <summary>
+    /// Resolves the <see cref="PlatformPolicy"/> a flush splits its <c>lease_charge</c> against, with a
+    /// two-step fail-safe so the paths that call FlushLeaseAsync (the tick and every finalize driver)
+    /// never throw when the active policy is missing (task #202, docs/PAYMENTS.md §4).
+    /// <list type="bullet">
+    /// <item>Normal path: return the active policy (the newest <c>effective_from &lt;= now</c>). This is
+    /// what runs after migration 0017 seeds the default row.</item>
+    /// <item>Stale fallback: no active row but a version exists (only future-dated rows, or an operator
+    /// mis-set an <c>effective_from</c>). Log at Error under a distinct event and finalize using the
+    /// newest version regardless of effective_from. Money accounting stays correct against a real fee
+    /// basis; the operator has a clear signal to publish an active policy.</item>
+    /// <item>Missing fallback: no policy row exists at all (impossible after migration 0017 but kept as
+    /// a guard). Log a Critical billing-integrity alert and return null. FlushLeaseAsync skips the
+    /// charge; the finalize driver's transition-to-ended + <c>hold_release</c> still runs, returning the
+    /// full hold to the wallet, so the lease is never stranded active with a parked hold and no
+    /// unbilled runtime is charged to the consumer.</item>
+    /// </list>
+    /// </summary>
+    private async Task<PlatformPolicy?> ResolvePolicyForFlushAsync(Lease lease, CancellationToken ct)
+    {
+        var active = await _policy.GetActiveAsync(ct);
+        if (active is not null)
+        {
+            return active;
+        }
+
+        var versions = await _policy.ListVersionsAsync(ct);
+        if (versions.Count > 0)
+        {
+            var latest = versions[0]; // newest effective_from first (docs/DATA_MODEL.md §11)
+            _logger.LogError(
+                "billing.policy.stale_fallback: no active platform_policy for lease {LeaseId} at flush; " +
+                "falling back to newest version {PolicyId} (effective_from {EffectiveFrom:O}, fee_bps={FeeBps})",
+                lease.Id, latest.Id, latest.EffectiveFrom, latest.FeeBps);
+            return latest;
+        }
+
+        _logger.LogCritical(
+            "billing.policy.missing_at_flush: no platform_policy row exists at all for lease {LeaseId}; " +
+            "skipping lease_charge, so the caller's end path will release the full hold to the wallet " +
+            "(billing-integrity alert: publish a platform_policy row)",
+            lease.Id);
+        return null;
     }
 
     /// <summary>
