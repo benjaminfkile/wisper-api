@@ -43,22 +43,39 @@ public sealed record LedgerReconcileView(
 }
 
 /// <summary>
-/// Platform-policy health on the admin overview (docs/API.md §8, task #206): whether an active
-/// <c>platform_policy</c> row currently resolves, plus process-local counters of how often the metering
-/// flush had to fall back (stale: no active row but a version exists; missing: no row at all). A non-zero
-/// <see cref="FallbackCount"/> flips the overview's <c>health</c> to <c>policy_fallback</c> so an
-/// operator sees the incident without waiting for the next log line. Counters are per-instance; a fleet
-/// alert should aggregate across instances.
+/// Platform-policy health on the admin overview (docs/API.md §8, task #206, task #210): whether an
+/// active <c>platform_policy</c> row currently resolves, plus the durable count of how often the
+/// metering flush had to fall back (stale: no active row but a version exists; missing: no row at
+/// all) since the last acknowledgement. A non-zero <see cref="FallbackCount"/> flips the overview's
+/// <c>health</c> to <c>policy_fallback</c> so an operator sees the incident without waiting for the
+/// next log line. Counters are aggregated from the persistent <c>billing_incidents</c> journal (task
+/// #210) so the badge survives restarts and is identical from every instance;
+/// <c>POST /v1/admin/policy/fallback/ack</c> clears it by shifting <see cref="AckAt"/> without
+/// erasing history.
 /// </summary>
 public sealed record PlatformPolicyHealthView(
     [property: JsonPropertyName("active")] bool Active,
     [property: JsonPropertyName("fallback_count")] long FallbackCount,
     [property: JsonPropertyName("last_fallback_at")] DateTimeOffset? LastFallbackAt,
-    [property: JsonPropertyName("last_fallback_policy_id")] Guid? LastFallbackPolicyId)
+    [property: JsonPropertyName("last_fallback_policy_id")] Guid? LastFallbackPolicyId,
+    [property: JsonPropertyName("ack_at")] DateTimeOffset? AckAt)
 {
-    /// <summary>The healthy default (an active policy resolves; no fallbacks recorded on this instance).</summary>
-    public static PlatformPolicyHealthView Healthy { get; } = new(true, 0, null, null);
+    /// <summary>The healthy default (an active policy resolves; no fallbacks recorded post-ack).</summary>
+    public static PlatformPolicyHealthView Healthy { get; } = new(true, 0, null, null, null);
 }
+
+/// <summary>
+/// Response of <c>POST /v1/admin/policy/fallback/ack</c> (docs/API.md §8, task #210): the aggregate
+/// that was acknowledged (the state before-ack), plus the ack watermark that has now been written.
+/// The next <c>GET /v1/admin/overview</c> reports <c>fallback_count = 0</c> and <c>health = "ok"</c>
+/// until a fresh fallback is recorded. Note the <c>billing_incidents</c> history is untouched: the
+/// ack is a badge clear, not a delete.
+/// </summary>
+public sealed record PolicyFallbackAckResponse(
+    [property: JsonPropertyName("acknowledged_count")] long AcknowledgedCount,
+    [property: JsonPropertyName("acknowledged_last_fallback_at")] DateTimeOffset? AcknowledgedLastFallbackAt,
+    [property: JsonPropertyName("acknowledged_last_fallback_policy_id")] Guid? AcknowledgedLastFallbackPolicyId,
+    [property: JsonPropertyName("ack_at")] DateTimeOffset AckAt);
 
 /// <summary>
 /// A platform policy version on the wire (docs/API.md §8, docs/DATA_MODEL.md §11) -- the admin-tunable fee,

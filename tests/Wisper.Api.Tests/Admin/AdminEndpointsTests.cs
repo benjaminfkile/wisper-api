@@ -11,6 +11,7 @@ using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Payments;
 using Wisper.Api.Persistence.Audit;
+using Wisper.Api.Persistence.BillingIncidents;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Idempotency;
 using Wisper.Api.Persistence.Leases;
@@ -39,6 +40,7 @@ public class AdminEndpointsTests
         public InMemoryLedgerStore Ledger { get; } = new();
         public InMemoryAuditLogRepository AuditLog { get; } = new();
         public InMemoryPlatformPolicyRepository Policy { get; } = new();
+        public InMemoryPolicyFallbackStore Fallbacks { get; } = new();
         public InMemoryIdempotencyKeyRepository Idempotency { get; } = new();
         public FakeStripeBillingGateway Stripe { get; } = new();
         public FakeTunnelRelay Relay { get; } = new();
@@ -66,6 +68,8 @@ public class AdminEndpointsTests
                     services.AddSingleton<IAuditLogRepository>(AuditLog);
                     services.RemoveAll<IPlatformPolicyRepository>();
                     services.AddSingleton<IPlatformPolicyRepository>(Policy);
+                    services.RemoveAll<IPolicyFallbackStore>();
+                    services.AddSingleton<IPolicyFallbackStore>(Fallbacks);
                     services.RemoveAll<IIdempotencyKeyRepository>();
                     services.AddSingleton<IIdempotencyKeyRepository>(Idempotency);
                     services.RemoveAll<IStripeBillingGateway>();
@@ -141,6 +145,76 @@ public class AdminEndpointsTests
         Assert.True(overview!.UserCount >= 2);
         Assert.Equal(1, overview.HostCount);
         Assert.Equal(1, overview.OnlineHostCount);
+    }
+
+    [Fact]
+    public async Task Overview_surfaces_persisted_policy_fallback_signal_and_flips_health()
+    {
+        // Task #210: an incident recorded in the durable store must show up on GET /overview so
+        // an operator sees the signal even on an instance that never metered the offending lease.
+        // The occurred_at is stamped in the past so it can never fall after a still-null ack
+        // watermark in the aggregate query (the SQL predicate is > ack_at strictly).
+        var fx = new Fixture();
+        var policyId = Guid.NewGuid();
+        var occurredAt = DateTimeOffset.UtcNow.AddDays(-1);
+        await fx.Fallbacks.RecordAsync(
+            PolicyFallbackKind.StaleFallback, leaseId: Guid.NewGuid(), policyId: policyId,
+            occurredAt: occurredAt);
+        using var factory = fx.Build();
+
+        var overview = await Authed(factory).GetFromJsonAsync<OverviewWithPolicyDto>("/v1/admin/overview");
+
+        Assert.NotNull(overview);
+        Assert.Equal("policy_fallback", overview!.Health);
+        Assert.Equal(1, overview.PlatformPolicy.FallbackCount);
+        Assert.Equal(occurredAt, overview.PlatformPolicy.LastFallbackAt);
+        Assert.Equal(policyId, overview.PlatformPolicy.LastFallbackPolicyId);
+        Assert.Null(overview.PlatformPolicy.AckAt);
+    }
+
+    [Fact]
+    public async Task Post_policy_fallback_ack_shifts_the_watermark_and_clears_the_overview_badge()
+    {
+        // Task #210: POST /v1/admin/policy/fallback/ack must clear the badge on the overview
+        // (fallback_count → 0, health → ok) and be recorded on the audit trail. History is
+        // preserved -- the durable store is not truncated. The seeded occurred_at is in the past
+        // so the ack watermark (system now) is guaranteed to be after it.
+        var fx = new Fixture();
+        var occurredAt = DateTimeOffset.UtcNow.AddHours(-1);
+        await fx.Fallbacks.RecordAsync(
+            PolicyFallbackKind.StaleFallback, leaseId: Guid.NewGuid(), policyId: Guid.NewGuid(),
+            occurredAt: occurredAt);
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var ack = await client.PostAsync("/v1/admin/policy/fallback/ack", content: null);
+        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
+        var ackBody = await ack.Content.ReadFromJsonAsync<PolicyFallbackAckDto>();
+        Assert.NotNull(ackBody);
+        Assert.Equal(1, ackBody!.AcknowledgedCount);
+        Assert.Equal(occurredAt, ackBody.AcknowledgedLastFallbackAt);
+
+        var overview = await client.GetFromJsonAsync<OverviewWithPolicyDto>("/v1/admin/overview");
+        Assert.Equal("ok", overview!.Health);
+        Assert.Equal(0, overview.PlatformPolicy.FallbackCount);
+        Assert.NotNull(overview.PlatformPolicy.AckAt);
+
+        var audit = await client.GetFromJsonAsync<AuditPageDto>("/v1/admin/audit?action=policy.fallback_ack");
+        Assert.Single(audit!.Data);
+    }
+
+    [Fact]
+    public async Task Post_policy_fallback_ack_requires_the_admin_role()
+    {
+        // The ack endpoint sits under /v1/admin and must be admin-gated: a host-role JWT is
+        // rejected with 403 before any state changes.
+        var fx = new Fixture();
+        fx.Validator.Principal = WisperPrincipal.Create("host-sub", "h@example.com", new[] { "host" });
+        using var factory = fx.Build();
+
+        var response = await Authed(factory).PostAsync("/v1/admin/policy/fallback/ack", content: null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]
@@ -518,6 +592,23 @@ public class AdminEndpointsTests
         [property: JsonPropertyName("host_count")] int HostCount,
         [property: JsonPropertyName("online_host_count")] int OnlineHostCount,
         [property: JsonPropertyName("user_count")] int UserCount);
+
+    private sealed record OverviewWithPolicyDto(
+        [property: JsonPropertyName("health")] string Health,
+        [property: JsonPropertyName("platform_policy")] PlatformPolicyDto PlatformPolicy);
+
+    private sealed record PlatformPolicyDto(
+        [property: JsonPropertyName("active")] bool Active,
+        [property: JsonPropertyName("fallback_count")] long FallbackCount,
+        [property: JsonPropertyName("last_fallback_at")] DateTimeOffset? LastFallbackAt,
+        [property: JsonPropertyName("last_fallback_policy_id")] Guid? LastFallbackPolicyId,
+        [property: JsonPropertyName("ack_at")] DateTimeOffset? AckAt);
+
+    private sealed record PolicyFallbackAckDto(
+        [property: JsonPropertyName("acknowledged_count")] long AcknowledgedCount,
+        [property: JsonPropertyName("acknowledged_last_fallback_at")] DateTimeOffset? AcknowledgedLastFallbackAt,
+        [property: JsonPropertyName("acknowledged_last_fallback_policy_id")] Guid? AcknowledgedLastFallbackPolicyId,
+        [property: JsonPropertyName("ack_at")] DateTimeOffset AckAt);
 
     private sealed record PolicyHistoryDto(
         [property: JsonPropertyName("active")] PolicyDto? Active,

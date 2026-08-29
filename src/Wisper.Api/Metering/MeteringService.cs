@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Wisper.Api.Billing;
 using Wisper.Api.Domain;
 using Wisper.Api.Ledger;
+using Wisper.Api.Persistence.BillingIncidents;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Policy;
@@ -35,7 +36,7 @@ public sealed class MeteringService
     private readonly TimeProvider _time;
     private readonly ILogger<MeteringService> _logger;
     private readonly IMeterLivenessSource? _liveness;
-    private readonly PolicyFallbackMonitor? _policyFallback;
+    private readonly IPolicyFallbackStore? _fallbacks;
 
     public MeteringService(
         ILeaseRepository leases,
@@ -46,7 +47,7 @@ public sealed class MeteringService
         TimeProvider time,
         ILogger<MeteringService> logger,
         IMeterLivenessSource? liveness = null,
-        PolicyFallbackMonitor? policyFallback = null)
+        IPolicyFallbackStore? fallbacks = null)
     {
         _leases = leases;
         _usage = usage;
@@ -56,7 +57,7 @@ public sealed class MeteringService
         _time = time;
         _logger = logger;
         _liveness = liveness;
-        _policyFallback = policyFallback;
+        _fallbacks = fallbacks;
     }
 
     /// <summary>
@@ -370,7 +371,7 @@ public sealed class MeteringService
                 "billing.policy.stale_fallback: no active platform_policy for lease {LeaseId} at flush; " +
                 "falling back to newest version {PolicyId} (effective_from {EffectiveFrom:O}, fee_bps={FeeBps})",
                 lease.Id, latest.Id, latest.EffectiveFrom, latest.FeeBps);
-            _policyFallback?.Record(_time.GetUtcNow(), latest.Id);
+            await RecordFallbackAsync(PolicyFallbackKind.StaleFallback, lease.Id, latest.Id, ct);
             return latest;
         }
 
@@ -380,8 +381,42 @@ public sealed class MeteringService
             "skipping lease_charge, so the caller's end path will release the full hold to the wallet " +
             "(billing-integrity alert: publish a platform_policy row)",
             lease.Id);
-        _policyFallback?.Record(_time.GetUtcNow(), policyId: null);
+        await RecordFallbackAsync(PolicyFallbackKind.MissingAtFlush, lease.Id, policyId: null, ct);
         return null;
+    }
+
+    /// <summary>
+    /// Appends one <c>billing_incidents</c> row for the observed fallback (task #210, docs/PAYMENTS.md
+    /// §4) so the admin overview's aggregate survives restarts and reads the same value from every
+    /// instance. A store failure MUST NOT abort the flush: the operator signal is best-effort, the
+    /// finalize-and-release path is not, so a log-and-swallow keeps the caller's ended + hold_release
+    /// on its critical path (task #202). A null store means the meter is running without persistence
+    /// (unit tests that don't care about the signal); the record is dropped silently.
+    /// </summary>
+    private async Task RecordFallbackAsync(
+        PolicyFallbackKind kind, Guid leaseId, Guid? policyId, CancellationToken ct)
+    {
+        if (_fallbacks is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _fallbacks.RecordAsync(kind, leaseId, policyId, _time.GetUtcNow(), ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "billing.policy.fallback_record_failed: persisting the fallback signal for lease {LeaseId} " +
+                "failed; the flush proceeds so ended + hold_release still runs",
+                leaseId);
+        }
     }
 
     /// <summary>

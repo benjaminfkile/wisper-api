@@ -7,6 +7,7 @@ using Wisper.Api.Leases;
 using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
 using Wisper.Api.Persistence.Audit;
+using Wisper.Api.Persistence.BillingIncidents;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Users;
@@ -48,7 +49,7 @@ public sealed class AdminService
     private readonly ILeaseWalletGate _walletGate;
     private readonly ITunnelRelay _relay;
     private readonly LedgerReconcileMonitor _reconcileMonitor;
-    private readonly PolicyFallbackMonitor _policyFallback;
+    private readonly IPolicyFallbackStore _fallbacks;
     private readonly TimeProvider _time;
     private readonly ILogger<AdminService> _logger;
 
@@ -64,7 +65,7 @@ public sealed class AdminService
         ILeaseWalletGate walletGate,
         ITunnelRelay relay,
         LedgerReconcileMonitor reconcileMonitor,
-        PolicyFallbackMonitor policyFallback,
+        IPolicyFallbackStore fallbacks,
         TimeProvider time,
         ILogger<AdminService> logger)
     {
@@ -79,7 +80,7 @@ public sealed class AdminService
         _walletGate = walletGate;
         _relay = relay;
         _reconcileMonitor = reconcileMonitor;
-        _policyFallback = policyFallback;
+        _fallbacks = fallbacks;
         _time = time;
         _logger = logger;
     }
@@ -111,21 +112,23 @@ public sealed class AdminService
                 snap.HasDrift)
             : LedgerReconcileView.Empty;
 
-        // Surface the metering flush's platform-policy fallback (task #206) so an operator sees the
-        // incident on the overview without waiting for the next log line. `active` reflects whether an
-        // active row currently resolves; `fallback_count` + `last_fallback_*` come from the process-local
-        // counter MeteringService feeds. Health flips to `policy_fallback` as soon as a fallback has been
-        // recorded this boot; a ledger drift outranks it because a drift means the balance cache itself
-        // has diverged from the journal.
+        // Surface the metering flush's platform-policy fallback (task #206, task #210) so an operator
+        // sees the incident on the overview without waiting for the next log line. `active` reflects
+        // whether an active row currently resolves; `fallback_count` + `last_fallback_*` come from the
+        // durable billing_incidents journal aggregated after the ack watermark (task #210: replaces
+        // the process-local counter so the signal survives restarts and reads the same on every
+        // instance). Health flips to `policy_fallback` while any unacknowledged fallback is recorded;
+        // POST /v1/admin/policy/fallback/ack shifts the watermark to clear the badge without erasing
+        // history. Ledger drift outranks it because a drift means the balance cache itself has
+        // diverged from the journal.
         var activePolicy = await _policy.GetActiveAsync(ct);
-        var lastFallback = _policyFallback.Last;
-        var platformPolicy = lastFallback is null
-            ? new PlatformPolicyHealthView(activePolicy is not null, 0, null, null)
-            : new PlatformPolicyHealthView(
-                activePolicy is not null,
-                lastFallback.Count,
-                lastFallback.At,
-                lastFallback.PolicyId);
+        var aggregate = await _fallbacks.GetAggregateAsync(ct);
+        var platformPolicy = new PlatformPolicyHealthView(
+            activePolicy is not null,
+            aggregate.Count,
+            aggregate.LastAt,
+            aggregate.LastPolicyId,
+            aggregate.AckAt);
 
         var health = reconcile.HasDrift
             ? "ledger_drift"
@@ -143,6 +146,45 @@ public sealed class AdminService
             Health: health,
             LedgerReconcile: reconcile,
             PlatformPolicy: platformPolicy);
+    }
+
+    /// <summary>
+    /// Acknowledges the platform-policy fallback signal (task #210, docs/API.md §8,
+    /// <c>POST /v1/admin/policy/fallback/ack</c>): shifts the ack watermark on
+    /// <c>operational_state</c> to <c>now</c>, so <c>GET /v1/admin/overview</c> reports
+    /// <c>fallback_count = 0</c> and <c>health = "ok"</c> until a fresh fallback is recorded. The
+    /// <c>billing_incidents</c> history is left intact so an operator can audit past events. Records
+    /// a <c>policy.fallback_ack</c> audit row with the aggregate observed at ack time
+    /// (before-state) so the trail proves what was cleared. Returns the aggregate that was
+    /// acknowledged.
+    /// </summary>
+    public async Task<PolicyFallbackAckResponse> AckPolicyFallbackAsync(
+        Guid adminUserId, CancellationToken ct = default)
+    {
+        var ackAt = _time.GetUtcNow();
+        var previous = await _fallbacks.AckAsync(ackAt, ct);
+
+        await _audit.RecordAsync(
+            "policy.fallback_ack",
+            actorUserId: adminUserId,
+            targetType: "platform_policy",
+            targetId: null,
+            meta: new
+            {
+                acknowledged_count = previous.Count,
+                previous_last_fallback_at = previous.LastAt,
+                previous_last_fallback_policy_id = previous.LastPolicyId,
+                previous_ack_at = previous.AckAt,
+                ack_at = ackAt,
+            },
+            ct);
+
+        _logger.LogInformation(
+            "policy.fallback_ack: admin {AdminUserId} acknowledged {Count} platform_policy fallback(s) " +
+            "(watermark advanced to {AckAt:O}); billing_incidents history retained",
+            adminUserId, previous.Count, ackAt);
+
+        return new PolicyFallbackAckResponse(previous.Count, previous.LastAt, previous.LastPolicyId, ackAt);
     }
 
     /// <summary>The current policy + full version history (docs/API.md §8, <c>GET /v1/admin/policy</c>).</summary>

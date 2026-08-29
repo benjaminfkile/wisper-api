@@ -3,6 +3,7 @@ using Wisper.Api.Domain;
 using Wisper.Api.Ledger;
 using Wisper.Api.Leases;
 using Wisper.Api.Metering;
+using Wisper.Api.Persistence.BillingIncidents;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Leases;
 using Wisper.Api.Persistence.Policy;
@@ -617,5 +618,60 @@ public class MeteringServiceTests
         Assert.Equal(3600, await fx.BalanceAsync(LedgerAccountKind.LeaseHolds));
         Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.HostEarnings, fx.HostOwnerId));
         Assert.Equal(0, await fx.BalanceAsync(LedgerAccountKind.PlatformRevenue));
+    }
+
+    [Fact]
+    public async Task Stale_fallback_records_a_persistent_incident_with_the_policy_it_used()
+    {
+        // Task #210: the stale-fallback branch must persist a billing_incidents row so the admin
+        // overview sees the fallback across restarts + instances (rather than only on the process
+        // whose meter ran the flush). The row carries the fallback kind, the lease id, and the
+        // policy row that was used for the split.
+        var fx = new Fixture();
+        await fx.SeedHostAsync();
+        var futurePolicy = await fx.Policy.PublishAsync(new PlatformPolicy
+        {
+            FeeBps = 2000,
+            EffectiveFrom = T0.AddYears(10),
+        });
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.FundHoldAsync(lease.Id, holdCents: 3600);
+        var fallbacks = new InMemoryPolicyFallbackStore();
+        var meter = new MeteringService(
+            fx.Leases, fx.Usage, fx.Hosts, fx.Ledger, fx.Policy, fx.Clock,
+            NullLogger<MeteringService>.Instance, fallbacks: fallbacks);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await meter.FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+
+        var aggregate = await fallbacks.GetAggregateAsync();
+        Assert.Equal(1, aggregate.Count);
+        Assert.Equal(fx.Clock.GetUtcNow(), aggregate.LastAt);
+        Assert.Equal(futurePolicy.Id, aggregate.LastPolicyId);
+    }
+
+    [Fact]
+    public async Task Missing_fallback_records_a_persistent_incident_with_null_policy_id()
+    {
+        // Task #210: the missing-at-flush branch (no policy row at all) must still persist a
+        // billing_incidents row -- with a null policy id -- so an operator on any instance can see
+        // that the truly-no-policy guard fired.
+        var fx = new Fixture();
+        await fx.SeedHostAsync();
+        // Deliberately no policy published.
+        var lease = await fx.SeedActiveLeaseAsync();
+        await fx.FundHoldAsync(lease.Id, holdCents: 3600);
+        var fallbacks = new InMemoryPolicyFallbackStore();
+        var meter = new MeteringService(
+            fx.Leases, fx.Usage, fx.Hosts, fx.Ledger, fx.Policy, fx.Clock,
+            NullLogger<MeteringService>.Instance, fallbacks: fallbacks);
+
+        fx.Clock.Advance(TimeSpan.FromSeconds(60));
+        await meter.FinalizeLeaseAsync(lease.Id, fx.Clock.GetUtcNow());
+
+        var aggregate = await fallbacks.GetAggregateAsync();
+        Assert.Equal(1, aggregate.Count);
+        Assert.Equal(fx.Clock.GetUtcNow(), aggregate.LastAt);
+        Assert.Null(aggregate.LastPolicyId);
     }
 }

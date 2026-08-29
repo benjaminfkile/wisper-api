@@ -6,6 +6,7 @@ using Wisper.Api.Infrastructure.Idempotency;
 using Wisper.Api.Ledger;
 using Wisper.Api.Persistence.ApiKeys;
 using Wisper.Api.Persistence.Audit;
+using Wisper.Api.Persistence.BillingIncidents;
 using Wisper.Api.Persistence.HostImages;
 using Wisper.Api.Persistence.Hosts;
 using Wisper.Api.Persistence.Idempotency;
@@ -131,6 +132,11 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IIdempotencyKeyRepository, IdempotencyKeyRepository>();
         services.AddSingleton<IPlatformPolicyRepository, PlatformPolicyRepository>();
         services.AddSingleton<IAuditLogRepository, AuditLogRepository>();
+
+        // Persistent platform-policy fallback signal (task #210, docs/PAYMENTS.md §4). Backs the
+        // admin overview's fallback_count / last_fallback_* + the ack endpoint so the badge is
+        // durable across restarts and visible on every instance.
+        services.AddSingleton<IPolicyFallbackStore, PolicyFallbackStore>();
     }
 
     /// <summary>
@@ -153,6 +159,7 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IIdempotencyKeyRepository, InMemoryIdempotencyKeyRepository>();
         services.AddSingleton<IPlatformPolicyRepository, InMemoryPlatformPolicyRepository>();
         services.AddSingleton<IAuditLogRepository, InMemoryAuditLogRepository>();
+        services.AddSingleton<IPolicyFallbackStore, InMemoryPolicyFallbackStore>();
     }
 
     /// <summary>
