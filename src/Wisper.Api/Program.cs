@@ -8,7 +8,9 @@ using Wisper.Api.Billing;
 using Wisper.Api.Catalog;
 using Wisper.Api.Hosts;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Infrastructure.Idempotency;
 using Wisper.Api.Leases;
+using Wisper.Api.Ledger;
 using Wisper.Api.Metering;
 using Wisper.Api.Payments;
 using Wisper.Api.Payouts;
@@ -120,6 +122,23 @@ builder.Services.AddWisperPayments(builder.Configuration);
 // (idempotency key = payouts.id), writes a payouts row, and posts the `payout` ledger txn (host_earnings →
 // platform_cash). A failed transfer retains earnings and retries next run. No-op on a DB-less boot.
 builder.Services.AddHostedService<PayoutHostedService>();
+
+// Scheduled ledger reconciliation (docs/DATA_MODEL.md §7e, §14): a background loop that re-derives every
+// account's balance from the immutable journal and compares it against the maintained balance cache. Any
+// drift is logged and surfaced on the admin overview. Multi-instance safe via a Postgres advisory lock
+// so exactly one instance runs each pass. No-op on a DB-less boot.
+builder.Services.Configure<LedgerReconcileOptions>(
+    builder.Configuration.GetSection(LedgerReconcileOptions.SectionName));
+builder.Services.AddSingleton<LedgerReconcileMonitor>();
+builder.Services.AddHostedService<LedgerReconcileHostedService>();
+
+// Scheduled idempotency TTL sweep (docs/DATA_MODEL.md §10, §14): a background loop that deletes expired
+// idempotency_keys rows so the table doesn't accumulate stale records between low-traffic windows. The
+// same rows are also swept lazily on retry; the loop is the proactive backstop. Multi-instance safe via
+// a Postgres advisory lock. No-op on a DB-less boot.
+builder.Services.Configure<IdempotencySweepOptions>(
+    builder.Configuration.GetSection(IdempotencySweepOptions.SectionName));
+builder.Services.AddHostedService<IdempotencySweepHostedService>();
 
 // Agent tunnel (docs/TUNNEL.md): operational params from config, the host-token validator
 // (config-backed for Phase 1), and the in-memory host registry (singleton — one live tunnel

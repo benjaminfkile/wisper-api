@@ -47,6 +47,7 @@ public sealed class AdminService
     private readonly MeteringService _meter;
     private readonly ILeaseWalletGate _walletGate;
     private readonly ITunnelRelay _relay;
+    private readonly LedgerReconcileMonitor _reconcileMonitor;
     private readonly TimeProvider _time;
     private readonly ILogger<AdminService> _logger;
 
@@ -61,6 +62,7 @@ public sealed class AdminService
         MeteringService meter,
         ILeaseWalletGate walletGate,
         ITunnelRelay relay,
+        LedgerReconcileMonitor reconcileMonitor,
         TimeProvider time,
         ILogger<AdminService> logger)
     {
@@ -74,6 +76,7 @@ public sealed class AdminService
         _meter = meter;
         _walletGate = walletGate;
         _relay = relay;
+        _reconcileMonitor = reconcileMonitor;
         _time = time;
         _logger = logger;
     }
@@ -96,6 +99,17 @@ public sealed class AdminService
         var online = await _hosts.ListOnlineAsync(ct);
         var userCount = await _users.CountAsync(ct);
 
+        var reconcile = _reconcileMonitor.Last is { } snap
+            ? new LedgerReconcileView(
+                snap.RanAt,
+                snap.AccountsChecked,
+                snap.DriftAccountCount,
+                snap.TotalAbsoluteDriftCents,
+                snap.HasDrift)
+            : LedgerReconcileView.Empty;
+
+        var health = reconcile.HasDrift ? "ledger_drift" : "ok";
+
         return new AdminOverviewResponse(
             Currency,
             revenue.BalanceCents,
@@ -105,7 +119,8 @@ public sealed class AdminService
             hostCount,
             online.Count,
             userCount,
-            Health: "ok");
+            Health: health,
+            LedgerReconcile: reconcile);
     }
 
     /// <summary>The current policy + full version history (docs/API.md §8, <c>GET /v1/admin/policy</c>).</summary>
