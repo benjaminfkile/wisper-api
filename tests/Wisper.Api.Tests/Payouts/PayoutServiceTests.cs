@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Wisper.Api.Audit;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Ledger;
 using Wisper.Api.Payments;
 using Wisper.Api.Payouts;
+using Wisper.Api.Persistence.Audit;
 using Wisper.Api.Persistence.Payouts;
 using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tests.TestSupport;
@@ -29,6 +31,8 @@ public class PayoutServiceTests
         public InMemoryPayoutRepository Payouts { get; } = new();
         public InMemoryUserRepository Users { get; } = new();
         public FakeStripeConnectGateway Gateway { get; } = new();
+        public InMemoryAuditLogRepository AuditLog { get; } = new();
+        public AuditService Audit { get; }
         public FakeTimeProvider Clock { get; } = new(T0);
         public PayoutOptions Options { get; } = new() { PayoutMinCents = 100 };
         public PayoutService Service { get; }
@@ -36,8 +40,9 @@ public class PayoutServiceTests
         public Fixture()
         {
             Ledger = new LedgerService(LedgerStore);
+            Audit = new AuditService(AuditLog, Clock);
             Service = new PayoutService(
-                Ledger, Payouts, Users, Gateway,
+                Ledger, Payouts, Users, Gateway, Audit,
                 Microsoft.Extensions.Options.Options.Create(Options), Clock, NullLogger<PayoutService>.Instance);
         }
 
@@ -239,5 +244,64 @@ public class PayoutServiceTests
         Assert.Equal(500, view.AmountCents);
         Assert.Equal("in_transit", view.Status);
         Assert.NotNull(view.StripeTransferId);
+    }
+
+    [Fact]
+    public async Task Scheduled_run_records_a_payout_settled_audit_row_with_system_actor()
+    {
+        // Task #185: scheduled payouts must leave the same audit trail as refunds/chargebacks. The actor
+        // is null (system), target is the host user, and the meta carries the amounts and Stripe transfer id.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync();
+        await fx.AccrueEarningsAsync(host.Id, 500);
+
+        await fx.Service.RunScheduledPayoutsAsync();
+
+        var rows = await fx.AuditLog.ListByTargetAsync("user", host.Id);
+        var entry = Assert.Single(rows);
+        Assert.Equal("payout.settled", entry.Action);
+        Assert.Null(entry.ActorUserId);
+        Assert.NotNull(entry.Meta);
+        Assert.Contains("\"amount_cents\":500", entry.Meta!);
+        Assert.Contains("\"currency\":\"usd\"", entry.Meta!);
+        Assert.Contains("\"stripe_transfer_id\":", entry.Meta!);
+        Assert.Contains("\"trigger\":\"scheduled\"", entry.Meta!);
+    }
+
+    [Fact]
+    public async Task On_demand_payout_records_the_host_as_the_audit_actor()
+    {
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync();
+        await fx.AccrueEarningsAsync(host.Id, 750);
+
+        await fx.Service.PayoutOnDemandAsync(host.Id);
+
+        var rows = await fx.AuditLog.ListByTargetAsync("user", host.Id);
+        var entry = Assert.Single(rows);
+        Assert.Equal("payout.settled", entry.Action);
+        Assert.Equal(host.Id, entry.ActorUserId);
+        Assert.Contains("\"trigger\":\"on_demand\"", entry.Meta!);
+    }
+
+    [Fact]
+    public async Task Failed_transfer_records_a_payout_failed_audit_row_and_retains_earnings()
+    {
+        // A failed transfer must still leave an audit row; an operator needs to see the attempt and the
+        // error even when no money moved (host_earnings is retained and the next run will retry).
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync();
+        await fx.AccrueEarningsAsync(host.Id, 500);
+        fx.Gateway.TransferError = new InvalidOperationException("insufficient platform balance");
+
+        await fx.Service.PayoutOnDemandAsync(host.Id);
+
+        var rows = await fx.AuditLog.ListByTargetAsync("user", host.Id);
+        var entry = Assert.Single(rows);
+        Assert.Equal("payout.failed", entry.Action);
+        Assert.Equal(host.Id, entry.ActorUserId);
+        Assert.NotNull(entry.Meta);
+        Assert.Contains("insufficient platform balance", entry.Meta!);
+        Assert.Contains("\"amount_cents\":500", entry.Meta!);
     }
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Wisper.Api.Audit;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Ledger;
@@ -15,8 +16,11 @@ namespace Wisper.Api.Payouts;
 /// with the same guard. Every payout is one <c>payouts</c> row + one Stripe Transfer (idempotency key =
 /// <c>payouts.id</c>) + one <c>payout</c> ledger txn (<c>host_earnings → platform_cash</c>), a three-way
 /// tie-out (docs/PAYMENTS.md §9). A transfer that fails is recorded <c>failed</c> and posts <b>no</b> ledger
-/// txn, so earnings stay in <c>host_earnings</c> and a later run retries (§6). Everything is behind interfaces
-/// so the unit suite runs without Stripe/Postgres.
+/// txn, so earnings stay in <c>host_earnings</c> and a later run retries (§6). Every settled or failed run
+/// also writes an <c>audit_log</c> row (docs/DATA_MODEL.md §12): actor is the host on the on-demand path
+/// and system (<c>null</c>) on the scheduled path, target is the host user, and meta carries the amounts
+/// and the Stripe transfer id, so the money trail matches the refund/chargeback path (task #185).
+/// Everything is behind interfaces so the unit suite runs without Stripe/Postgres.
 /// </summary>
 public sealed class PayoutService
 {
@@ -27,6 +31,7 @@ public sealed class PayoutService
     private readonly IPayoutRepository _payouts;
     private readonly IUserRepository _users;
     private readonly IStripeConnectGateway _stripe;
+    private readonly AuditService _audit;
     private readonly PayoutOptions _options;
     private readonly TimeProvider _time;
     private readonly ILogger<PayoutService> _logger;
@@ -36,6 +41,7 @@ public sealed class PayoutService
         IPayoutRepository payouts,
         IUserRepository users,
         IStripeConnectGateway stripe,
+        AuditService audit,
         IOptions<PayoutOptions> options,
         TimeProvider time,
         ILogger<PayoutService> logger)
@@ -44,6 +50,7 @@ public sealed class PayoutService
         _payouts = payouts;
         _users = users;
         _stripe = stripe;
+        _audit = audit;
         _options = options.Value;
         _time = time;
         _logger = logger;
@@ -93,7 +100,7 @@ public sealed class PayoutService
     /// and guard as the scheduled run. Throws <see cref="ApiErrorCode.ConnectIncomplete"/> (403) when Connect
     /// is not enabled, and <see cref="ApiErrorCode.PaymentRequired"/> when the accrued balance is below the
     /// payout minimum. Otherwise returns the created payout (which may itself be <c>failed</c> if the transfer
-    /// could not be made — earnings are then retained).
+    /// could not be made, in which case earnings are retained). The actor recorded on the audit row is the host itself.
     /// </summary>
     public async Task<Payout> PayoutOnDemandAsync(Guid hostUserId, CancellationToken ct = default)
     {
@@ -117,7 +124,7 @@ public sealed class PayoutService
                 new { accrued_cents = balance, payout_min_cents = _options.PayoutMinCents });
         }
 
-        return await ExecutePayoutAsync(user, balance, ct);
+        return await ExecutePayoutAsync(user, balance, actorUserId: hostUserId, ct);
     }
 
     /// <summary>
@@ -182,16 +189,23 @@ public sealed class PayoutService
             return null;
         }
 
-        return await ExecutePayoutAsync(user, balance, ct);
+        // Scheduled run: the actor is `system` (NULL), mirroring the chargeback path (docs/PAYMENTS.md §7,
+        // §12). The on-demand path passes the host id above so the trail shows who tripped a self-serve run.
+        return await ExecutePayoutAsync(user, balance, actorUserId: null, ct);
     }
 
     /// <summary>
     /// The shared payout core (docs/PAYMENTS.md §6, §11): create the <c>payouts</c> row, make the Stripe
     /// Transfer (idempotency key = <c>payouts.id</c>), then — only on success — post the <c>payout</c> ledger
     /// txn (<c>host_earnings → platform_cash</c>, keyed by the same id) and advance the row to <c>in_transit</c>.
-    /// A transfer failure records the row <c>failed</c> with no ledger effect, so earnings are retained.
+    /// A transfer failure records the row <c>failed</c> with no ledger effect, so earnings are retained. Both
+    /// outcomes append an <c>audit_log</c> row (docs/DATA_MODEL.md §12) with action <c>payout.settled</c> or
+    /// <c>payout.failed</c>, and actor = <paramref name="actorUserId"/> (host on the on-demand path,
+    /// <c>null</c> for the scheduled system run), so operators can trace every money movement to a specific
+    /// host and run.
     /// </summary>
-    private async Task<Payout> ExecutePayoutAsync(User user, long amountCents, CancellationToken ct)
+    private async Task<Payout> ExecutePayoutAsync(
+        User user, long amountCents, Guid? actorUserId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(user.ConnectAccountId))
         {
@@ -229,6 +243,23 @@ public sealed class PayoutService
                 ct);
             _logger.LogError(
                 ex, "payout {Payout} transfer failed for host {Host}; earnings retained", payout.Id, user.Id);
+
+            // Audit the failed attempt so the trail matches every other money-sensitive action; earnings are
+            // still in host_earnings and the next run will retry (docs/PAYMENTS.md §6, §12).
+            await _audit.RecordAsync(
+                "payout.failed",
+                actorUserId: actorUserId,
+                targetType: "user",
+                targetId: user.Id,
+                meta: new
+                {
+                    payout_id = failed.Id,
+                    amount_cents = amountCents,
+                    currency = Currency,
+                    error = ex.Message,
+                    trigger = actorUserId is null ? "scheduled" : "on_demand",
+                },
+                ct);
             return failed;
         }
 
@@ -260,6 +291,26 @@ public sealed class PayoutService
             "payout {Payout} paid host {Host} {Amount}¢ via transfer {Transfer} (txn {Txn}){Replay}",
             payout.Id, user.Id, amountCents, transfer.Id, posted.Transaction.Id,
             posted.WasDeduplicated ? " [ledger replay]" : string.Empty);
+
+        // Audit the money-sensitive action (docs/DATA_MODEL.md §12): actor is the host on the on-demand path
+        // and null (system) for the scheduled run, target is the host user, meta names the payout id, the
+        // Stripe transfer id, and the ledger txn so a reviewer has the three-way tie-out (§9).
+        await _audit.RecordAsync(
+            "payout.settled",
+            actorUserId: actorUserId,
+            targetType: "user",
+            targetId: user.Id,
+            meta: new
+            {
+                payout_id = settled.Id,
+                amount_cents = amountCents,
+                currency = Currency,
+                stripe_transfer_id = transfer.Id,
+                ledger_txn_id = posted.Transaction.Id,
+                trigger = actorUserId is null ? "scheduled" : "on_demand",
+                ledger_replayed = posted.WasDeduplicated,
+            },
+            ct);
         return settled;
     }
 

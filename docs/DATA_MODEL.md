@@ -363,7 +363,7 @@ Append-only record of every admin/policy/money-sensitive action. Append-only is 
 |---|---|---|
 | `id` | `bigint` identity PK | |
 | `actor_user_id` | `uuid` → `users(id)` | admin or system |
-| `action` | `text` | as written today: `policy.update`, `host.suspend`/`host.unsuspend`, `user.suspend`/`user.unsuspend`, `admin.refund`, `billing.refund` (the self-serve refund, actor = the consumer), `ledger.adjustment`, `lease.admin_end`, `user.chargeback_suspend` (system actor, NULL). Payouts (scheduled or on-demand) are **not** audited today; the `payouts` row is their record |
+| `action` | `text` | as written today: `policy.update`, `host.suspend`/`host.unsuspend`, `user.suspend`/`user.unsuspend`, `admin.refund`, `billing.refund` (the self-serve refund, actor = the consumer), `ledger.adjustment`, `lease.admin_end`, `user.chargeback_suspend` (system actor, NULL), and `payout.settled`/`payout.failed` (target = the host user; actor = the host on the on-demand path or NULL for the scheduled system run; meta carries `payout_id`, `amount_cents`, `currency`, `stripe_transfer_id`/`ledger_txn_id` on settlement or the transfer `error` on failure, and `trigger` = `on_demand`/`scheduled`; task #185, so a reviewer has the same trail refunds and chargebacks leave) |
 | `target_type` / `target_id` | `text` / `uuid` | |
 | `meta` | `jsonb` | before/after, amounts, reason |
 | `created_at` | `timestamptz` | |
