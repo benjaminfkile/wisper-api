@@ -51,6 +51,13 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         Skip.IfNot(_pg.Available, PgFixture.SkipReason); // visible skip unless WISPER_RUN_PG_TESTS opted in
 
         var env = new Harness(_pg.DataSource!);
+        // A paid create now requires an active platform policy (task #184): without one the LeaseService
+        // rejects up front with "Billing is not configured on this deployment", which would trip this test
+        // before it ever exercises the FK ordering we are here to guard. Migrations do run (0017 seeds a
+        // default row into Postgres's platform_policy table) but this harness wires an in-memory policy
+        // repository (see Harness ctor) so we seed the policy directly here rather than reaching across
+        // the storage seam.
+        await env.SeedDefaultPolicyAsync();
         var (consumerId, host, image) = await env.SeedPricedOfferAsync(priceCentsPerMin: 2);
         await env.FundWalletAsync(consumerId, cents: 100_000);
 
@@ -117,6 +124,7 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
     private sealed class Harness
     {
         private readonly Db _db;
+        private readonly PlatformPolicyService _policy;
 
         public Harness(NpgsqlDataSource dataSource)
         {
@@ -129,17 +137,17 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
             Ledger = new LedgerService(LedgerStore);
 
             var clock = new FakeTimeProvider(T0);
-            var policy = new PlatformPolicyService(new InMemoryPlatformPolicyRepository(), clock);
+            _policy = new PlatformPolicyService(new InMemoryPlatformPolicyRepository(), clock);
             var fraud = new FraudGuardService(
-                Ledger, Leases, policy, clock, NullLogger<FraudGuardService>.Instance);
+                Ledger, Leases, _policy, clock, NullLogger<FraudGuardService>.Instance);
             WalletGate = new WalletLeaseGate(
-                Ledger, Leases, policy, fraud, NullLogger<WalletLeaseGate>.Instance);
+                Ledger, Leases, _policy, fraud, NullLogger<WalletLeaseGate>.Instance);
             var usage = new LeaseUsageRepository(_db);
             var meter = new MeteringService(
-                Leases, usage, Hosts, Ledger, policy, clock, NullLogger<MeteringService>.Instance);
+                Leases, usage, Hosts, Ledger, _policy, clock, NullLogger<MeteringService>.Instance);
             Service = new LeaseService(
                 Leases, Hosts, Images, new FakeTunnelRelay(), new FakeHostCapabilitySource(),
-                WalletGate, meter, policy, new InMemoryHostDegradedStore(), clock);
+                WalletGate, meter, _policy, new InMemoryHostDegradedStore(), clock);
         }
 
         public UserRepository Users { get; }
@@ -150,6 +158,19 @@ public sealed class PostgresPaidLeaseFkOrderingTests : IClassFixture<PostgresPai
         public LedgerService Ledger { get; }
         public WalletLeaseGate WalletGate { get; }
         public LeaseService Service { get; }
+
+        /// <summary>
+        /// Publishes the same conservative default the 0017 migration seeds into Postgres: fee_bps = 0, no
+        /// caps, no fraud guards, effective at <see cref="T0"/> so the fixed clock sees it as active. Required
+        /// because <c>LeaseService.EnsureActivePlatformPolicyAsync</c> refuses a paid create when the active
+        /// policy lookup returns null (task #184).
+        /// </summary>
+        public Task SeedDefaultPolicyAsync() => _policy.PublishAsync(new PlatformPolicy
+        {
+            FeeBps = 0,
+            MinTopupCents = 0,
+            EffectiveFrom = T0,
+        });
 
         public async Task<(Guid ConsumerId, Host Host, HostImage Image)> SeedPricedOfferAsync(
             long priceCentsPerMin)
