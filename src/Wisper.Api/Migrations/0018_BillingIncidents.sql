@@ -18,8 +18,8 @@
 --   * operational_state  -- a single-row table for one-off operational watermarks. First user:
 --                          policy_fallback_ack_at, the wall clock of the last admin ack. The overview
 --                          reports fallback_count / last_fallback_* over rows with
---                          occurred_at > COALESCE(policy_fallback_ack_at, '-infinity'), so an ack
---                          zeros the badge on every instance while the incidents journal is intact.
+--                          occurred_at > COALESCE(policy_fallback_ack_at, 'epoch'::timestamptz), so an
+--                          ack zeros the badge on every instance while the incidents journal is intact.
 --
 -- The single-row constraint (id = 1 with an id-domain CHECK) means an INSERT of a second row is a
 -- PK conflict rather than a silent duplicate, and the seed INSERT below is idempotent so
