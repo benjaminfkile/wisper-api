@@ -31,6 +31,25 @@ public interface IHostPresence
         CancellationToken ct = default);
 
     /// <summary>
+    /// Persists the host's <c>hello</c>-reported versions and top-level capacity (<c>wisp_version</c>,
+    /// <c>agent_version</c>, <c>max_leases</c>, <c>max_streams</c>) from the handshake (task #182), so admin
+    /// reads (<c>GET /v1/hosts/mine</c>, <c>GET /v1/admin/hosts</c>) see what the connected agent actually
+    /// advertised. Blank/whitespace strings and non-positive capacity values normalize to <c>null</c> on the
+    /// row. The columns are advisory surfacing only; per-host admission is enforced against the live
+    /// <c>capability.capacity.max_contracts</c> snapshot (task #571, refreshed via heartbeat, task #61), not
+    /// against these persisted fields, so a heartbeat capability refresh never rewrites them. A suspended
+    /// host is left untouched (suspension is authoritative, so a suspended host must not have its row
+    /// mutated as if it were live); an unknown host or a non-Guid dev host id is a no-op.
+    /// </summary>
+    Task RefreshAdvertisedVersionsAndCapacityAsync(
+        string hostId,
+        string? wispVersion,
+        string? agentVersion,
+        int maxLeases,
+        int maxStreams,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Refreshes a host's persisted advertised isolation capability from a mid-session source (a heartbeat
     /// that re-advertises, task #417). Normalizes the report, skips the write when nothing changed, and
     /// never touches presence. A suspended, unknown, or non-Guid dev host id is a no-op.

@@ -48,6 +48,49 @@ public sealed class HostPresenceService : IHostPresence
     }
 
     /// <inheritdoc />
+    public async Task RefreshAdvertisedVersionsAndCapacityAsync(
+        string hostId,
+        string? wispVersion,
+        string? agentVersion,
+        int maxLeases,
+        int maxStreams,
+        CancellationToken ct = default)
+    {
+        if (!Guid.TryParse(hostId, out var id))
+        {
+            return; // dev/no-DB tunnel host id (no row to refresh)
+        }
+
+        // Never mutate a suspended host, and a missing host has nothing to refresh.
+        if (await _hosts.GetByIdAsync(id, ct) is not { } host || host.Status == HostStatus.Suspended)
+        {
+            return;
+        }
+
+        var wisp = NormalizeVersion(wispVersion);
+        var agent = NormalizeVersion(agentVersion);
+        int? leases = maxLeases > 0 ? maxLeases : null;
+        int? streams = maxStreams > 0 ? maxStreams : null;
+
+        if (wisp == host.WispVersion
+            && agent == host.AgentVersion
+            && leases == host.MaxLeases
+            && streams == host.MaxStreams)
+        {
+            return; // no change: avoid a pointless write (and updated_at churn) on reconnect
+        }
+
+        await _hosts.SetAdvertisedVersionsAndCapacityAsync(
+            id, wisp, agent, leases, streams, _time.GetUtcNow(), ct);
+        _logger.LogInformation(
+            "host {HostId} advertised versions/capacity refreshed: wisp={WispVersion} agent={AgentVersion} maxLeases={MaxLeases} maxStreams={MaxStreams}",
+            id, wisp, agent, leases, streams);
+    }
+
+    private static string? NormalizeVersion(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <inheritdoc />
     public async Task GoOnlineIfEligibleAsync(
         string hostId,
         IReadOnlyList<string>? isolationLevels = null,
@@ -66,8 +109,9 @@ public sealed class HostPresenceService : IHostPresence
             return;
         }
 
-        // Admin-suspended hosts must never come back online on (re)connect (docs/API.md §8). The tunnel also
-        // closes such a host 4403, but the gate is fail-safe on its own so presence never clears a suspension.
+        // Admin-suspended hosts must never come back online on (re)connect (docs/API.md §8). No frame closes
+        // a suspended host today: the 4403 close code is reserved but not sent (docs/TUNNEL.md §3), so the
+        // tunnel stays up and suspension is enforced solely by this gate refusing to flip the row online.
         if (host.Status == HostStatus.Suspended)
         {
             _logger.LogInformation("host {HostId} tunnel ready but suspended — staying offline", id);

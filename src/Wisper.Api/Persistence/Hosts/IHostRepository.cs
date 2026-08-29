@@ -75,6 +75,20 @@ public interface IHostRepository : IRepository
         Guid id, IReadOnlyList<string> gpuClasses, int gpuCount, DateTimeOffset updatedAt,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Persists the host's <c>hello</c>-reported versions and top-level capacity (<c>wisp_version</c>,
+    /// <c>agent_version</c>, <c>max_leases</c>, <c>max_streams</c>) and bumps <c>updated_at</c>. The narrow
+    /// write the tunnel lifecycle uses at handshake time (task #182), so admin reads see what the connected
+    /// agent advertised. A blank/whitespace <paramref name="wispVersion"/>/<paramref name="agentVersion"/> or
+    /// a non-positive capacity value is stored as <c>NULL</c>. The columns are advisory surfacing only;
+    /// per-host admission is enforced against the live <c>capability.capacity.max_contracts</c> snapshot
+    /// (see <c>docs/TUNNEL.md</c> §5 for which value wins). Returns the stored row, or <c>null</c> if no
+    /// such host. Presence / isolation / GPU columns are left untouched.
+    /// </summary>
+    Task<Host?> SetAdvertisedVersionsAndCapacityAsync(
+        Guid id, string? wispVersion, string? agentVersion, int? maxLeases, int? maxStreams,
+        DateTimeOffset updatedAt, CancellationToken ct = default);
+
     /// <summary>Deletes a host (cascading to its images); <c>true</c> if a row was removed.</summary>
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
 }

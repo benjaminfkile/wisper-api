@@ -359,4 +359,91 @@ public class HostPresenceServiceTests
         Assert.Equal(HostStatus.Offline, await fx.StatusOf(host.Id));
         Assert.Empty((await fx.Catalog.ListAsync(new CatalogQuery())).Data);
     }
+
+    // ----- versions + top-level capacity persistence (task #182) ---------------------------------
+
+    [Fact]
+    public async Task Refresh_versions_and_capacity_persists_hello_fields_on_the_host_row()
+    {
+        // The hello handshake's wispVersion/agentVersion and the top-level capacity{maxLeases,maxStreams}
+        // land on the row so admin/owner reads see what the connected agent advertised (task #182).
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+
+        await fx.Service.RefreshAdvertisedVersionsAndCapacityAsync(
+            host.Id.ToString(), wispVersion: "0.9.0", agentVersion: "1.2.3",
+            maxLeases: 10, maxStreams: 50);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal("0.9.0", reloaded.WispVersion);
+        Assert.Equal("1.2.3", reloaded.AgentVersion);
+        Assert.Equal(10, reloaded.MaxLeases);
+        Assert.Equal(50, reloaded.MaxStreams);
+    }
+
+    [Fact]
+    public async Task Refresh_versions_and_capacity_normalizes_blanks_and_non_positive_to_null()
+    {
+        // An agent that sends nothing for versions/capacity stores NULL on the row rather than the empty
+        // string / 0 sentinels (task #182): admin reads then render "unknown" instead of a false zero.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+
+        await fx.Service.RefreshAdvertisedVersionsAndCapacityAsync(
+            host.Id.ToString(), wispVersion: "  ", agentVersion: "",
+            maxLeases: 0, maxStreams: -3);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Null(reloaded.WispVersion);
+        Assert.Null(reloaded.AgentVersion);
+        Assert.Null(reloaded.MaxLeases);
+        Assert.Null(reloaded.MaxStreams);
+    }
+
+    [Fact]
+    public async Task Refresh_versions_and_capacity_never_touches_a_suspended_host()
+    {
+        // Suspension is authoritative: a suspended host must not have its row mutated as if it were live.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None, status: HostStatus.Suspended);
+
+        await fx.Service.RefreshAdvertisedVersionsAndCapacityAsync(
+            host.Id.ToString(), wispVersion: "0.9.0", agentVersion: "1.2.3",
+            maxLeases: 10, maxStreams: 50);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Null(reloaded.WispVersion);
+        Assert.Null(reloaded.AgentVersion);
+        Assert.Null(reloaded.MaxLeases);
+        Assert.Null(reloaded.MaxStreams);
+    }
+
+    [Fact]
+    public async Task Refresh_versions_and_capacity_is_a_noop_for_a_non_guid_host_id()
+    {
+        // The dev/no-DB tunnel host id must not throw.
+        var fx = new Fixture();
+        await fx.Service.RefreshAdvertisedVersionsAndCapacityAsync(
+            "dev-host-alpha", "0.9.0", "1.2.3", maxLeases: 4, maxStreams: 20);
+    }
+
+    [Fact]
+    public async Task Refresh_versions_and_capacity_is_a_noop_when_nothing_changed()
+    {
+        // A reconnect from the same agent version/capacity should not churn updated_at on the row.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.Service.RefreshAdvertisedVersionsAndCapacityAsync(
+            host.Id.ToString(), "0.9.0", "1.2.3", 10, 50);
+        var afterFirst = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        var stampAfterFirst = afterFirst.UpdatedAt;
+
+        // Advance the clock so a real write would clearly change updated_at.
+        fx.Clock.Advance(TimeSpan.FromMinutes(5));
+        await fx.Service.RefreshAdvertisedVersionsAndCapacityAsync(
+            host.Id.ToString(), "0.9.0", "1.2.3", 10, 50);
+
+        var afterSecond = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(stampAfterFirst, afterSecond.UpdatedAt); // no-op: no updated_at churn
+    }
 }

@@ -183,6 +183,14 @@ public static class TunnelEndpoints
                 await presence.GoOnlineIfEligibleAsync(
                     hostId, hello.Capability.IsolationLevels, hello.Capability.DefaultIsolation,
                     gpu?.DeviceClasses, gpu?.Devices.Count ?? 0, ct);
+
+                // Persist the hello-reported versions and top-level capacity (task #182) so admin reads see
+                // what this connected agent advertised. Advisory only: per-host admission is enforced against
+                // the live capability.capacity.max_contracts snapshot (task #571), not these persisted fields;
+                // the heartbeat-driven capability refresh (task #61) never rewrites them.
+                await presence.RefreshAdvertisedVersionsAndCapacityAsync(
+                    hostId, hello.WispVersion, hello.AgentVersion,
+                    hello.Capacity.MaxLeases, hello.Capacity.MaxStreams, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

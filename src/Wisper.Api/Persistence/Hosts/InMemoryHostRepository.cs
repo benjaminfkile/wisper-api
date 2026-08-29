@@ -142,6 +142,27 @@ public sealed class InMemoryHostRepository : InMemoryRepositoryBase<Guid, Host>,
         return Task.FromResult<Host?>(updated);
     }
 
+    public Task<Host?> SetAdvertisedVersionsAndCapacityAsync(
+        Guid id, string? wispVersion, string? agentVersion, int? maxLeases, int? maxStreams,
+        DateTimeOffset updatedAt, CancellationToken ct = default)
+    {
+        if (Find(id) is not { } host)
+        {
+            return Task.FromResult<Host?>(null);
+        }
+
+        var updated = host with
+        {
+            WispVersion = wispVersion,
+            AgentVersion = agentVersion,
+            MaxLeases = maxLeases,
+            MaxStreams = maxStreams,
+            UpdatedAt = updatedAt,
+        };
+        Upsert(updated);
+        return Task.FromResult<Host?>(updated);
+    }
+
     public Task<bool> DeleteAsync(Guid id, CancellationToken ct = default) =>
         Task.FromResult(Remove(id));
 }

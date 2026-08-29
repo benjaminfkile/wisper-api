@@ -4,8 +4,13 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Wisper.Api.Domain;
+using Wisper.Api.Hosts;
+using Wisper.Api.Persistence.Hosts;
+using Wisper.Api.Persistence.Users;
 using Wisper.Api.Tunnel;
 using Xunit;
+using Host = Wisper.Api.Domain.Host;
 
 namespace Wisper.Api.Tests.Tunnel;
 
@@ -124,6 +129,44 @@ public class AgentTunnelTests
     }
 
     [Fact]
+    public async Task Hello_persists_versions_and_top_level_capacity_to_the_host_row()
+    {
+        // Task #182: the hello handshake's wispVersion/agentVersion and the top-level capacity
+        // {maxLeases,maxStreams} must land on the host row, so admin/owner reads (GET /v1/hosts/mine,
+        // GET /v1/admin/hosts) see what the connected agent advertised. Seeds a real DB-backed host and
+        // an owner user, then drives the raw tunnel through hello.ack and reads the row back.
+        using var factory = CreateFactory();
+        var ct = Token();
+
+        var (hostId, agentToken) = await SeedHostAsync(factory);
+
+        var socket = await CreateClient(factory, agentToken).ConnectAsync(AgentUri(factory), ct);
+        await SendHelloAsync(socket, TunnelProtocol.ProtocolVersion, ct);
+        await ReceiveControlAsync(socket, ct); // hello.ack: the handshake is complete after this
+
+        // Poll briefly: the presence write happens inside the tunnel's post-ack fire-and-forget path,
+        // so the assertion should not race the ack.
+        var hosts = factory.Services.GetRequiredService<IHostRepository>();
+        Host reloaded = null!;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            reloaded = (await hosts.GetByIdAsync(hostId, ct))!;
+            if (reloaded.WispVersion is not null && reloaded.MaxLeases is not null)
+            {
+                break;
+            }
+            await Task.Delay(50, ct);
+        }
+
+        Assert.Equal("0.9.0", reloaded.WispVersion);
+        Assert.Equal("1.2.3", reloaded.AgentVersion);
+        Assert.Equal(10, reloaded.MaxLeases);
+        Assert.Equal(50, reloaded.MaxStreams);
+
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", ct);
+    }
+
+    [Fact]
     public async Task Second_connection_for_same_host_supersedes_the_first()
     {
         using var factory = CreateFactory();
@@ -148,6 +191,34 @@ public class AgentTunnelTests
         Assert.Single(registry.Online, c => c.HostId == DevHostId);
 
         await second.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", ct);
+    }
+
+    /// <summary>
+    /// Seeds a real host row (in the in-memory repository the DB-less boot registers) and returns its
+    /// id + freshly-issued agent token, so the tunnel resolves to a genuine Guid host and the presence
+    /// path actually writes to the row (a config `HostTokens` mapping resolves to a non-Guid dev id and
+    /// short-circuits the presence writes, which this helper avoids).
+    /// </summary>
+    private static async Task<(Guid HostId, string AgentToken)> SeedHostAsync(WebApplicationFactory<Program> factory)
+    {
+        var users = factory.Services.GetRequiredService<IUserRepository>();
+        var owner = await users.CreateAsync(new User
+        {
+            CognitoSub = $"sub-{Guid.NewGuid()}",
+            Email = $"{Guid.NewGuid()}@hosts.test",
+            Status = UserStatus.Active,
+        });
+
+        var issued = HostAgentToken.Issue();
+        var hosts = factory.Services.GetRequiredService<IHostRepository>();
+        var host = await hosts.CreateAsync(new Host
+        {
+            OwnerUserId = owner.Id,
+            Status = HostStatus.Offline,
+            AgentTokenHash = issued.TokenHash,
+            AgentTokenPrefix = issued.TokenPrefix,
+        });
+        return (host.Id, issued.Token);
     }
 
     // A per-test deadline so a hung handshake fails the test instead of hanging the run.
