@@ -172,6 +172,23 @@ public static class TunnelEndpoints
             // briefly for readiness rather than racing to host_offline on a freshly-connected agent.
             connection.MarkReady();
 
+            // Persist the hello-reported versions and top-level capacity (task #182) FIRST, in its own
+            // try, so a presence-flip failure below cannot skip the write: admin reads must see what this
+            // connected agent advertised as soon as the handshake completed. Advisory only: per-host
+            // admission is enforced against the live capability.capacity.max_contracts snapshot (task
+            // #571), not these persisted fields; the heartbeat-driven capability refresh (task #61)
+            // never rewrites them.
+            try
+            {
+                await presence.RefreshAdvertisedVersionsAndCapacityAsync(
+                    hostId, hello.WispVersion, hello.AgentVersion,
+                    hello.Capacity.MaxLeases, hello.Capacity.MaxStreams, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "agent tunnel: persisting advertised versions and capacity for host {HostId} failed", hostId);
+            }
+
             // Presence follows the tunnel (docs/TUNNEL.md §3): with the handshake complete, flip the host
             // online if it clears the earning gate (owner Connect-enabled, or every enabled image is
             // zero-priced — task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
@@ -186,14 +203,6 @@ public static class TunnelEndpoints
                 await presence.GoOnlineIfEligibleAsync(
                     hostId, cap?.IsolationLevels, cap?.DefaultIsolation,
                     gpu?.DeviceClasses, gpu?.Devices.Count ?? 0, ct);
-
-                // Persist the hello-reported versions and top-level capacity (task #182) so admin reads see
-                // what this connected agent advertised. Advisory only: per-host admission is enforced against
-                // the live capability.capacity.max_contracts snapshot (task #571), not these persisted fields;
-                // the heartbeat-driven capability refresh (task #61) never rewrites them.
-                await presence.RefreshAdvertisedVersionsAndCapacityAsync(
-                    hostId, hello.WispVersion, hello.AgentVersion,
-                    hello.Capacity.MaxLeases, hello.Capacity.MaxStreams, ct);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

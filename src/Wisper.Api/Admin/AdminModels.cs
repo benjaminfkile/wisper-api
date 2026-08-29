@@ -119,7 +119,14 @@ public sealed record UserAdminView(
         user.CreatedAt);
 }
 
-/// <summary>A host as the admin sees it (docs/API.md §8) — identity, owner, presence, and capability.</summary>
+/// <summary>
+/// A host as the admin sees it (docs/API.md §8): identity, owner, presence, and capability, plus the
+/// hello-stamped versions and top-level capacity the connected agent last advertised (task #182,
+/// docs/DATA_MODEL.md §4): <c>wisp_version</c>, <c>agent_version</c>, <c>max_leases</c>,
+/// <c>max_streams</c>. All four are nullable (a host that never handshaked, or an older agent that did not
+/// advertise them, surfaces <c>null</c>) and advisory only: per-host admission uses the live
+/// <c>capability.capacity.max_contracts</c> snapshot (task #571), not the persisted <c>max_leases</c>.
+/// </summary>
 public sealed record HostAdminView(
     [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("owner_user_id")] Guid OwnerUserId,
@@ -130,6 +137,10 @@ public sealed record HostAdminView(
     [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
     [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
     [property: JsonPropertyName("gpu_count")] int GpuCount,
+    [property: JsonPropertyName("wisp_version")] string? WispVersion,
+    [property: JsonPropertyName("agent_version")] string? AgentVersion,
+    [property: JsonPropertyName("max_leases")] int? MaxLeases,
+    [property: JsonPropertyName("max_streams")] int? MaxStreams,
     [property: JsonPropertyName("last_seen_at")] DateTimeOffset? LastSeenAt,
     [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt)
 {
@@ -144,6 +155,10 @@ public sealed record HostAdminView(
         host.DefaultIsolation,
         host.GpuClasses,
         host.GpuCount,
+        host.WispVersion,
+        host.AgentVersion,
+        host.MaxLeases,
+        host.MaxStreams,
         host.LastSeenAt,
         host.CreatedAt);
 }

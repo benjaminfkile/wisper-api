@@ -217,6 +217,37 @@ public class AdminEndpointsTests
     }
 
     [Fact]
+    public async Task Host_search_surfaces_hello_versions_and_capacity()
+    {
+        var fx = new Fixture();
+        var owner = await fx.SeedUserAsync("owner@example.com");
+        var host = await fx.Hosts.CreateAsync(new Host
+        {
+            OwnerUserId = owner,
+            Name = "h1",
+            Status = HostStatus.Online,
+            AgentTokenHash = "hash",
+            WispVersion = "1.2.3",
+            AgentVersion = "0.9.0",
+            MaxLeases = 8,
+            MaxStreams = 32,
+            CreatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        });
+        using var factory = fx.Build();
+        var client = Authed(factory);
+
+        var page = await client.GetFromJsonAsync<HostPageDto>("/v1/admin/hosts");
+
+        var view = Assert.Single(page!.Data);
+        Assert.Equal(host.Id, view.Id);
+        Assert.Equal("1.2.3", view.WispVersion);
+        Assert.Equal("0.9.0", view.AgentVersion);
+        Assert.Equal(8, view.MaxLeases);
+        Assert.Equal(32, view.MaxStreams);
+    }
+
+    [Fact]
     public async Task User_search_narrows_by_query()
     {
         var fx = new Fixture();
@@ -507,7 +538,11 @@ public class AdminEndpointsTests
         [property: JsonPropertyName("isolation_levels")] IReadOnlyList<string> IsolationLevels,
         [property: JsonPropertyName("default_isolation")] string DefaultIsolation,
         [property: JsonPropertyName("gpu_classes")] IReadOnlyList<string> GpuClasses,
-        [property: JsonPropertyName("gpu_count")] int GpuCount);
+        [property: JsonPropertyName("gpu_count")] int GpuCount,
+        [property: JsonPropertyName("wisp_version")] string? WispVersion,
+        [property: JsonPropertyName("agent_version")] string? AgentVersion,
+        [property: JsonPropertyName("max_leases")] int? MaxLeases,
+        [property: JsonPropertyName("max_streams")] int? MaxStreams);
 
     private sealed record AuditPageDto([property: JsonPropertyName("data")] IReadOnlyList<AuditDto> Data);
 
