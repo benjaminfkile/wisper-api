@@ -104,6 +104,7 @@ public sealed class LeaseService : ILeaseService
 
         ValidateNetwork(network, image);
         ValidateTtl(ttlSeconds, image);
+        await EnsureActivePlatformPolicyAsync(ct);
         await EnforcePolicyTtlCapAsync(ttlSeconds, ct);
         ValidateEnv(request.Env);
         var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
@@ -592,6 +593,26 @@ public sealed class LeaseService : ILeaseService
                 new { field = "ttl_seconds", max = image.MaxTtlSeconds });
         }
     }
+
+    /// <summary>
+    /// Fail-safe guard for the whole billing path (task #184): every paid lease MUST have an active
+    /// <c>platform_policy</c> row to split its <c>lease_charge</c> against (docs/DATA_MODEL.md §11); without
+    /// one the metering flush would throw and the lease would run unbilled. Migration 0017 seeds a
+    /// conservative default so this branch never fires in practice, but if a deployment ever lacks a policy
+    /// (a fresh in-memory dev boot, an operator error, a stripped seed) we refuse the create up front rather
+    /// than provisioning a lease we cannot bill. Runs before the wallet gate and any tunnel frame, so no
+    /// hold is posted and no container is provisioned.
+    /// </summary>
+    private async Task EnsureActivePlatformPolicyAsync(CancellationToken ct)
+    {
+        if (await _policy.GetActiveAsync(ct) is null)
+        {
+            throw new ApiException(
+                ApiErrorCode.Internal,
+                "Billing is not configured on this deployment; contact the operator.");
+        }
+    }
+
 
     /// <summary>
     /// Enforces the platform-wide TTL ceiling (task #181, docs/DATA_MODEL.md §11,
