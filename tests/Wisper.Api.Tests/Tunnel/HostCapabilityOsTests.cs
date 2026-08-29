@@ -23,7 +23,8 @@ public class HostCapabilityOsTests
         var hostId = Guid.NewGuid();
         var hello = ControlJson.Deserialize<Hello>(HelloJson(hostId, os));
         Assert.NotNull(hello);
-        Assert.Equal(os, hello!.Capability.Os);
+        Assert.NotNull(hello!.Capability);
+        Assert.Equal(os, hello.Capability!.Os);
 
         var source = SourceFor(hostId, hello.Capability);
 
@@ -40,7 +41,8 @@ public class HostCapabilityOsTests
         var hostId = Guid.NewGuid();
         var hello = ControlJson.Deserialize<Hello>(HelloJson(hostId, os: null));
         Assert.NotNull(hello);
-        Assert.Null(hello!.Capability.Os);
+        Assert.NotNull(hello!.Capability);
+        Assert.Null(hello.Capability!.Os);
 
         var source = SourceFor(hostId, hello.Capability);
 

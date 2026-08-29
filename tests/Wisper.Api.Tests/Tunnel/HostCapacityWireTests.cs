@@ -22,7 +22,7 @@ public class HostCapacityWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(WithCapacity));
 
         Assert.NotNull(hello);
-        var capacity = hello!.Capability.Capacity;
+        var capacity = hello!.Capability!.Capacity;
         Assert.NotNull(capacity);
         Assert.Equal(4, capacity!.MaxContracts);
         Assert.Equal(1, capacity.ActiveContracts);
@@ -38,7 +38,7 @@ public class HostCapacityWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(capacityField: null));
 
         Assert.NotNull(hello);
-        Assert.Null(hello!.Capability.Capacity);
+        Assert.Null(hello!.Capability!.Capacity);
     }
 
     [Fact]
@@ -48,7 +48,7 @@ public class HostCapacityWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(WithCapacity));
         Assert.NotNull(hello);
 
-        var snapshot = SourceFor(hostId, hello!.Capability).GetCapability(hostId);
+        var snapshot = SourceFor(hostId, hello!.Capability!).GetCapability(hostId);
 
         Assert.NotNull(snapshot);
         Assert.Equal(4, snapshot!.MaxContracts);
@@ -62,7 +62,7 @@ public class HostCapacityWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(capacityField: null));
         Assert.NotNull(hello);
 
-        var snapshot = SourceFor(hostId, hello!.Capability).GetCapability(hostId);
+        var snapshot = SourceFor(hostId, hello!.Capability!).GetCapability(hostId);
 
         Assert.NotNull(snapshot);
         Assert.Equal(0, snapshot!.MaxContracts); // absent block ⇒ unlimited

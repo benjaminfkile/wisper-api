@@ -23,9 +23,17 @@ public record Hello : ControlEnvelope
     [JsonPropertyName("wispVersion")]
     public string WispVersion { get; init; } = string.Empty;
 
-    /// <summary>What images/limits this host will serve (mirrors wisp's <c>GET /images</c>).</summary>
+    /// <summary>
+    /// What images/limits this host will serve (mirrors wisp's <c>GET /images</c>). Nullable to
+    /// distinguish "the agent omitted the block" (an older agent, or an agent whose local wisp is
+    /// unreachable at handshake) from "the agent sent an empty capability". An omitted block leaves
+    /// every persisted advertised capability (isolation, GPU, versions) as-is, matching the heartbeat
+    /// rule (task #191): a hello with no capability must never overwrite what the host last
+    /// advertised (a kata/gVisor host reconnecting from a wisp blip would otherwise be normalized
+    /// back to <c>["shared"]</c>).
+    /// </summary>
     [JsonPropertyName("capability")]
-    public HelloCapability Capability { get; init; } = new();
+    public HelloCapability? Capability { get; init; }
 
     /// <summary>How much this host will serve concurrently (Wisper-enforced, docs/TUNNEL.md §5).</summary>
     [JsonPropertyName("capacity")]
@@ -51,11 +59,14 @@ public record HelloCapability
 
     /// <summary>
     /// The sandbox isolation levels this host offers (snake_case wire field <c>isolation_levels</c>,
-    /// task #417). Opaque strings mirrored from the agent's capability report; empty for an older agent
-    /// that does not advertise them, which the manager treats as <c>["shared"]</c>.
+    /// task #417). Opaque strings mirrored from the agent's capability report. Nullable: an omitted
+    /// field parses to <c>null</c>, which the presence layer treats as "no update, keep last known"
+    /// (task #191). An agent cannot legitimately advertise zero tiers, so an explicitly present but
+    /// empty list is treated the same way. Only the first-ever advertisement for a fresh row falls
+    /// back to the DB default of <c>["shared"]</c>.
     /// </summary>
     [JsonPropertyName("isolation_levels")]
-    public IReadOnlyList<string> IsolationLevels { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string>? IsolationLevels { get; init; }
 
     /// <summary>
     /// The isolation level this host uses when a lease requests none (snake_case wire field

@@ -177,11 +177,14 @@ public static class TunnelEndpoints
             // zero-priced — task #392). Fail-safe: a presence hiccup must never abort a healthy tunnel.
             try
             {
-                // Persist the advertised GPU alongside isolation (task #521). An absent gpu block (an older
-                // agent) passes null classes, which leaves the persisted GPU untouched rather than nulling it.
-                var gpu = hello.Capability.Gpu;
+                // An absent capability block (older agent, or an agent whose local wisp is unreachable at
+                // handshake) leaves the persisted advertised isolation and GPU untouched, matching the
+                // heartbeat rule (task #191). Persist the advertised GPU alongside isolation (task #521):
+                // a null gpu block leaves the persisted GPU as-is rather than nulling it.
+                var cap = hello.Capability;
+                var gpu = cap?.Gpu;
                 await presence.GoOnlineIfEligibleAsync(
-                    hostId, hello.Capability.IsolationLevels, hello.Capability.DefaultIsolation,
+                    hostId, cap?.IsolationLevels, cap?.DefaultIsolation,
                     gpu?.DeviceClasses, gpu?.Devices.Count ?? 0, ct);
 
                 // Persist the hello-reported versions and top-level capacity (task #182) so admin reads see
