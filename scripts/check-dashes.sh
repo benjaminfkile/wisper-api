@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Fails when any tracked file contains a Unicode em dash (U+2014) or en dash (U+2013).
-# Byte-level so it does not depend on the shell's locale or the file's encoding
-# declaration; portable across Git Bash on Windows, macOS, and Linux CI runners.
+# Fails when any tracked text file contains a Unicode em dash (U+2014) or en dash (U+2013).
+#
+# Byte-level: the two UTF-8 sequences (E2 80 94 and E2 80 93) are matched as literal
+# bytes with plain grep (no -P), so the result does not depend on the locale. In a
+# UTF-8 locale grep matches the characters; in the C locale it matches the raw
+# bytes; both find the same lines. Works in Git Bash on Windows, macOS, and Linux.
 #
 # Rationale (task #206): every ASCII keyboard has a hyphen; every non-ASCII dash
 # in source, tests, or docs is a copy-paste artefact from a rich-text editor or
@@ -13,28 +16,22 @@
 # Exit codes:
 #   0  no dashes found
 #   1  at least one dash found; hits are printed with file:line:content
+#   2  the scan itself failed (grep error other than "no match")
 
-set -eu
+set -u
 
 cd "$(git rev-parse --show-toplevel)"
 
-# U+2014 = 0xE2 0x80 0x94, U+2013 = 0xE2 0x80 0x93. -P (perl regex) is available on
-# GNU grep and macOS grep from the git for windows bundle; fall back to a byte pair
-# match with -E if -P is missing.
-if grep --help 2>&1 | grep -q -- '-P'; then
-  PATTERN_FLAG=P
-  PATTERN='\xe2\x80[\x93\x94]'
-else
-  PATTERN_FLAG=E
-  # POSIX ERE cannot express arbitrary bytes; the fallback matches the two
-  # sequences literally via printf.
-  PATTERN="$(printf '\xe2\x80\x94|\xe2\x80\x93')"
-fi
+EM="$(printf '\xe2\x80\x94')"
+EN="$(printf '\xe2\x80\x93')"
 
-# git ls-files with -z + xargs -0 handles filenames with spaces / newlines.
-hits="$(git ls-files -z | xargs -0 grep -"$PATTERN_FLAG" -n -H -- "$PATTERN" 2>/dev/null || true)"
+# -I skips binary files. git ls-files -z + xargs -0 handles odd filenames.
+# grep exits 0 on a hit, 1 on no hit, 2 on error; xargs turns a grep exit of 1
+# into 123 and other errors into 124/125/126/127/1.
+hits="$(git ls-files -z | xargs -0 grep -I -n -H -e "$EM" -e "$EN" -- 2>&1)"
+rc=$?
 
-if [ -n "$hits" ]; then
+if [ "$rc" -eq 0 ]; then
   echo "Em dash (U+2014) or en dash (U+2013) found in tracked files:" >&2
   echo "$hits" >&2
   echo "" >&2
@@ -42,4 +39,10 @@ if [ -n "$hits" ]; then
   exit 1
 fi
 
-exit 0
+if [ "$rc" -eq 123 ] || [ "$rc" -eq 1 ]; then
+  exit 0
+fi
+
+echo "check-dashes: scan failed (exit $rc):" >&2
+echo "$hits" >&2
+exit 2
