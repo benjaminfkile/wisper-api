@@ -49,6 +49,8 @@ public class HostServiceTests
             var ledger = new LedgerService(new InMemoryLedgerStore());
             Payouts = new PayoutService(
                 ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
+                new Wisper.Api.Audit.AuditService(
+                    new Wisper.Api.Persistence.Audit.InMemoryAuditLogRepository(), Clock),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
             Service = new HostService(
                 Hosts, Images, Leases, Users, Registry, PresenceStore, Capabilities, TunnelCloser, Payouts,

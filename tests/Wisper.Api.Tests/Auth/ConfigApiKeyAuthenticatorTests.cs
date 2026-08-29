@@ -11,7 +11,9 @@ namespace Wisper.Api.Tests.Auth;
 /// Unit tests for <see cref="ConfigApiKeyAuthenticator"/> (docs/API.md §2): the dev/bootstrap allow-list
 /// resolves a raw key to its owner + scopes, <b>fails closed</b> when the map is empty (the production
 /// default), and — since a config sub is authoritative only when it names a real user — fails closed with
-/// a 401 (never a downstream 500) when the sub does not map to an active user. Mirrors
+/// a 401 (never a downstream 500) when the sub does not map to an active user. On a DB-less bootstrap the
+/// authenticator seeds the <c>users</c> row from the grant's <c>Email</c> on first sight (idempotent,
+/// task #185) so a fresh in-memory boot can drive the whole flow with one key. Mirrors
 /// <c>ConfigHostTokenValidatorTests</c> for the tunnel's host tokens.
 /// </summary>
 public class ConfigApiKeyAuthenticatorTests
@@ -42,6 +44,24 @@ public class ConfigApiKeyAuthenticatorTests
         return new ConfigApiKeyAuthenticator(
             new StaticOptionsMonitor<CognitoAuthOptions>(options),
             users,
+            new FakeTimeProvider(T0),
+            NullLogger<ConfigApiKeyAuthenticator>.Instance);
+    }
+
+    private static ConfigApiKeyAuthenticator BuildWithGrants(
+        InMemoryUserRepository users,
+        params (string key, ApiKeyGrant grant)[] entries)
+    {
+        var options = new CognitoAuthOptions();
+        foreach (var (key, grant) in entries)
+        {
+            options.ApiKeys[key] = grant;
+        }
+
+        return new ConfigApiKeyAuthenticator(
+            new StaticOptionsMonitor<CognitoAuthOptions>(options),
+            users,
+            new FakeTimeProvider(T0),
             NullLogger<ConfigApiKeyAuthenticator>.Instance);
     }
 
@@ -114,12 +134,12 @@ public class ConfigApiKeyAuthenticatorTests
     }
 
     [Fact]
-    public async Task Matched_key_with_unresolvable_subject_fails_closed()
+    public async Task Matched_key_with_unresolvable_subject_and_no_email_fails_closed()
     {
-        // Regression: a mistyped/stale UserId in the allow-list must fail authentication (→ 401), not
-        // fall through to downstream user resolution and 500 every authenticated route.
+        // Regression (task #36): a mistyped/stale UserId in the allow-list with no Email to bootstrap
+        // from must fail authentication (→ 401), not fall through to downstream user resolution and 500
+        // every authenticated route. (With an Email, the config path now seeds a users row; see below.)
         var users = new InMemoryUserRepository();
-        // Intentionally do NOT seed 'user-a' — the key names a subject that does not resolve.
         var authenticator = Build(users, ("wck_live_dev-a", "user-a", new[] { "consumer" }));
 
         Assert.Null(await authenticator.AuthenticateAsync("wck_live_dev-a"));
@@ -128,11 +148,64 @@ public class ConfigApiKeyAuthenticatorTests
     [Fact]
     public async Task Matched_key_with_suspended_owner_fails_closed()
     {
-        // A suspended owner is not authenticatable — mirrors the DB-key path's owner gate.
+        // A suspended existing owner is not authenticatable, mirroring the DB-key path's owner gate. The
+        // bootstrap path only fires when NO row exists yet; a pre-existing suspended row is left alone.
         var users = new InMemoryUserRepository();
         await SeedUser(users, "user-a", UserStatus.Suspended);
         var authenticator = Build(users, ("wck_live_dev-a", "user-a", new[] { "consumer" }));
 
         Assert.Null(await authenticator.AuthenticateAsync("wck_live_dev-a"));
+    }
+
+    [Fact]
+    public async Task Matched_key_with_unresolvable_subject_and_email_bootstraps_the_user_row()
+    {
+        // Task #185: the "drive the whole flow with one config key" path must work on a fresh DB-less
+        // boot. The authenticator seeds a users row from the grant's Email on first sight, so the
+        // matched key resolves to an active user instead of failing 401.
+        var users = new InMemoryUserRepository();
+        var authenticator = BuildWithGrants(
+            users,
+            ("wck_live_dev-a", new ApiKeyGrant
+            {
+                UserId = "self-host-operator",
+                Email = "operator@example.test",
+                Scopes = new[] { "consumer", "host" },
+            }));
+
+        var principal = await authenticator.AuthenticateAsync("wck_live_dev-a");
+
+        Assert.NotNull(principal);
+        Assert.Equal("self-host-operator", principal!.GetSubject());
+        Assert.True(principal.HasRole(WisperRole.Consumer));
+        Assert.True(principal.HasRole(WisperRole.Host));
+
+        var seeded = await users.GetByCognitoSubAsync("self-host-operator");
+        Assert.NotNull(seeded);
+        Assert.Equal("operator@example.test", seeded!.Email);
+        Assert.Equal(UserStatus.Active, seeded.Status);
+        Assert.Equal(ConnectStatus.None, seeded.ConnectStatus);
+        Assert.Equal(T0, seeded.CreatedAt);
+    }
+
+    [Fact]
+    public async Task Bootstrap_is_idempotent_across_repeated_authentications()
+    {
+        // Two calls (or a concurrent second call) must not create a second row (the sub is unique).
+        var users = new InMemoryUserRepository();
+        var authenticator = BuildWithGrants(
+            users,
+            ("wck_live_dev-a", new ApiKeyGrant
+            {
+                UserId = "self-host-operator",
+                Email = "operator@example.test",
+                Scopes = new[] { "consumer" },
+            }));
+
+        await authenticator.AuthenticateAsync("wck_live_dev-a");
+        await authenticator.AuthenticateAsync("wck_live_dev-a");
+
+        var all = await users.SearchAsync(query: null, limit: 10, offset: 0);
+        Assert.Single(all);
     }
 }

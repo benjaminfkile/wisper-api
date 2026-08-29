@@ -33,6 +33,7 @@ public class DbApiKeyAuthenticatorTests
         return new ConfigApiKeyAuthenticator(
             new StaticOptionsMonitor<CognitoAuthOptions>(options),
             users,
+            new FakeTimeProvider(T0),
             NullLogger<ConfigApiKeyAuthenticator>.Instance);
     }
 

@@ -86,17 +86,22 @@ public sealed class ApiKeyGrant
     /// <summary>
     /// The subject the key authenticates as — the identity the resolved principal carries (the same
     /// value the JWT/DB-key paths put in the <c>sub</c> claim, so downstream resolves the same user).
-    /// Must name an <b>existing active user</b>: an unresolvable <c>UserId</c> fails authentication with
-    /// 401 (task #36), it does not silently mint a stale account — so downstream user resolution can never
-    /// 500 out of a misconfigured allow-list entry.
+    /// On a DB-less bootstrap, the config authenticator seeds a <c>users</c> row for this subject on
+    /// first sight from <see cref="Email"/> (idempotent, config-map keys only, task #185), so a fresh
+    /// in-memory boot can drive the whole flow with one key without out-of-band seeding. A
+    /// pre-existing suspended row still fails authentication with 401 (task #36); a bootstrap that fails
+    /// (e.g. the grant has no <see cref="Email"/>) also fails 401, never a downstream 500.
     /// </summary>
     public string? UserId { get; set; }
 
     /// <summary>
     /// The email the key authenticates as — mirrors the DB-key path (which carries the owning user's
     /// email). Seeds the principal's <c>email</c> claim so any downstream that displays the caller's email
-    /// (e.g. audit rows) sees the same value the DB-key path would. Optional and empty in production, where
-    /// this allow-list is inert.
+    /// (e.g. audit rows) sees the same value the DB-key path would. Also seeds a bootstrap <c>users</c>
+    /// row (email is <c>NOT NULL</c>, docs/DATA_MODEL.md §3) for this key's <see cref="UserId"/> when no
+    /// row exists yet on a DB-less boot (task #185), so a grant without <see cref="Email"/> fails
+    /// authentication 401 instead of 500ing downstream. Optional and empty in production, where this
+    /// allow-list is inert.
     /// </summary>
     public string? Email { get; set; }
 

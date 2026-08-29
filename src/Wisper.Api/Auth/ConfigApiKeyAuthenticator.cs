@@ -16,26 +16,33 @@ namespace Wisper.Api.Auth;
 /// only as a dev/bootstrap fallback for a DB-less boot (empty, and thus fail-closed, in production). This
 /// mirrors <see cref="Tunnel.ConfigHostTokenValidator"/> for the tunnel's host tokens.
 /// <para>
-/// A matched key's configured subject (<see cref="ApiKeyGrant.UserId"/>, a Cognito <c>sub</c>) must
-/// resolve to an <b>active</b> <c>users</c> row — a misconfigured, unresolvable, or suspended subject
-/// <b>fails the authentication</b> (returns null → 401), never a downstream 500. This mirrors
-/// <see cref="DbApiKeyAuthenticator"/>'s owner-must-exist gate so a single mistyped config value cannot
-/// take down every authenticated route with an opaque server error.
+/// A matched key's configured subject (<see cref="ApiKeyGrant.UserId"/>, a Cognito <c>sub</c>) must resolve
+/// to an <b>active</b> <c>users</c> row. Because the config allow-list is only used on a DB-less bootstrap
+/// (production leaves it empty), a matched key whose subject does not resolve is <b>seeded on first sight</b>
+/// from the grant's <see cref="ApiKeyGrant.Email"/> (an idempotent insert scoped to config-map keys), so
+/// a fresh in-memory boot can drive the whole flow with one key without out-of-band seeding (task #185). A
+/// grant with no <see cref="ApiKeyGrant.Email"/> still fails authentication (401), never a downstream 500.
+/// A suspended existing owner also fails closed. This mirrors <see cref="DbApiKeyAuthenticator"/>'s
+/// owner-must-exist gate so a single mistyped config value cannot take down every authenticated route with
+/// an opaque server error.
 /// </para>
 /// </summary>
 public sealed class ConfigApiKeyAuthenticator : IApiKeyAuthenticator
 {
     private readonly IOptionsMonitor<CognitoAuthOptions> _options;
     private readonly IUserRepository _users;
+    private readonly TimeProvider _time;
     private readonly ILogger<ConfigApiKeyAuthenticator> _logger;
 
     public ConfigApiKeyAuthenticator(
         IOptionsMonitor<CognitoAuthOptions> options,
         IUserRepository users,
+        TimeProvider time,
         ILogger<ConfigApiKeyAuthenticator> logger)
     {
         _options = options;
         _users = users;
+        _time = time;
         _logger = logger;
     }
 
@@ -75,18 +82,84 @@ public sealed class ConfigApiKeyAuthenticator : IApiKeyAuthenticator
             return null;
         }
 
-        // The configured subject must map to an active user; a mistyped or stale sub is an auth failure
-        // (401), not a 500 out of downstream user resolution.
-        var user = await _users.GetByCognitoSubAsync(matched.UserId, ct);
+        // A config-map key is the DB-less bootstrap escape hatch: if the subject has no row yet, seed one
+        // from the grant's Email so a fresh in-memory boot works end to end (task #185). Idempotent (a
+        // second key/first request on the same sub finds the row on the initial lookup). Only config-map
+        // keys ever take this branch (the DB-key path in DbApiKeyAuthenticator never delegates here for a
+        // recognized row; a missing DB owner there still fails closed). A grant with no Email cannot seed
+        // a valid row (`users.email` is NOT NULL, docs/DATA_MODEL.md §3), so reject as 401, never 500.
+        var user = await ResolveOrBootstrapAsync(matched, matchedRaw, ct);
         if (user is null || user.Status != UserStatus.Active)
         {
-            _logger.LogWarning(
-                "Config API key {KeyPrefix} names subject '{Subject}' that resolves to no active user; rejecting as 401.",
-                KeyPrefix(matchedRaw), matched.UserId);
             return null;
         }
 
-        return WisperPrincipal.CreateForApiKey(matched.UserId, matched.Email, matched.Scopes);
+        return WisperPrincipal.CreateForApiKey(matched.UserId!, matched.Email, matched.Scopes);
+    }
+
+    private async Task<User?> ResolveOrBootstrapAsync(
+        ApiKeyGrant grant, string? matchedRaw, CancellationToken ct)
+    {
+        var existing = await _users.GetByCognitoSubAsync(grant.UserId!, ct);
+        if (existing is not null)
+        {
+            if (existing.Status != UserStatus.Active)
+            {
+                _logger.LogWarning(
+                    "Config API key {KeyPrefix} names subject '{Subject}' whose user row is not active; rejecting as 401.",
+                    KeyPrefix(matchedRaw), grant.UserId);
+            }
+
+            return existing;
+        }
+
+        if (string.IsNullOrWhiteSpace(grant.Email))
+        {
+            _logger.LogWarning(
+                "Config API key {KeyPrefix} names subject '{Subject}' that resolves to no user and the grant has " +
+                "no Email to bootstrap one; rejecting as 401.",
+                KeyPrefix(matchedRaw), grant.UserId);
+            return null;
+        }
+
+        var now = _time.GetUtcNow();
+        var toCreate = new User
+        {
+            CognitoSub = grant.UserId!,
+            Email = grant.Email!,
+            Status = UserStatus.Active,
+            ConnectStatus = ConnectStatus.None,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        try
+        {
+            var created = await _users.CreateAsync(toCreate, ct);
+            _logger.LogInformation(
+                "Config API key {KeyPrefix}: bootstrapped users row for sub '{Subject}' (email {Email}); " +
+                "in-memory dev boot seeded from config",
+                KeyPrefix(matchedRaw), grant.UserId, grant.Email);
+            return created;
+        }
+        catch (Exception ex)
+        {
+            // Two callers raced the first bootstrap (or an email collision from another config entry).
+            // If a row now exists for this sub it is the winner's; otherwise a real error is worth
+            // logging and failing closed on (401).
+            var raced = await _users.GetByCognitoSubAsync(grant.UserId!, ct);
+            if (raced is not null)
+            {
+                return raced;
+            }
+
+            _logger.LogWarning(
+                ex,
+                "Config API key {KeyPrefix}: bootstrap for sub '{Subject}' failed and no row now exists; " +
+                "rejecting as 401.",
+                KeyPrefix(matchedRaw), grant.UserId);
+            return null;
+        }
     }
 
     /// <summary>A safe-to-log prefix of the raw key — enough to identify which allow-list entry, not enough to replay it.</summary>

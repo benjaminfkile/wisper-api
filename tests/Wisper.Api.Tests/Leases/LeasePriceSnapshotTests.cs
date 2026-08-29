@@ -96,6 +96,8 @@ public class LeasePriceSnapshotTests
                 Leases, Meter, WalletGate, Clock, NullLogger<LeaseReconciliationService>.Instance);
             Payouts = new PayoutService(
                 Ledger, new InMemoryPayoutRepository(), Users, new FakeStripeConnectGateway(),
+                new Wisper.Api.Audit.AuditService(
+                    new Wisper.Api.Persistence.Audit.InMemoryAuditLogRepository(), Clock),
                 Options.Create(new PayoutOptions()), Clock, NullLogger<PayoutService>.Instance);
             HostService = new HostService(
                 Hosts, Images, Leases, Users, Registry, Presence, Capabilities, TunnelCloser, Payouts,
