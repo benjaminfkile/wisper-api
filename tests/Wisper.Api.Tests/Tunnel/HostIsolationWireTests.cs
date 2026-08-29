@@ -25,12 +25,13 @@ public class HostIsolationWireTests
         var hello = ControlJson.Deserialize<Hello>(json);
 
         Assert.NotNull(hello);
-        Assert.Equal(new[] { "shared", "vm" }, hello!.Capability.IsolationLevels);
+        Assert.NotNull(hello!.Capability);
+        Assert.Equal(new[] { "shared", "vm" }, hello.Capability!.IsolationLevels);
         Assert.Equal("vm", hello.Capability.DefaultIsolation);
     }
 
     [Fact]
-    public void Hello_without_isolation_leaves_it_empty_and_null()
+    public void Hello_without_isolation_leaves_it_null_and_default_null()
     {
         const string json =
             "{\"t\":\"hello\",\"proto\":1,\"agentVersion\":\"1.2.3\",\"wispVersion\":\"0.9.0\"," +
@@ -41,8 +42,26 @@ public class HostIsolationWireTests
         var hello = ControlJson.Deserialize<Hello>(json);
 
         Assert.NotNull(hello);
-        Assert.Empty(hello!.Capability.IsolationLevels);
+        Assert.NotNull(hello!.Capability);
+        // Nullable in the DTO (task #191): omitted list parses to null so the presence layer can
+        // distinguish absent from an explicit empty tier list.
+        Assert.Null(hello.Capability!.IsolationLevels);
         Assert.Null(hello.Capability.DefaultIsolation);
+    }
+
+    [Fact]
+    public void Hello_without_the_capability_block_leaves_it_null()
+    {
+        // A hello that omits the capability block entirely (task #191): the DTO now parses that as null so
+        // downstream persistence keeps the last-known advertised isolation instead of normalizing it away.
+        const string json =
+            "{\"t\":\"hello\",\"proto\":1,\"agentVersion\":\"1.2.3\",\"wispVersion\":\"0.9.0\"," +
+            "\"capacity\":{\"maxLeases\":4,\"maxStreams\":8}}";
+
+        var hello = ControlJson.Deserialize<Hello>(json);
+
+        Assert.NotNull(hello);
+        Assert.Null(hello!.Capability);
     }
 
     [Fact]

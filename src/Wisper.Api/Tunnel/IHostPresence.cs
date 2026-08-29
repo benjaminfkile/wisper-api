@@ -14,13 +14,16 @@ public interface IHostPresence
     /// <summary>
     /// On tunnel ready (registered + <c>hello.ack</c> sent): persist the host's advertised isolation
     /// capability (<paramref name="isolationLevels"/> / <paramref name="defaultIsolation"/> from the
-    /// <c>hello</c>, normalized to <c>["shared"]</c>/<c>"shared"</c> when absent — task #417), then flip
-    /// <paramref name="hostId"/> to <see cref="HostStatus.Online"/> when it clears the earning gate (owner
-    /// Connect-enabled, or every enabled image is zero-priced). A suspended host, an earning-gated host, an
-    /// unknown host, or a non-Guid dev host id all leave presence untouched. Passing <c>null</c> for both
-    /// isolation arguments leaves the persisted isolation as-is (the pre-#417 call shape); likewise passing
-    /// <c>null</c> for <paramref name="gpuClasses"/> (an absent <c>gpu</c> block — an older agent) leaves the
-    /// persisted GPU capability as-is rather than nulling it (task #521).
+    /// <c>hello</c>) when the agent actually advertised any, then flip <paramref name="hostId"/> to
+    /// <see cref="HostStatus.Online"/> when it clears the earning gate (owner Connect-enabled, or every
+    /// enabled image is zero-priced). A suspended host, an earning-gated host, an unknown host, or a
+    /// non-Guid dev host id all leave presence untouched. A null or empty <paramref name="isolationLevels"/>
+    /// (an absent capability block, or an agent whose local wisp is unreachable at handshake) leaves the
+    /// persisted isolation as-is rather than normalizing it back to <c>["shared"]</c> and overwriting a
+    /// kata/gVisor host's advertisement (task #191); only a first-ever hello for a fresh row falls back to
+    /// the DB default of <c>["shared"]</c>. Likewise passing <c>null</c> for <paramref name="gpuClasses"/>
+    /// (an absent <c>gpu</c> block, an older agent) leaves the persisted GPU capability as-is rather than
+    /// nulling it (task #521).
     /// </summary>
     Task GoOnlineIfEligibleAsync(
         string hostId,
@@ -52,7 +55,9 @@ public interface IHostPresence
     /// <summary>
     /// Refreshes a host's persisted advertised isolation capability from a mid-session source (a heartbeat
     /// that re-advertises, task #417). Normalizes the report, skips the write when nothing changed, and
-    /// never touches presence. A suspended, unknown, or non-Guid dev host id is a no-op.
+    /// never touches presence. A null or empty <paramref name="isolationLevels"/> is treated as absent
+    /// (no update, keep last known, task #191): a heartbeat that omits the field cannot overwrite the
+    /// host's persisted advertisement. A suspended, unknown, or non-Guid dev host id is a no-op.
     /// </summary>
     Task RefreshAdvertisedIsolationAsync(
         string hostId,

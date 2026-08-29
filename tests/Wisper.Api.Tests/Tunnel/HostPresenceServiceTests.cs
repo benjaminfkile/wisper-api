@@ -114,9 +114,11 @@ public class HostPresenceServiceTests
     }
 
     [Fact]
-    public async Task Ready_defaults_an_older_agent_to_shared()
+    public async Task Ready_falls_back_to_shared_for_a_first_ever_hello_with_no_isolation()
     {
-        // An older agent advertises nothing (empty list, no default) → persisted as ["shared"]/"shared".
+        // A first-ever hello with an absent capability (or an empty tier list) leaves persistence untouched;
+        // the fresh row's DB default of ["shared"]/"shared" is what surfaces (task #191). Empty and null
+        // cases are equivalent: an agent cannot legitimately advertise zero tiers.
         var fx = new Fixture();
         var host = await fx.SeedHostAsync(ConnectStatus.None);
         await fx.AddImageAsync(host.Id, price: 0);
@@ -126,6 +128,43 @@ public class HostPresenceServiceTests
         var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
         Assert.Equal(new[] { "shared" }, reloaded.IsolationLevels);
         Assert.Equal("shared", reloaded.DefaultIsolation);
+    }
+
+    [Fact]
+    public async Task Ready_absent_capability_preserves_previously_persisted_isolation()
+    {
+        // Regression for task #191: a hello with no capability block (or with capability present but with
+        // an empty/absent isolation_levels list) MUST leave a kata/gVisor host's advertised isolation as-is.
+        // Before the fix, the absent-list path normalized to ["shared"] and OVERWROTE the persisted tiers,
+        // dropping the host to the shared-only baseline on every reconnect.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+        await fx.Hosts.SetAdvertisedIsolationAsync(host.Id, new[] { "shared", "vm" }, "vm", T0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(host.Id.ToString(), isolationLevels: null, defaultIsolation: null);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "shared", "vm" }, reloaded.IsolationLevels); // untouched
+        Assert.Equal("vm", reloaded.DefaultIsolation); // untouched
+    }
+
+    [Fact]
+    public async Task Ready_empty_isolation_list_preserves_previously_persisted_isolation()
+    {
+        // The empty-list case (an agent that sent capability but sent isolation_levels:[]) is treated the
+        // same as absent: an agent cannot legitimately advertise zero tiers, so the persisted state wins.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None);
+        await fx.AddImageAsync(host.Id, price: 0);
+        await fx.Hosts.SetAdvertisedIsolationAsync(host.Id, new[] { "shared", "gvisor" }, "gvisor", T0);
+
+        await fx.Service.GoOnlineIfEligibleAsync(
+            host.Id.ToString(), isolationLevels: Array.Empty<string>(), defaultIsolation: null);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "shared", "gvisor" }, reloaded.IsolationLevels); // untouched
+        Assert.Equal("gvisor", reloaded.DefaultIsolation); // untouched
     }
 
     [Fact]
@@ -153,6 +192,23 @@ public class HostPresenceServiceTests
 
         var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
         Assert.Equal(new[] { "shared" }, reloaded.IsolationLevels); // the seed default, untouched
+    }
+
+    [Fact]
+    public async Task Refresh_with_absent_or_empty_isolation_preserves_persisted_state()
+    {
+        // Mirror the hello guard on the heartbeat path (task #191): a heartbeat whose capability
+        // omits (or empties) isolation_levels must never rewrite the host's persisted tiers.
+        var fx = new Fixture();
+        var host = await fx.SeedHostAsync(ConnectStatus.None, status: HostStatus.Online);
+        await fx.Hosts.SetAdvertisedIsolationAsync(host.Id, new[] { "shared", "vm" }, "vm", T0);
+
+        await fx.Service.RefreshAdvertisedIsolationAsync(host.Id.ToString(), null, null);
+        await fx.Service.RefreshAdvertisedIsolationAsync(host.Id.ToString(), Array.Empty<string>(), null);
+
+        var reloaded = (await fx.Hosts.GetByIdAsync(host.Id))!;
+        Assert.Equal(new[] { "shared", "vm" }, reloaded.IsolationLevels); // untouched by either call
+        Assert.Equal("vm", reloaded.DefaultIsolation);
     }
 
     [Fact]

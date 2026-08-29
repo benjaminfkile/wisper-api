@@ -22,7 +22,7 @@ public class HostGpuWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(Guid.NewGuid(), WithGpu));
 
         Assert.NotNull(hello);
-        var gpu = hello!.Capability.Gpu;
+        var gpu = hello!.Capability!.Gpu;
         Assert.NotNull(gpu);
         Assert.True(gpu!.Supported);
         Assert.Equal(8, gpu.MaxGpus);
@@ -41,7 +41,7 @@ public class HostGpuWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(Guid.NewGuid(), gpuField: null));
 
         Assert.NotNull(hello);
-        Assert.Null(hello!.Capability.Gpu);
+        Assert.Null(hello!.Capability!.Gpu);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class HostGpuWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(hostId, WithGpu));
         Assert.NotNull(hello);
 
-        var snapshot = SourceFor(hostId, hello!.Capability).GetCapability(hostId);
+        var snapshot = SourceFor(hostId, hello!.Capability!).GetCapability(hostId);
 
         Assert.NotNull(snapshot);
         Assert.Equal(8, snapshot!.MaxGpus);
@@ -65,7 +65,7 @@ public class HostGpuWireTests
         var hello = ControlJson.Deserialize<Hello>(HelloJson(hostId, gpuField: null));
         Assert.NotNull(hello);
 
-        var snapshot = SourceFor(hostId, hello!.Capability).GetCapability(hostId);
+        var snapshot = SourceFor(hostId, hello!.Capability!).GetCapability(hostId);
 
         Assert.NotNull(snapshot);
         Assert.Equal(0, snapshot!.MaxGpus);

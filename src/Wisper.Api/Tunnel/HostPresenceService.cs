@@ -119,9 +119,12 @@ public sealed class HostPresenceService : IHostPresence
         }
 
         // Persist the advertised isolation capability from this hello regardless of the earning gate, so the
-        // catalog reflects what the (online-or-not-yet) host offers. An older agent advertises nothing, which
-        // normalizes to ["shared"]/"shared" (task #417). A pre-#417 caller passes null/null and skips this.
-        if (isolationLevels is not null || defaultIsolation is not null)
+        // catalog reflects what the (online-or-not-yet) host offers. An absent capability block, or one that
+        // sends no isolation levels, is "no update, keep last known" (task #191): an agent cannot
+        // legitimately advertise zero tiers, so a hello with an empty list must never overwrite a kata/gVisor
+        // host's persisted advertisement. A fresh row's DB default of ["shared"]/"shared" remains, which is
+        // what makes a first-ever hello with nothing known still surface as shared.
+        if (isolationLevels is { Count: > 0 })
         {
             var (levels, def) = HostIsolation.Normalize(isolationLevels, defaultIsolation);
             await _hosts.SetAdvertisedIsolationAsync(id, levels, def, _time.GetUtcNow(), ct);
@@ -179,6 +182,14 @@ public sealed class HostPresenceService : IHostPresence
         if (!Guid.TryParse(hostId, out var id))
         {
             return; // dev/no-DB tunnel host id — no row to refresh
+        }
+
+        // An absent isolation list is "no update, keep last known" (task #191): an agent cannot legitimately
+        // advertise zero tiers, so a heartbeat capability that omits (or empties) the list must never
+        // overwrite the persisted advertisement.
+        if (isolationLevels is not { Count: > 0 })
+        {
+            return;
         }
 
         // Never resurrect isolation on a suspended host, and a missing host has nothing to refresh.
