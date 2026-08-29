@@ -105,7 +105,7 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 | A→W | `lease.failed` | `rid, leaseId, code?, error` | provisioning/pull failed; nothing billed. Optional `code` is mapped like an `error` frame's code (§12): `at_capacity` surfaces as `409 at_capacity`, anything else (or none) as `502 lease_failed`. Fails whichever awaiter is outstanding (the `rid` one before `lease.accepted`, the `leaseId` one after) |
 | W→A | `lease.release` | `rid, leaseId` | consumer released / admin force-end / failed-create teardown / orphan teardown (§8) |
 | A→W | `lease.released` | `rid, leaseId` | agent called wisp `DELETE`; container gone |
-| A→W | `lease.ended` | `leaseId, reason:"expired"\|"failed"\|"gone"` | **unsolicited**: wisp's local reaper/TTL ended it. Wisper ends the lease on receipt (§8): `expired` maps to `end_reason = expired`, any other value to `container_lost`; an already-terminal lease is a no-op. A create still awaiting `lease.ready` for that id fails `502 lease_failed` |
+| A→W | `lease.ended` | `leaseId, reason:"expired"\|"lost"` | **unsolicited**: wisp-agent's local reaper ended it. `"expired"` means the contract reached its TTL; `"lost"` means the contract went away before its expiry (container died, deleted out-of-band, or otherwise no longer visible on wisp). Wisper ends the lease on receipt (§8): `"expired"` maps to `end_reason = expired`, any other value (including `"lost"` and any future/unknown reason string) to `container_lost`; an already-terminal lease is a no-op. A create still awaiting `lease.ready` for that id fails `502 lease_failed` |
 
 ### Exec (sync — no byte stream)
 
@@ -195,7 +195,8 @@ The agent is a thin translator. Each tunnel op maps to a wisp API call (`--wisp 
 | `shell.open` | `WS /contracts/:id/shell?token=<contract token>` → pipe bytes ↔ `sid` |
 | `shell.resize` | forward to the wisp shell (resize control) |
 | `lease.release` / `stream.close` | `DELETE /contracts/:id` / close the exec/shell |
-| TTL expiry seen locally | wisp status → `expired` ⇒ emit `lease.ended` |
+| TTL expiry seen locally | wisp status → `expired` ⇒ emit `lease.ended{reason:"expired"}` |
+| Contract gone before its TTL (container died, deleted out-of-band, no longer visible on wisp) | emit `lease.ended{reason:"lost"}` |
 
 Because the agent only speaks wisp's public API, **wisp needs no changes** for the marketplace — the agent is just another wisp client.
 
