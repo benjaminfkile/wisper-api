@@ -94,6 +94,17 @@ Long-running background work is broken into small, restartable loops. Each loop 
 | `LedgerReconcile:Enabled` / `LedgerReconcile:IntervalMinutes` | true / 15 | Re-derive every account balance from the immutable journal and compare it to `balance_cents` (`DATA_MODEL.md` §7e). Non-zero drift is logged at warning and surfaced on `GET /v1/admin/overview` as `ledger_reconcile.has_drift`; `health` flips to `ledger_drift`. Multi-instance safe via a Postgres advisory lock. |
 | `IdempotencySweep:Enabled` / `IdempotencySweep:IntervalMinutes` | true / 60 | Delete expired `idempotency_keys` rows so the table doesn't accumulate between low-traffic windows (retries still sweep lazily). Multi-instance safe via a Postgres advisory lock. |
 
+## Lease-file caps (config keys)
+
+Create-time files and file-download caps for `POST /v1/leases` / `GET /v1/leases/:id/files` (`docs/API.md` §5, `docs/TUNNEL.md` §5). All three are rejected with `validation_error` / `413 file_too_large`, never silently clamped.
+
+| Config key | Default | What it caps |
+|---|---|---|
+| `Leases:MaxFileCount` | 16 | Maximum number of entries allowed in a `POST /v1/leases` `files` array. |
+| `Leases:MaxFileTotalBytes` | 1048576 (1 MiB) | Maximum total decoded bytes across all entries in a `POST /v1/leases` `files` array. |
+| `Leases:MaxDownloadBytes` | 16777216 (16 MiB) | Maximum bytes a single `GET /v1/leases/:id/files` download may transfer. Over cap → `413 file_too_large`. |
+| `Tunnel:MaxControlFrameBytes` | 2097152 (2 MiB) | Maximum size of a single inbound text (control) frame the receive loop accepts. Must be large enough to hold `lease.create` with a max-size `files` array; the handshake `hello` is separately capped at 64 KiB. |
+
 ## In-memory persistence mode (DB-less dev boot)
 
 With **no** `ConnectionStrings:Wisper` set (the default for `dotnet run` and the whole test suite), the app boots in **in-memory persistence mode**: it registers in-memory doubles for *every* repository, so the full `/v1` path runs with no Postgres. Set the connection string (`ConnectionStrings__Wisper`) to switch to the Postgres path -- production behaviour is unchanged.

@@ -50,6 +50,30 @@ public record LeaseCreate : ControlEnvelope
     /// </summary>
     [JsonPropertyName("env")]
     public Dictionary<string, string>? Env { get; init; }
+
+    /// <summary>
+    /// Optional files to write into the container AFTER start and BEFORE userdata runs (docs/TUNNEL.md §5,
+    /// §10). Each entry is <c>{ path, content_base64 }</c>; the agent forwards the array to wisp's
+    /// <c>POST /contracts</c> verbatim. Wisper caps the array at 16 files / 1 MiB decoded (see
+    /// <c>LeaseService</c>). Omitted from the wire when null.
+    /// </summary>
+    [JsonPropertyName("files")]
+    public IReadOnlyList<LeaseFile>? Files { get; init; }
+}
+
+/// <summary>
+/// One entry in a <see cref="LeaseCreate.Files"/> array (docs/TUNNEL.md §5, §10). <see cref="Path"/> is an
+/// absolute unix-style path (starts with <c>/</c>, no <c>..</c> segment, no backslash, at most 256 chars);
+/// <see cref="ContentBase64"/> is the file's bytes, base64-encoded. Field names mirror wisp's
+/// <c>POST /contracts</c> body so the agent forwards them unchanged.
+/// </summary>
+public record LeaseFile
+{
+    [JsonPropertyName("path")]
+    public string Path { get; init; } = string.Empty;
+
+    [JsonPropertyName("content_base64")]
+    public string ContentBase64 { get; init; } = string.Empty;
 }
 
 /// <summary>

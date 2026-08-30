@@ -171,6 +171,39 @@ public sealed class DistributedTunnelRelay : ITunnelRelay, IHostedService, IAsyn
         }
     }
 
+    public async Task<ITunnelFileDownload> OpenFileReadAsync(
+        string hostId, string leaseId, string path, CancellationToken ct = default)
+    {
+        var owner = await ResolveOwnerAsync(hostId, ct);
+        if (owner is null)
+        {
+            return await _local.OpenFileReadAsync(hostId, leaseId, path, ct);
+        }
+
+        var correlationId = Guid.NewGuid().ToString("N");
+        var download = new RemoteTunnelFileDownload(
+            _backplane, BackplaneChannels.StreamUp(Prefix, correlationId), sid: 0, size: 0);
+
+        var subscription = await _backplane.SubscribeAsync(
+            BackplaneChannels.StreamDown(Prefix, correlationId), download.HandleDownAsync, ct);
+        download.AttachSubscription(subscription);
+
+        try
+        {
+            var reply = await CallAsync(
+                owner,
+                new RpcRequest { Op = nameof(RelayOp.OpenFileRead), HostId = hostId, LeaseId = leaseId, Path = path },
+                ct,
+                correlationId);
+            return download.WithOpened(reply.Sid, reply.Size);
+        }
+        catch
+        {
+            await download.CloseAsync("open_failed", CancellationToken.None);
+            throw;
+        }
+    }
+
     public async Task<ITunnelExec> OpenExecStreamAsync(
         string hostId, string leaseId, string command, CancellationToken ct = default)
     {
@@ -345,6 +378,12 @@ public sealed class DistributedTunnelRelay : ITunnelRelay, IHostedService, IAsyn
                 var execStream = await _local.OpenExecStreamAsync(request.HostId, request.LeaseId!, request.Command!, ct);
                 await BackplaneStreamBridge.RunExecBridgeAsync(_backplane, Prefix, request.CorrelationId, execStream, _logger);
                 return Success() with { Sid = execStream.Sid };
+
+            case nameof(RelayOp.OpenFileRead):
+                var fileStream = await _local.OpenFileReadAsync(request.HostId, request.LeaseId!, request.Path!, ct);
+                await BackplaneStreamBridge.RunFileDownloadBridgeAsync(
+                    _backplane, Prefix, request.CorrelationId, fileStream, _logger);
+                return Success() with { Sid = fileStream.Sid, Size = fileStream.Size };
 
             default:
                 throw new ApiException(ApiErrorCode.ValidationError, $"unknown routed op {request.Op}");

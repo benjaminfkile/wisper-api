@@ -22,6 +22,15 @@ public sealed class TunnelOptions
     /// <summary>Maximum binary payload per data frame in bytes (docs/TUNNEL.md §2).</summary>
     public int MaxFrameBytes { get; set; } = 32768;
 
+    /// <summary>
+    /// Maximum size, in bytes, of a single inbound text (control) frame the receive loop will accept
+    /// (docs/TUNNEL.md §2). Steady-state control frames are usually a few hundred bytes, but
+    /// <c>lease.create</c> may carry a create-time files array up to 1 MiB decoded (~1.4 MiB base64 +
+    /// JSON overhead, docs/API.md §5). The default (2 MiB) gives that comfortable headroom; the
+    /// handshake <c>hello</c> is separately capped at 64 KiB before the receive loop even starts.
+    /// </summary>
+    public int MaxControlFrameBytes { get; set; } = 2 * 1024 * 1024;
+
     /// <summary>Initial per-stream send window in bytes (docs/TUNNEL.md §9).</summary>
     public int InitialWindowBytes { get; set; } = 262144;
 

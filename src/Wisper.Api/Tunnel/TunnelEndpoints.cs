@@ -108,7 +108,11 @@ public static class TunnelEndpoints
 
         // (c) Establish the session: register (superseding any prior tunnel) and ack.
         var sessionId = "sess_" + Guid.NewGuid().ToString("N");
-        var maxReceiveBytes = Math.Max(HandshakeMaxBytes, options.MaxFrameBytes + BinaryFrame.HeaderSize);
+        // Sized to hold whichever frame class needs more room: the largest inbound binary data frame
+        // (header + payload) or a large control frame such as lease.create with a 1 MiB files array
+        // (docs/API.md §5, docs/TUNNEL.md §2). Not related to the handshake `hello` cap above.
+        var maxReceiveBytes = Math.Max(
+            options.MaxControlFrameBytes, options.MaxFrameBytes + BinaryFrame.HeaderSize);
         var connection = new TunnelConnection(socket, hostId, sessionId, maxReceiveBytes, logger)
         {
             // The advertised wisp capability from this host's live hello (docs/TUNNEL.md §5). The host

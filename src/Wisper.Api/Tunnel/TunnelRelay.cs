@@ -217,6 +217,61 @@ public sealed class TunnelRelay : ITunnelRelay
         }
     }
 
+    public async Task<ITunnelFileDownload> OpenFileReadAsync(
+        string hostId, string leaseId, string path, CancellationToken ct = default)
+    {
+        var connection = await ResolveAsync(hostId, ct);
+        var rid = connection.NextRid();
+        var sid = connection.NextSid();
+        var opts = _options.CurrentValue;
+
+        // File download is unidirectional A→W: Wisper is the receiver, so the stream's receive
+        // accounting + credit flow control (docs/TUNNEL.md §9) is what matters. The download wrapper
+        // reuses the stream as-is; the file's bytes flow through Output verbatim.
+        var stream = new TunnelStream(
+            sid,
+            opts.InitialWindowBytes,
+            opts.MaxFrameBytes,
+            Math.Max(1, opts.InitialWindowBytes / 2),
+            (frame, c) => connection.SendBinaryAsync(frame, c),
+            (credit, c) => connection.SendControlAsync(credit, c),
+            (closed, c) => connection.SendControlAsync(closed, c),
+            _logger);
+
+        // Size is unknown until file.opened lands, but the download sink MUST be registered before the
+        // file.read frame is sent -- a fast agent can race and start emitting binary frames on this sid
+        // before we've registered the wrapper. We set the reported size post-open below.
+        var download = new TunnelFileDownload(connection, stream, size: -1);
+        connection.Streams[sid] = download;
+
+        var openedWaiter = RegisterRid(connection, rid);
+        try
+        {
+            await connection.SendControlAsync(
+                new FileRead { Rid = rid, Sid = sid, LeaseId = leaseId, Path = path }, ct);
+
+            var payload = await AwaitResponseAsync(openedWaiter.Task, ct);
+            var opened = Deserialize<FileOpened>(payload);
+            download.SetSize(opened.Size);
+
+            _logger.LogInformation(
+                "relay: file stream {Sid} opened on host {HostId} (lease {LeaseId}, size {Size})",
+                sid, hostId, leaseId, opened.Size);
+
+            return download;
+        }
+        catch
+        {
+            connection.Streams.TryRemove(sid, out _);
+            await stream.DisposeAsync();
+            throw;
+        }
+        finally
+        {
+            _ridWaiters.TryRemove((connection, rid), out _);
+        }
+    }
+
     public Task RouteAgentFrameAsync(TunnelConnection connection, string type, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
         switch (type)
@@ -226,11 +281,16 @@ public sealed class TunnelRelay : ITunnelRelay
             case FrameTypes.ExecResult:
             case FrameTypes.ShellOpened:
             case FrameTypes.ExecOpened:
+            case FrameTypes.FileOpened:
                 CompleteByRid(connection, payload);
                 break;
 
             case FrameTypes.ExecExit:
                 HandleExecExit(connection, payload);
+                break;
+
+            case FrameTypes.FileEof:
+                HandleFileEof(connection, payload);
                 break;
 
             case FrameTypes.StreamCredit:
@@ -462,6 +522,30 @@ public sealed class TunnelRelay : ITunnelRelay
         }
     }
 
+    private void HandleFileEof(TunnelConnection connection, ReadOnlyMemory<byte> payload)
+    {
+        var eof = TryDeserialize<FileEof>(payload);
+        if (eof is null || eof.Sid == 0)
+        {
+            return;
+        }
+
+        // file.eof terminates a file.read stream: hand it to the owning download so the HTTP relay
+        // finishes the response body (docs/TUNNEL.md §5). The receive loop is serialized, so every
+        // binary frame that preceded file.eof is already enqueued by now.
+        if (connection.Streams.TryGetValue(eof.Sid, out var sink) && sink is TunnelFileDownload download)
+        {
+            connection.Streams.TryRemove(eof.Sid, out _);
+            _logger.LogInformation(
+                "relay: host {HostId} file stream {Sid} ended (eof)", connection.HostId, eof.Sid);
+            download.OnEof();
+        }
+        else
+        {
+            _logger.LogDebug("relay: file.eof for unknown sid {Sid} dropped", eof.Sid);
+        }
+    }
+
     private void HandleExecExit(TunnelConnection connection, ReadOnlyMemory<byte> payload)
     {
         var exit = TryDeserialize<ExecExit>(payload);
@@ -602,6 +686,11 @@ public sealed class TunnelRelay : ITunnelRelay
         "not_ready" => ApiErrorCode.LeaseNotReady,
         "unknown_lease" => ApiErrorCode.NotFound,
         "at_capacity" => ApiErrorCode.AtCapacity,
+        // File-download typed errors (docs/TUNNEL.md §5): missing file / directory / symlink map to
+        // 404 not_found, an oversized file to 413 file_too_large, anything else (wisp_error, an
+        // unrecognised code, etc.) collapses to lease_failed (502 bad-gateway) like other requests.
+        "not_found" => ApiErrorCode.NotFound,
+        "file_too_large" => ApiErrorCode.FileTooLarge,
         _ => ApiErrorCode.LeaseFailed,
     };
 

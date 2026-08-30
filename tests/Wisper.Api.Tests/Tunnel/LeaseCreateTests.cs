@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Wisper.Api.Tunnel;
 using Wisper.Api.Tunnel.Messages;
@@ -101,6 +102,57 @@ public class LeaseCreateTests
         var resources = JsonDocument.Parse(json).RootElement.GetProperty("resources");
 
         Assert.False(resources.TryGetProperty("gpus", out _));
+    }
+
+    [Fact]
+    public void Files_serialize_under_the_files_key_when_present()
+    {
+        var frame = new LeaseCreate
+        {
+            Image = "alpine",
+            Files = new[]
+            {
+                new LeaseFile { Path = "/etc/config", ContentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("hi")) },
+                new LeaseFile { Path = "/etc/other", ContentBase64 = "" },
+            },
+        };
+
+        var json = ControlJson.Serialize(frame);
+        var files = JsonDocument.Parse(json).RootElement.GetProperty("files");
+
+        Assert.Equal(2, files.GetArrayLength());
+        Assert.Equal("/etc/config", files[0].GetProperty("path").GetString());
+        Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes("hi")), files[0].GetProperty("content_base64").GetString());
+    }
+
+    [Fact]
+    public void Files_are_omitted_from_the_wire_when_null()
+    {
+        var frame = new LeaseCreate { Image = "alpine" };
+
+        var json = ControlJson.Serialize(frame);
+        var root = JsonDocument.Parse(json).RootElement;
+
+        Assert.False(root.TryGetProperty("files", out _));
+    }
+
+    [Fact]
+    public void Files_round_trip_through_deserialization()
+    {
+        var frame = new LeaseCreate
+        {
+            Files = new[]
+            {
+                new LeaseFile { Path = "/etc/config", ContentBase64 = "aGVsbG8=" },
+            },
+        };
+
+        var back = ControlJson.Deserialize<LeaseCreate>(ControlJson.Serialize(frame));
+
+        Assert.NotNull(back);
+        Assert.NotNull(back!.Files);
+        Assert.Equal("/etc/config", back.Files!.Single().Path);
+        Assert.Equal("aGVsbG8=", back.Files.Single().ContentBase64);
     }
 
     [Fact]

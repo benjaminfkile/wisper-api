@@ -58,6 +58,7 @@ Uniform envelope on every non-2xx:
 | `lease_failed` | 502 | the host/agent failed the lease operation (unrecognized agent error, wisp non-2xx) |
 | `rate_limited` | 429 | *reserved* -- declared for the planned token bucket (§1); nothing emits it today |
 | `upstream_timeout` | 504 | tunnel op exceeded its deadline (`TUNNEL.md` §12) |
+| `file_too_large` | 413 | a `GET /v1/leases/:id/files` download exceeds the manager cap (`Leases:MaxDownloadBytes`, default 16 MiB) or the agent/wisp reports the file is over its own read cap |
 | `internal` | 500 | unexpected fault (already logged with `request_id`) |
 
 Ownership failures return `404` (not `403`) so the API never reveals the existence of resources the caller can't see.
@@ -71,7 +72,7 @@ Ownership failures return `404` (not `403`) so the API never reveals the existen
 | GET | `/v1/` | none | service banner `{ "service": "wisper-api", "version": "v1" }` |
 | POST | `/stripe/webhook` | Stripe sig | webhook ingest (`PAYMENTS.md` §8) |
 | WS | `/agent` | host agent token | the agent tunnel (`TUNNEL.md`) |
-| * | `/dev/leases…` | none | **Development environment only** (and `Tunnel:EnableDevEndpoints`): the money-free Phase-1 harness (`POST /dev/leases`, `POST /dev/leases/{id}/exec[?stream=1]`, `DELETE /dev/leases/{id}`, `WS /dev/leases/{id}/shell?hostId=`). Unreachable in any deployed environment (`DESIGN.md` §16) |
+| * | `/dev/leases…` | none | **Development environment only** (and `Tunnel:EnableDevEndpoints`): the money-free Phase-1 harness (`POST /dev/leases`, `POST /dev/leases/{id}/exec[?stream=1]`, `GET /dev/leases/{id}/files?hostId=&path=`, `DELETE /dev/leases/{id}`, `WS /dev/leases/{id}/shell?hostId=`). `POST /dev/leases` accepts the same optional `files` array as `/v1` under the same caps (`Leases:MaxFileCount`/`MaxFileTotalBytes`); `GET /dev/leases/{id}/files` enforces the same `Leases:MaxDownloadBytes` download cap. Unreachable in any deployed environment (`DESIGN.md` §16) |
 
 The health report's `checks` carries a `database` entry (`healthy` with `latency_ms` when Postgres answers `SELECT 1`, `in-memory` on a DB-less boot, `unhealthy` when a configured database is unreachable). Any unmatched route returns the uniform `404 not_found` envelope.
 
@@ -151,6 +152,7 @@ An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resource
 | DELETE | `/v1/leases/:id` | | release (idempotent; safe to retry); returns the lease view. A host with no live tunnel is treated as already released and the lease is ended locally |
 | POST | `/v1/leases/:id/exec` | | body `{ "command": "…" }`; sync exec → `{stdout,stderr,exit_code}` |
 | POST | `/v1/leases/:id/exec?stream=1` | | same body; SSE stream (`chunk`/`exit`/`error` events) |
+| GET | `/v1/leases/:id/files?path=/abs/path` | | download a single file out of the live lease (`application/octet-stream`); owner-only; the lease must be `active` (`409 lease_not_ready` otherwise) |
 | POST | `/v1/leases/:id/shell-ticket` | | mint a one-time WS ticket (§7) |
 | WS | `/v1/leases/:id/shell?ticket=…` | ticket | interactive PTY console (§7) |
 
@@ -162,7 +164,8 @@ An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resource
   "ttl_seconds": 3600,
   "userdata": "apt-get install -y git && …",
   "isolation": "sandboxed",
-  "env": { "API_TOKEN": "…", "REGION": "eu" } }
+  "env": { "API_TOKEN": "…", "REGION": "eu" },
+  "files": [ { "path": "/etc/wisp/agent.yaml", "content_base64": "…base64…" } ] }
 // 201 (the relay has already waited for lease.ready, so the lease is active)
 { "id": "lease_…", "status": "active",
   "price_cents_per_min": 5, "currency": "usd",
@@ -178,6 +181,10 @@ An offer **sells a size** (task #569): `cpus`/`memory_mb` are the EXACT resource
 The provisioned profile is snapshotted immutably on the lease and surfaced under `resources` on `GET /v1/leases/:id`; the `lease.create` frame carries the offer's `cpus`/`memory_mb`/`gpus` (each omitted from the frame when the offer left it unset / `0`, so wisp's own defaults apply). wisp enforces the real isolation/allocation.
 
 `env` is an **optional, opaque `{string:string}` map** of create-time environment variables forwarded down the host tunnel for secret injection (mirrors `POST /dev/leases`; `lease.create` frame, `TUNNEL.md` §5). Capped like wisp's own limits -- at most **128** entries and **256 KiB** serialized, else `validation_error`. Its **values are secrets-in-transit**: never logged, never echoed in errors, and **never persisted** on the lease row (the lease snapshot keeps everything *except* `env`) -- and it is **plaintext v1**, so treat it as trusted-network only (`TUNNEL.md` §13). `os` echoes the host's advertised container OS (`"linux"` | `"windows"`, or `null` when the host is offline / its agent advertised none) like `GET /v1/leases/:id` (task #316).
+
+`files` is an **optional** array of `{ path, content_base64 }` entries the agent writes into the container **after start and before `userdata` runs**, so `userdata` can read them (`TUNNEL.md` §5, §10). Caps (rejected with `validation_error`, never clamped): **at most 16 files**, **1 MiB total decoded bytes** across all entries, each `path` is an absolute unix-style path (starts with `/`, no `..` segment, no backslash, at most 256 chars), unique per request; invalid base64 is `validation_error`. The bytes count toward the lease's disk usage like any other write. Both caps are configurable via `Leases:MaxFileCount` / `Leases:MaxFileTotalBytes`. The array rides the `lease.create` tunnel frame unchanged; a max-size files array is well under the inbound control-frame cap `Tunnel:MaxControlFrameBytes` (default 2 MiB, `TUNNEL.md` §2).
+
+**File download while the lease is live.** `GET /v1/leases/:id/files?path=/abs/path` streams the file's raw bytes back as `application/octet-stream` (`Content-Length` set when the agent reports a size). Owner-only and requires the lease to be `active` (`409 lease_not_ready` otherwise). Errors: `400 validation_error` (missing / bad path shape), `404 not_found` (no such file, or a directory / symlink -- wisp is the enforcer), `413 file_too_large` when the file exceeds the download cap (`Leases:MaxDownloadBytes`, default 16 MiB), `504 upstream_timeout` when the tunnel exceeds `Tunnel:RelayRequestTimeoutMs`. Single file only -- no directory listing, no glob.
 
 Server flow, in order: validate ids/network/TTL/env/isolation against the host's priced allow-list (resources come from the offer, not the request; an unknown or admin-suspended host is `400 image_not_allowed`; a `ttl_seconds` above the offer's `max_ttl_seconds` or above the active `platform_policy.max_ttl_seconds_cap` global ceiling (task #181) is `validation_error`, never silently clamped) → per-host capacity check (`409 at_capacity`) → degraded-host check (`409 host_offline`) → the **wallet gate** (`PAYMENTS.md` §4: per-user concurrency cap `409 at_capacity`, daily spend cap `429 limit_exceeded`, then the balance check, `402 insufficient_funds`; nothing is posted yet and **no** `lease.create` frame is sent on failure) → `lease.create` (carrying the offer's sized profile) down the host tunnel, waiting for `lease.accepted` and then `lease.ready` (`host_offline`/`upstream_timeout`/`lease_failed` on failure) → the `leases` row is inserted directly as `active` with the meter started → the `lease_hold` is posted (if it fails, e.g. the wallet was drained in the race, the container is torn down with `lease.release`, the row is marked `failed` with `end_reason = payment_failed`, and the error surfaces) → `201`. Because the create waits for readiness, the returned lease is already `active`; `GET /v1/leases/:id` is for later transitions (suspend/resume/end), since the events stream below is not implemented.
 

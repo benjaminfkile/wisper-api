@@ -106,6 +106,27 @@ public sealed class FakeTunnelRelay : ITunnelRelay
         return Task.FromResult<ITunnelExec>(ExecStream);
     }
 
+    /// <summary>The handle <see cref="OpenFileReadAsync"/> returns when no <see cref="FileReadError"/> is set.</summary>
+    public FakeTunnelFileDownload FileRead { get; set; } = new(Array.Empty<byte[]>(), size: 0);
+
+    /// <summary>When set, <see cref="OpenFileReadAsync"/> throws this instead of opening a stream.</summary>
+    public ApiException? FileReadError { get; set; }
+
+    /// <summary>Recorded <c>(hostId, leaseId, path)</c> of each file-download call, in order.</summary>
+    public List<(string HostId, string LeaseId, string Path)> FileReadCalls { get; } = new();
+
+    public Task<ITunnelFileDownload> OpenFileReadAsync(
+        string hostId, string leaseId, string path, CancellationToken ct = default)
+    {
+        FileReadCalls.Add((hostId, leaseId, path));
+        if (FileReadError is not null)
+        {
+            throw FileReadError;
+        }
+
+        return Task.FromResult<ITunnelFileDownload>(FileRead);
+    }
+
     public Task RouteAgentFrameAsync(
         TunnelConnection connection, string type, ReadOnlyMemory<byte> payload, CancellationToken ct) =>
         throw new NotSupportedException("The fake relay does not route frames.");

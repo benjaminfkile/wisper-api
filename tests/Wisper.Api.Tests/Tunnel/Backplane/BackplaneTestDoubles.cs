@@ -74,6 +74,18 @@ public sealed class OwnerTunnelRelayStub : ITunnelRelay
             ExecStreamToReturn ?? throw new InvalidOperationException("no exec stream preset"));
     }
 
+    public FakeTunnelFileDownload? FileDownloadToReturn { get; set; }
+
+    public List<(string HostId, string LeaseId, string Path)> FileReadCalls { get; } = new();
+
+    public Task<ITunnelFileDownload> OpenFileReadAsync(
+        string hostId, string leaseId, string path, CancellationToken ct = default)
+    {
+        FileReadCalls.Add((hostId, leaseId, path));
+        return Task.FromResult<ITunnelFileDownload>(
+            FileDownloadToReturn ?? throw new InvalidOperationException("no file download preset"));
+    }
+
     public Task RouteAgentFrameAsync(
         TunnelConnection connection, string type, ReadOnlyMemory<byte> payload, CancellationToken ct) =>
         throw new NotSupportedException("owner stub does not route physical frames");

@@ -61,6 +61,7 @@ builder.Services.AddSingleton<ICatalogService, CatalogService>();
 // the wallet (402 insufficient_funds before any lease.create), the meter debits it per tick, and lease
 // end releases the remainder -- pure internal ledger against pre-funded wallet money, no Stripe.
 builder.Services.AddSingleton<ILeaseWalletGate, WalletLeaseGate>();
+builder.Services.Configure<LeaseFileOptions>(builder.Configuration.GetSection(LeaseFileOptions.SectionName));
 builder.Services.AddSingleton<ILeaseService, LeaseService>();
 
 // Consumer interactive shell (docs/API.md §7, P4.4): the store that mints the single-use, ~30s,

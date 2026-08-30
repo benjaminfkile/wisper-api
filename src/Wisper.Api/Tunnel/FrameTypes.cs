@@ -39,6 +39,11 @@ public static class FrameTypes
     public const string StreamCredit = "stream.credit";
     public const string StreamClose  = "stream.close";
     public const string StreamClosed = "stream.closed";
+
+    // File download (docs/TUNNEL.md §5).
+    public const string FileRead   = "file.read";
+    public const string FileOpened = "file.opened";
+    public const string FileEof    = "file.eof";
 }
 
 /// <summary>Binary data-frame channels (docs/TUNNEL.md §2, §6).</summary>

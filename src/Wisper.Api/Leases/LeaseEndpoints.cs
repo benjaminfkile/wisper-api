@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using Wisper.Api.Accounts;
 using Wisper.Api.Auth;
 using Wisper.Api.Domain;
@@ -38,6 +39,7 @@ public static class LeaseEndpoints
         endpoints.MapGet("/v1/leases/{id}", GetLeaseAsync).RequireConsumer();
         endpoints.MapDelete("/v1/leases/{id}", ReleaseLeaseAsync).RequireConsumer();
         endpoints.MapPost("/v1/leases/{id}/exec", ExecLeaseAsync).RequireConsumer();
+        endpoints.MapGet("/v1/leases/{id}/files", DownloadLeaseFileAsync).RequireConsumer();
     }
 
     private static async Task<IResult> CreateLeaseAsync(
@@ -169,6 +171,67 @@ public static class LeaseEndpoints
 
         var result = await relay.ExecAsync(target.HostId, target.LeaseId, command, ct);
         return Results.Json(new ExecResponse(result.Stdout, result.Stderr, result.ExitCode));
+    }
+
+    /// <summary>
+    /// Streams a single file out of the caller's lease over the tunnel (docs/API.md §5). Owner + active
+    /// checks come first via <see cref="ILeaseService.ResolveExecTargetAsync"/> so their errors reach
+    /// the client as the uniform envelope; the path is validated against the same shape rules the create
+    /// enforces (absolute, no <c>..</c>, no backslash, ≤256 chars). Relay errors from
+    /// <see cref="FileDownloadRelay"/> flow through as typed <see cref="ApiException"/>s (host_offline,
+    /// upstream_timeout, not_found, file_too_large, lease_failed).
+    /// </summary>
+    private static async Task DownloadLeaseFileAsync(
+        string id,
+        HttpContext http,
+        ILeaseService leases,
+        IUserAccountService accounts,
+        ITunnelRelay relay,
+        IOptions<LeaseFileOptions> fileOptions,
+        CancellationToken ct)
+    {
+        var leaseId = RequireLeaseId(id);
+        var user = await accounts.BootstrapAsync(http.User, ct);
+
+        var target = await leases.ResolveExecTargetAsync(user.Id, leaseId, ct);
+        if (target is null)
+        {
+            throw new ApiException(ApiErrorCode.NotFound, $"No such lease '{id}'.");
+        }
+
+        var path = http.Request.Query["path"].ToString();
+        RequireDownloadPath(path);
+
+        await FileDownloadRelay.RelayAsync(
+            http, relay, target.HostId, target.LeaseId, path,
+            fileOptions.Value.MaxDownloadBytes, ct);
+    }
+
+    /// <summary>Validates the <c>?path=</c> query for a lease file download (docs/API.md §5).</summary>
+    internal static void RequireDownloadPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length > 256 || path[0] != '/' ||
+            path.Contains('\\', StringComparison.Ordinal) ||
+            HasDotDotSegment(path))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'path' must be an absolute unix-style path with no '..' segments.",
+                new { field = "path" });
+        }
+    }
+
+    private static bool HasDotDotSegment(string path)
+    {
+        foreach (var segment in path.Split('/'))
+        {
+            if (segment == "..")
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Parses the <c>lease_&lt;guid&gt;</c> route id, 404ing anything malformed (docs/API.md §3).</summary>

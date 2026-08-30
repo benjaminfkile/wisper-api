@@ -61,6 +61,21 @@ public interface ITunnelRelay
     Task<ITunnelExec> OpenExecStreamAsync(string hostId, string leaseId, string command, CancellationToken ct = default);
 
     /// <summary>
+    /// Opens a one-shot file download inside <paramref name="leaseId"/> on <paramref name="hostId"/>
+    /// (docs/TUNNEL.md §5, §10): allocates a <c>sid</c>, sends <c>file.read</c>, and awaits
+    /// <c>file.opened</c> (by rid). The returned <see cref="ITunnelFileDownload"/> yields the file's
+    /// raw bytes as they arrive, ending on <c>file.eof</c>. Unidirectional A→W with per-stream credit
+    /// flow control (docs/TUNNEL.md §9); the relay routes inbound binary/credit/closed/<c>file.eof</c>
+    /// frames for the <c>sid</c> to it.
+    /// </summary>
+    /// <exception cref="Wisper.Api.Infrastructure.ApiException">
+    /// <c>host_offline</c> / <c>upstream_timeout</c> / <c>not_found</c> / <c>file_too_large</c> /
+    /// <c>lease_failed</c> (wisp non-2xx, mapped from the agent's typed error).
+    /// </exception>
+    Task<ITunnelFileDownload> OpenFileReadAsync(
+        string hostId, string leaseId, string path, CancellationToken ct = default);
+
+    /// <summary>
     /// Routes an inbound agent→server response frame (<c>lease.accepted</c>/<c>ready</c>/
     /// <c>failed</c>/<c>released</c>, <c>exec.result</c>, <c>lease.ended</c>) to the pending
     /// awaiter it correlates with. Wired to <see cref="TunnelConnection.ControlFrameRouter"/>.

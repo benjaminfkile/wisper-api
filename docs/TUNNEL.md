@@ -29,7 +29,7 @@ Raw WebSocket (`System.Net.WebSockets` on Kestrel; `gorilla/websocket` or `nhooy
 ```
 
 - Max **payload 32 KiB** per binary frame; the sender chunks larger output into multiple frames. Bytes within one `sid` are ordered (WebSocket-over-TCP); no ordering is implied across `sid`s.
-- Control-frame JSON should stay small (< 64 KiB); large data never travels as control.
+- Control-frame JSON stays small in the common case (a few hundred bytes) but a single frame -- `lease.create` with an optional `files` array up to 1 MiB decoded (`API.md` §5) -- can push above ~1.4 MiB base64 + JSON overhead. The inbound receive-loop cap is `Tunnel:MaxControlFrameBytes` (default **2 MiB**); it MUST be at least large enough to hold a max-size `lease.create`. The handshake `hello` is still separately capped at 64 KiB before the receive loop starts.
 
 ### Identifiers
 
@@ -99,7 +99,7 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 
 | Dir | `t` | Fields | Notes |
 |---|---|---|---|
-| W→A | `lease.create` | `rid, leaseId, image, network, isolation, resources{cpus,memory_mb,pids,gpus}, ttl_seconds, userdata?, env?` | Wisper has already authorized + billing-gated. `isolation` is the resolved ordered level (`shared`<`sandboxed`<`vm`, defaults `shared`); the agent forwards it to wisp, which re-validates as the real security boundary. `resources.gpus` (task #522) is the count of whole exclusive GPUs, forwarded verbatim -- wisp allocates and enforces. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent) |
+| W→A | `lease.create` | `rid, leaseId, image, network, isolation, resources{cpus,memory_mb,pids,gpus}, ttl_seconds, userdata?, env?, files?` | Wisper has already authorized + billing-gated. `isolation` is the resolved ordered level (`shared`<`sandboxed`<`vm`, defaults `shared`); the agent forwards it to wisp, which re-validates as the real security boundary. `resources.gpus` (task #522) is the count of whole exclusive GPUs, forwarded verbatim -- wisp allocates and enforces. `env?` is an optional, opaque `{string:string}` map of create-time environment vars (omitted when absent). `files?` is an optional array of `{path, content_base64}` entries (omitted when absent) written into the container **after start and before `userdata` runs** so userdata can read them; the manager caps the array at 16 files / 1 MiB decoded total (`API.md` §5) and forwards it verbatim to wisp |
 | A→W | `lease.accepted` | `rid, leaseId, wispContractId, status:"provisioning"` | agent called wisp `POST /contracts` |
 | A→W | `lease.ready` | `leaseId` | wisp reached `ready`; **Wisper starts the meter here** |
 | A→W | `lease.failed` | `rid, leaseId, code?, error` | provisioning/pull failed; nothing billed. Optional `code` is mapped like an `error` frame's code (§12): `at_capacity` surfaces as `409 at_capacity`, anything else (or none) as `502 lease_failed`. Fails whichever awaiter is outstanding (the `rid` one before `lease.accepted`, the `leaseId` one after) |
@@ -125,8 +125,16 @@ All control frames are `{ "t": "<type>", ... }`. Direction: **W→A** Wisper→a
 | A→W | `shell.opened` | `rid, sid` | then binary frames flow **both** ways on `sid` (ch 0 in, ch 1 out) |
 | W→A | `shell.resize` | `sid, cols, rows` | window resize (agent forwards to the PTY) |
 | both | `stream.credit` | `sid, bytes` | replenish the peer's send window for `sid` as bytes are drained downstream (§9) |
-| W→A | `stream.close` | `sid` | consumer aborted / disconnected → agent cancels the exec/shell |
+| W→A | `stream.close` | `sid` | consumer aborted / disconnected → agent cancels the exec/shell/file-read |
 | A→W | `stream.closed` | `sid, reason` | stream torn down (peer exit, error, or `flow_violation` §9) |
+
+### File download (open a byte stream `sid`)
+
+| Dir | `t` | Fields | Notes |
+|---|---|---|---|
+| W→A | `file.read` | `rid, sid, leaseId, path` | agent calls wisp `GET /contracts/:id/files?path=<abs>` and pipes the response body onto the `sid` -- no whole-file buffering. Wisper owns the id space, so both `rid` and `sid` are server-assigned |
+| A→W | `file.opened` | `rid, sid, size` | announces the total file length; `-1` when the source cannot report one. Binary frames on the `sid` (channel 1, stdout) then flow A→W, ending with `file.eof`. **Stream mechanics are the SAME as streamed `exec`**: shared per-stream credit flow control (§9), same `stream.credit`/`stream.close`/`stream.closed` framing, same `sid` reuse semantics -- a file-download `sid` behaves like a streamed-exec `sid` on the wire |
+| A→W | `file.eof` | `sid` | end-of-file; Wisper closes the download stream and completes the HTTP relay's response body |
 
 ## 6. Byte streams
 
@@ -189,7 +197,8 @@ The agent is a thin translator. Each tunnel op maps to a wisp API call (`--wisp 
 
 | Tunnel | wisp call |
 |---|---|
-| `lease.create` | `POST /contracts {image,network,isolation,resources(incl. gpus),ttl_seconds,userdata,env}` → keep `{contract_id, token}`; emit `lease.accepted`, then `lease.ready` when status hits `ready` |
+| `lease.create` | `POST /contracts {image,network,isolation,resources(incl. gpus),ttl_seconds,userdata,env,files}` → keep `{contract_id, token}`; emit `lease.accepted`, then `lease.ready` when status hits `ready`. `files[]` is forwarded verbatim; wisp writes each entry into the container after start and before userdata runs |
+| `file.read` | `GET /contracts/:id/files?path=<abs>` (Bearer contract token) → emit `file.opened{size}`, pipe the response body onto the `sid` as binary frames (channel 1), then `file.eof`. Missing/dir/symlink → `error{code:"not_found"}`; over `WISP_MAX_FILE_READ_BYTES` (default 16 MiB) → `error{code:"file_too_large"}`; anything else → `error{code:"wisp_error"}` |
 | `exec.run` | `POST /contracts/:id/exec {command}` (Bearer contract token) → `exec.result` |
 | `exec.open` | `POST /contracts/:id/exec?stream=1` → parse SSE, emit binary frames + `exec.exit` |
 | `shell.open` | `WS /contracts/:id/shell?token=<contract token>` → pipe bytes ↔ `sid` |
@@ -210,6 +219,7 @@ The consumer never touches the tunnel; Wisper relays (routing across instances v
 | `POST /leases/:id/exec` | `exec.run` → `exec.result` |
 | `POST /leases/:id/exec?stream=1` (SSE) | `exec.open` → stream binary frames back as SSE |
 | `WS /leases/:id/shell` (xterm) | `shell.open` → bridge the consumer WS ⇄ `sid` binary frames |
+| `GET /leases/:id/files?path=` | `file.read` → stream the file bytes (`file.opened`/binary/`file.eof`) onto the HTTP response as `application/octet-stream`; per-stream credit is granted back as the HTTP write drains (§9); the manager caps the total at `Leases:MaxDownloadBytes` (default 16 MiB) and 413s on overshoot. Applies to the dev harness (`GET /dev/leases/:id/files?hostId=&path=`) verbatim |
 | `DELETE /leases/:id` | `lease.release` → wait `lease.released` (a host with no live tunnel is treated as already released; the lease is ended locally) |
 | `POST /v1/admin/leases/:id/end` | best-effort `lease.release` after the ledger-side end |
 | failed create (hold could not post) | `lease.release` teardown of the just-provisioned contract |
@@ -217,7 +227,7 @@ The consumer never touches the tunnel; Wisper relays (routing across instances v
 ## 12. Errors & timeouts
 
 - Every `rid` request has one Wisper-side **deadline**, `Tunnel:RelayRequestTimeoutMs` (default 120 s, sized to cover an image pull), applied to `lease.create` (both the `lease.accepted` and the `lease.ready` waits), `exec.run`, `lease.release`, `shell.open` and `exec.open`. On timeout Wisper fails the consumer call with `upstream_timeout` (504); no cleanup frame is sent automatically. A request routed to another instance over the backplane is bounded by `Tunnel:Backplane:RpcTimeoutMs` (default 120 s) the same way. A tunnel that closes mid-request fails every pending waiter with `host_offline`.
-- `error{rid,code,message}` carries typed failures. Wisper maps agent-reported codes to consumer errors: `not_ready` (lease not `ready`) → `lease_not_ready` (409), `unknown_lease` → `not_found` (404), and `at_capacity` → `at_capacity` (409) are recognized and mapped to their consumer equivalents; **any other code** (e.g. a wisp non-2xx) collapses to `lease_failed` (502). There is no distinct `unsupported`/`wisp_error`/`overflow`/`internal` handling. The `at_capacity` mapping is the authoritative backstop for per-host admission (task #571): the manager fast-fails a `lease.create` against a host at its advertised `capability.capacity.max_contracts` (§5), but wisp remains the enforcer -- if it rejects a create in the admit→provision race it reports `at_capacity`, which surfaces to the consumer as the same `409 at_capacity` (and the failed-create teardown still runs).
+- `error{rid,code,message}` carries typed failures. Wisper maps agent-reported codes to consumer errors: `not_ready` (lease not `ready`) → `lease_not_ready` (409), `unknown_lease` → `not_found` (404), `at_capacity` → `at_capacity` (409), and -- for `file.read` (§5) -- `not_found` → `not_found` (404) and `file_too_large` → `file_too_large` (413); **any other code** (e.g. a wisp non-2xx / `wisp_error`) collapses to `lease_failed` (502). There is no distinct `unsupported`/`overflow`/`internal` handling. The `at_capacity` mapping is the authoritative backstop for per-host admission (task #571): the manager fast-fails a `lease.create` against a host at its advertised `capability.capacity.max_contracts` (§5), but wisp remains the enforcer -- if it rejects a create in the admit→provision race it reports `at_capacity`, which surfaces to the consumer as the same `409 at_capacity` (and the failed-create teardown still runs).
 - Malformed control frames (bad JSON) are dropped with a warning; unknown binary `sid`s / flow violations tear the stream down (§9). No `error` reply is emitted for malformed input today.
 
 ## 13. Security

@@ -11,6 +11,7 @@ internal enum RelayOp
     Release,
     OpenShell,
     OpenExecStream,
+    OpenFileRead,
 }
 
 /// <summary>
@@ -32,6 +33,9 @@ internal sealed record RpcRequest
     public string HostId { get; init; } = string.Empty;
     public string? LeaseId { get; init; }
     public string? Command { get; init; }
+
+    /// <summary>Absolute file path for <see cref="RelayOp.OpenFileRead"/>.</summary>
+    public string? Path { get; init; }
 
     /// <summary>The lease spec for <see cref="RelayOp.CreateLease"/> (its rid/leaseId are re-stamped by the owner).</summary>
     public LeaseCreate? Spec { get; init; }
@@ -60,6 +64,9 @@ internal sealed record RpcReply
 
     /// <summary>The owner-allocated stream id of a successfully opened shell/exec stream.</summary>
     public uint Sid { get; init; }
+
+    /// <summary>Total file size (bytes) of a successfully opened file-read stream, or <c>-1</c> when unknown.</summary>
+    public long Size { get; init; }
 }
 
 /// <summary>
