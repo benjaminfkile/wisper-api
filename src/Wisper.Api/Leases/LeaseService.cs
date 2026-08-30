@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using Wisper.Api.Domain;
 using Wisper.Api.Infrastructure;
 using Wisper.Api.Metering;
@@ -43,6 +44,7 @@ public sealed class LeaseService : ILeaseService
     private readonly PlatformPolicyService _policy;
     private readonly IHostDegradedStore _degradedStore;
     private readonly TimeProvider _time;
+    private readonly IOptionsMonitor<LeaseFileOptions> _fileOptions;
 
     public LeaseService(
         ILeaseRepository leases,
@@ -54,7 +56,8 @@ public sealed class LeaseService : ILeaseService
         MeteringService meter,
         PlatformPolicyService policy,
         IHostDegradedStore degradedStore,
-        TimeProvider time)
+        TimeProvider time,
+        IOptionsMonitor<LeaseFileOptions>? fileOptions = null)
     {
         _leases = leases;
         _hosts = hosts;
@@ -66,6 +69,16 @@ public sealed class LeaseService : ILeaseService
         _policy = policy;
         _degradedStore = degradedStore;
         _time = time;
+        _fileOptions = fileOptions ?? new StaticLeaseFileOptions(new LeaseFileOptions());
+    }
+
+    /// <summary>Adapter that lets the test fixtures construct <see cref="LeaseService"/> without a live options monitor.</summary>
+    private sealed class StaticLeaseFileOptions : IOptionsMonitor<LeaseFileOptions>
+    {
+        public StaticLeaseFileOptions(LeaseFileOptions value) { CurrentValue = value; }
+        public LeaseFileOptions CurrentValue { get; }
+        public LeaseFileOptions Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<LeaseFileOptions, string?> listener) => null;
     }
 
     public async Task<LeaseCreationResult> CreateAsync(
@@ -107,6 +120,7 @@ public sealed class LeaseService : ILeaseService
         await EnsureActivePlatformPolicyAsync(ct);
         await EnforcePolicyTtlCapAsync(ttlSeconds, ct);
         ValidateEnv(request.Env);
+        var files = ValidateFiles(request.Files);
         var isolation = await ResolveIsolationAsync(request.Isolation, host, ct);
 
         // One live capability read for the whole create: its contract ceiling drives admission (task #571), its
@@ -170,6 +184,10 @@ public sealed class LeaseService : ILeaseService
             // lease snapshot below: env may carry secrets, exists only to provision the container, and is
             // out of scope for the metering/read surface (docs/TUNNEL.md §13). Guarded by ValidateEnv above.
             Env = request.Env,
+            // Optional create-time files (docs/TUNNEL.md §5, §10). The agent writes them into the container
+            // after start and before userdata runs so userdata can read them. Caps + shape are enforced above
+            // by ValidateFiles; the frame carries the array verbatim (omitted when the caller sent none).
+            Files = files,
         };
         var result = await _relay.CreateLeaseAsync(host.Id.ToString(), spec, ct);
 
@@ -654,6 +672,117 @@ public sealed class LeaseService : ILeaseService
                 "resources are fixed by the selected offer",
                 new { fields = new[] { "resources", "gpus" } });
         }
+    }
+
+    /// <summary>
+    /// Guards the create-time <c>files</c> array (docs/API.md §5, docs/TUNNEL.md §5, §10). Caps are
+    /// bound from <see cref="LeaseFileOptions"/> (defaults: 16 files, 1 MiB total decoded). Path shape
+    /// is enforced verbatim from the pinned contract: absolute unix-style path (starts with <c>/</c>),
+    /// no <c>..</c> segment, no backslash, at most 256 chars, unique per request. Invalid base64 in
+    /// any entry is <c>validation_error</c>. Returns the wire-shape array to attach to the frame, or
+    /// <c>null</c> when the caller sent none (so the frame omits the field).
+    /// </summary>
+    private IReadOnlyList<LeaseFile>? ValidateFiles(IReadOnlyList<CreateLeaseFileRequest>? files)
+    {
+        if (files is null || files.Count == 0)
+        {
+            return null;
+        }
+
+        var opts = _fileOptions.CurrentValue;
+        if (files.Count > opts.MaxFileCount)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'files' has too many entries.",
+                new { field = "files", max = opts.MaxFileCount, count = files.Count });
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var wire = new List<LeaseFile>(files.Count);
+        long totalBytes = 0;
+        for (var i = 0; i < files.Count; i++)
+        {
+            var entry = files[i];
+            var path = entry.Path ?? string.Empty;
+            ValidateFilePath(path, i);
+            if (!seen.Add(path))
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' entries must have unique paths.",
+                    new { field = "files", index = i });
+            }
+
+            var content = entry.ContentBase64 ?? string.Empty;
+            int decoded;
+            try
+            {
+                decoded = DecodedBase64Length(content);
+            }
+            catch (FormatException)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' entry has invalid base64 content.",
+                    new { field = "files", index = i });
+            }
+
+            totalBytes += decoded;
+            if (totalBytes > opts.MaxFileTotalBytes)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' exceeds the total decoded byte cap.",
+                    new { field = "files", max_bytes = opts.MaxFileTotalBytes });
+            }
+
+            wire.Add(new LeaseFile { Path = path, ContentBase64 = content });
+        }
+
+        return wire;
+    }
+
+    private static void ValidateFilePath(string path, int index)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length > 256 || path[0] != '/' ||
+            path.Contains('\\', StringComparison.Ordinal) ||
+            HasDotDotSegment(path))
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'files' entry has an invalid path.",
+                new { field = "files", index });
+        }
+    }
+
+    private static bool HasDotDotSegment(string path)
+    {
+        foreach (var segment in path.Split('/'))
+        {
+            if (segment == "..")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns the decoded byte length of a base64 string (RFC 4648), or throws <see cref="FormatException"/>
+    /// if the input is not valid base64. Uses <see cref="Convert.TryFromBase64String"/> to avoid materializing
+    /// the whole decoded buffer up front.
+    /// </summary>
+    private static int DecodedBase64Length(string content)
+    {
+        var buffer = new byte[((content.Length + 3) / 4) * 3];
+        if (!Convert.TryFromBase64String(content, buffer, out var written))
+        {
+            throw new FormatException("invalid base64");
+        }
+
+        return written;
     }
 
     /// <summary>

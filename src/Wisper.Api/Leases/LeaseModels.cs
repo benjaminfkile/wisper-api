@@ -29,7 +29,19 @@ public sealed record CreateLeaseRequest(
     [property: JsonPropertyName("userdata")] string? Userdata,
     [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null,
     [property: JsonPropertyName("isolation")] string? Isolation = null,
-    [property: JsonPropertyName("gpus")] int? Gpus = null);
+    [property: JsonPropertyName("gpus")] int? Gpus = null,
+    [property: JsonPropertyName("files")] IReadOnlyList<CreateLeaseFileRequest>? Files = null);
+
+/// <summary>
+/// One entry in a <see cref="CreateLeaseRequest.Files"/> array (docs/API.md §5). The file is written into
+/// the container after start and before <see cref="CreateLeaseRequest.Userdata"/> runs, so userdata can
+/// read it. Path is an absolute unix-style path (starts with <c>/</c>, no <c>..</c> segment, no backslash,
+/// at most 256 chars); the base64-decoded bytes count toward the 1 MiB total cap. Invalid base64 is
+/// <c>validation_error</c>.
+/// </summary>
+public sealed record CreateLeaseFileRequest(
+    [property: JsonPropertyName("path")] string? Path,
+    [property: JsonPropertyName("content_base64")] string? ContentBase64);
 
 /// <summary>
 /// The removed free-form resource-request block (docs/API.md §5). An offer now sells a fixed size

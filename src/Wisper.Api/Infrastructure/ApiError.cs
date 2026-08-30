@@ -24,6 +24,7 @@ public enum ApiErrorCode
     ImageNotAllowed,
     RateLimited,
     UpstreamTimeout,
+    FileTooLarge,
     Internal,
 }
 
@@ -48,6 +49,7 @@ public static class ApiErrors
         ApiErrorCode.ImageNotAllowed   => ((int)HttpStatusCode.BadRequest, "image_not_allowed"),
         ApiErrorCode.RateLimited       => ((int)HttpStatusCode.TooManyRequests, "rate_limited"),
         ApiErrorCode.UpstreamTimeout   => ((int)HttpStatusCode.GatewayTimeout, "upstream_timeout"),
+        ApiErrorCode.FileTooLarge      => ((int)HttpStatusCode.RequestEntityTooLarge, "file_too_large"),
         ApiErrorCode.Internal          => ((int)HttpStatusCode.InternalServerError, "internal"),
         _                              => ((int)HttpStatusCode.InternalServerError, "internal"),
     };

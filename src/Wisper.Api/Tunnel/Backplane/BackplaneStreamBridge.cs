@@ -75,9 +75,66 @@ internal static class BackplaneStreamBridge
     }
 
     /// <summary>
-    /// Bridges a local <see cref="ITunnelShell"/>: forwards PTY output downstream and applies inbound
-    /// <c>stdin</c>/<c>resize</c>/<c>credit</c>/<c>close</c> from the caller. Runs until the shell ends.
+    /// Bridges a local <see cref="ITunnelFileDownload"/>: forwards each drained byte chunk downstream
+    /// and applies inbound <c>credit</c>/<c>close</c> from the caller. Runs until the download ends,
+    /// then emits a terminal <c>close</c> (carrying the reason, e.g. <c>file_eof</c>) and unsubscribes.
     /// </summary>
+    public static async Task RunFileDownloadBridgeAsync(
+        ITunnelBackplane backplane, string prefix, string correlationId,
+        ITunnelFileDownload download, ILogger logger)
+    {
+        var down = BackplaneChannels.StreamDown(prefix, correlationId);
+        var up = BackplaneChannels.StreamUp(prefix, correlationId);
+
+        var upSubscription = await backplane.SubscribeAsync(up, async (payload, ct) =>
+        {
+            var frame = BackplaneJson.Deserialize<StreamFrame>(payload);
+            if (frame is null)
+            {
+                return;
+            }
+
+            switch (frame.Kind)
+            {
+                case "credit":
+                    await download.AckDrainedAsync(frame.Bytes, ct);
+                    break;
+                case "close":
+                    await download.CloseAsync(frame.Reason ?? "consumer_closed", ct);
+                    break;
+            }
+        });
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var chunk in download.Bytes.ReadAllAsync())
+                {
+                    var frame = new StreamFrame
+                    {
+                        Kind = "data",
+                        Channel = Channels.Stdout,
+                        Data = Convert.ToBase64String(chunk),
+                    };
+                    await backplane.PublishAsync(down, BackplaneJson.Serialize(frame));
+                }
+
+                var terminal = new StreamFrame { Kind = "close", Reason = download.ClosedReason ?? "closed" };
+                await backplane.PublishAsync(down, BackplaneJson.Serialize(terminal));
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "backplane file bridge {CorrelationId} faulted", correlationId);
+            }
+            finally
+            {
+                await upSubscription.DisposeAsync();
+            }
+        });
+    }
+
+    /// <summary>
     public static async Task RunShellBridgeAsync(
         ITunnelBackplane backplane, string prefix, string correlationId, ITunnelShell shell, ILogger logger)
     {
@@ -260,6 +317,120 @@ internal sealed class RemoteTunnelExec : ITunnelExec
     {
         _closedReason ??= reason;
         _chunks.Writer.TryComplete();
+        _completion.TrySetResult();
+    }
+}
+
+/// <summary>
+/// Caller-side <see cref="ITunnelFileDownload"/> over the backplane: the consumer instance's handle to
+/// a file-download stream whose real socket lives on another instance. Byte frames arrive on the down
+/// channel; drain acks and close go up to the owning instance's
+/// <see cref="BackplaneStreamBridge.RunFileDownloadBridgeAsync"/>.
+/// </summary>
+internal sealed class RemoteTunnelFileDownload : ITunnelFileDownload
+{
+    private readonly ITunnelBackplane _backplane;
+    private readonly string _upChannel;
+    private readonly Channel<byte[]> _bytes =
+        Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly TaskCompletionSource _completion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private IAsyncDisposable? _subscription;
+    private volatile string? _closedReason;
+    private int _closed;
+
+    public RemoteTunnelFileDownload(ITunnelBackplane backplane, string upChannel, uint sid, long size)
+    {
+        _backplane = backplane;
+        _upChannel = upChannel;
+        Sid = sid;
+        Size = size;
+    }
+
+    public uint Sid { get; private set; }
+
+    public long Size { get; private set; }
+
+    /// <summary>Adopts the owner-allocated sid + reported size (returned in the open reply) and returns this handle.</summary>
+    public RemoteTunnelFileDownload WithOpened(uint sid, long size)
+    {
+        Sid = sid;
+        Size = size;
+        return this;
+    }
+
+    public ChannelReader<byte[]> Bytes => _bytes.Reader;
+
+    public Task Completion => _completion.Task;
+
+    public string? ClosedReason => _closedReason;
+
+    public void AttachSubscription(IAsyncDisposable subscription) => _subscription = subscription;
+
+    public Task HandleDownAsync(ReadOnlyMemory<byte> payload, CancellationToken ct)
+    {
+        var frame = BackplaneJson.Deserialize<StreamFrame>(payload);
+        if (frame is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        switch (frame.Kind)
+        {
+            case "data" when frame.Data is not null:
+                _bytes.Writer.TryWrite(Convert.FromBase64String(frame.Data));
+                break;
+            case "close":
+                Finish(frame.Reason ?? "closed");
+                break;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async ValueTask AckDrainedAsync(int byteCount, CancellationToken ct = default)
+    {
+        if (byteCount <= 0 || _closed != 0)
+        {
+            return;
+        }
+
+        await _backplane.PublishAsync(
+            _upChannel, BackplaneJson.Serialize(new StreamFrame { Kind = "credit", Bytes = byteCount }), ct);
+    }
+
+    public async Task CloseAsync(string reason = "consumer_closed", CancellationToken ct = default)
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await _backplane.PublishAsync(
+                _upChannel, BackplaneJson.Serialize(new StreamFrame { Kind = "close", Reason = reason }), ct);
+        }
+        catch
+        {
+            // Best effort -- the owning instance may already be gone.
+        }
+
+        Finish(reason);
+
+        if (_subscription is not null)
+        {
+            await _subscription.DisposeAsync();
+        }
+    }
+
+    public ValueTask DisposeAsync() => new(CloseAsync());
+
+    private void Finish(string? reason)
+    {
+        _closedReason ??= reason;
+        _bytes.Writer.TryComplete();
         _completion.TrySetResult();
     }
 }

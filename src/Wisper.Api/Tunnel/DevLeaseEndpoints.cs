@@ -1,6 +1,8 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 using Wisper.Api.Infrastructure;
+using Wisper.Api.Leases;
 using Wisper.Api.Tunnel.Messages;
 
 namespace Wisper.Api.Tunnel;
@@ -18,11 +20,16 @@ public static class DevLeaseEndpoints
     {
         endpoints.MapPost("/dev/leases", CreateLeaseAsync);
         endpoints.MapPost("/dev/leases/{leaseId}/exec", ExecAsync);
+        endpoints.MapGet("/dev/leases/{leaseId}/files", DownloadFileAsync);
         endpoints.MapDelete("/dev/leases/{leaseId}", ReleaseAsync);
     }
 
     private static async Task<IResult> CreateLeaseAsync(
-        DevCreateLeaseRequest request, ITunnelRelay relay, IHostRegistry registry, CancellationToken ct)
+        DevCreateLeaseRequest request,
+        ITunnelRelay relay,
+        IHostRegistry registry,
+        IOptions<LeaseFileOptions> fileOptions,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.HostId))
         {
@@ -30,6 +37,7 @@ public static class DevLeaseEndpoints
         }
 
         var resources = request.Resources ?? new DevResources();
+        var files = ValidateFiles(request.Files, fileOptions.Value);
         var spec = new LeaseCreate
         {
             Image = request.Image ?? string.Empty,
@@ -44,6 +52,7 @@ public static class DevLeaseEndpoints
             Userdata = request.Userdata,
             Env = request.Env,
             Isolation = request.Isolation ?? Domain.HostIsolation.Shared,
+            Files = files,
         };
 
         var lease = await relay.CreateLeaseAsync(request.HostId, spec, ct);
@@ -79,6 +88,106 @@ public static class DevLeaseEndpoints
         return Results.Json(new { stdout = result.Stdout, stderr = result.Stderr, exit_code = result.ExitCode });
     }
 
+    private static async Task DownloadFileAsync(
+        string leaseId,
+        HttpContext context,
+        ITunnelRelay relay,
+        IOptions<LeaseFileOptions> fileOptions,
+        CancellationToken ct)
+    {
+        // hostId may come from the query string; the harness carries no authentication.
+        var hostId = context.Request.Query["hostId"].ToString();
+        if (string.IsNullOrWhiteSpace(hostId))
+        {
+            throw new ApiException(ApiErrorCode.ValidationError, "hostId is required");
+        }
+
+        var path = context.Request.Query["path"].ToString();
+        LeaseEndpoints.RequireDownloadPath(path);
+
+        await FileDownloadRelay.RelayAsync(
+            context, relay, hostId, leaseId, path, fileOptions.Value.MaxDownloadBytes, ct);
+    }
+
+    /// <summary>Validates a dev-harness create's optional <c>files</c> array against the same caps the /v1 surface applies.</summary>
+    private static IReadOnlyList<LeaseFile>? ValidateFiles(
+        IReadOnlyList<DevFileEntry>? files, LeaseFileOptions options)
+    {
+        if (files is null || files.Count == 0)
+        {
+            return null;
+        }
+
+        if (files.Count > options.MaxFileCount)
+        {
+            throw new ApiException(
+                ApiErrorCode.ValidationError,
+                "'files' has too many entries.",
+                new { field = "files", max = options.MaxFileCount, count = files.Count });
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var wire = new List<LeaseFile>(files.Count);
+        long totalBytes = 0;
+        for (var i = 0; i < files.Count; i++)
+        {
+            var entry = files[i];
+            var path = entry.Path ?? string.Empty;
+            if (string.IsNullOrEmpty(path) || path.Length > 256 || path[0] != '/' ||
+                path.Contains('\\', StringComparison.Ordinal) || HasDotDotSegment(path))
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' entry has an invalid path.",
+                    new { field = "files", index = i });
+            }
+
+            if (!seen.Add(path))
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' entries must have unique paths.",
+                    new { field = "files", index = i });
+            }
+
+            var content = entry.ContentBase64 ?? string.Empty;
+            var buffer = new byte[((content.Length + 3) / 4) * 3];
+            if (!Convert.TryFromBase64String(content, buffer, out var written))
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' entry has invalid base64 content.",
+                    new { field = "files", index = i });
+            }
+
+            totalBytes += written;
+            if (totalBytes > options.MaxFileTotalBytes)
+            {
+                throw new ApiException(
+                    ApiErrorCode.ValidationError,
+                    "'files' exceeds the total decoded byte cap.",
+                    new { field = "files", max_bytes = options.MaxFileTotalBytes });
+            }
+
+            wire.Add(new LeaseFile { Path = path, ContentBase64 = content });
+        }
+
+        return wire;
+    }
+
+    private static bool HasDotDotSegment(string path)
+    {
+        foreach (var segment in path.Split('/'))
+        {
+            if (segment == "..")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static async Task<IResult> ReleaseAsync(
         string leaseId, HttpContext context, ITunnelRelay relay, CancellationToken ct)
     {
@@ -109,7 +218,16 @@ public sealed record DevCreateLeaseRequest(
     [property: JsonPropertyName("ttl_seconds")] int TtlSeconds,
     [property: JsonPropertyName("userdata")] string? Userdata,
     [property: JsonPropertyName("env")] Dictionary<string, string>? Env = null,
-    [property: JsonPropertyName("isolation")] string? Isolation = null);
+    [property: JsonPropertyName("isolation")] string? Isolation = null,
+    [property: JsonPropertyName("files")] IReadOnlyList<DevFileEntry>? Files = null);
+
+/// <summary>
+/// One entry in a <see cref="DevCreateLeaseRequest.Files"/> array (mirrors the /v1 shape). Path is an
+/// absolute unix-style path; content is base64-encoded bytes. Caps match the /v1 surface.
+/// </summary>
+public sealed record DevFileEntry(
+    [property: JsonPropertyName("path")] string? Path,
+    [property: JsonPropertyName("content_base64")] string? ContentBase64);
 
 /// <summary>Resource request block (snake_case, forwarded to wisp).</summary>
 public sealed record DevResources(

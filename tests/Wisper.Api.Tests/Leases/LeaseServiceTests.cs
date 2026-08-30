@@ -252,7 +252,8 @@ public class LeaseServiceTests
             LeaseResourcesRequest? resources = null,
             Dictionary<string, string>? env = null,
             string? isolation = null,
-            int? gpus = null) => new(
+            int? gpus = null,
+            IReadOnlyList<CreateLeaseFileRequest>? files = null) => new(
             HostId: Host!.Id.ToString(),
             HostImageId: Image!.Id.ToString(),
             Network: network,
@@ -261,7 +262,8 @@ public class LeaseServiceTests
             Userdata: "apt-get install -y git",
             Env: env,
             Isolation: isolation,
-            Gpus: gpus);
+            Gpus: gpus,
+            Files: files);
     }
 
     [Fact]
@@ -1549,6 +1551,140 @@ public class LeaseServiceTests
         var ex = await Assert.ThrowsAsync<ApiException>(() =>
             fx.Service().ResolveExecTargetAsync(fx.ConsumerId, lease.Id));
         Assert.Equal(ApiErrorCode.LeaseNotReady, ex.Code);
+    }
+
+    // ---- Create-time files (task #229) --------------------------------------------------------
+
+    [Fact]
+    public async Task Create_forwards_files_to_the_lease_create_frame_verbatim()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var files = new List<CreateLeaseFileRequest>
+        {
+            new("/etc/config.yaml", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("cfg"))),
+            new("/etc/secrets", ""),
+        };
+
+        await fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files));
+
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.NotNull(spec.Files);
+        Assert.Equal(2, spec.Files!.Count);
+        Assert.Equal("/etc/config.yaml", spec.Files[0].Path);
+        Assert.Equal(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("cfg")), spec.Files[0].ContentBase64);
+    }
+
+    [Fact]
+    public async Task Create_omits_files_from_the_frame_when_absent()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+
+        await fx.Service().CreateAsync(fx.ConsumerId, fx.Request());
+
+        var (_, spec) = Assert.Single(fx.Relay.CreateCalls);
+        Assert.Null(spec.Files);
+    }
+
+    [Fact]
+    public async Task Create_rejects_more_than_MaxFileCount_files()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var files = Enumerable.Range(0, 17)
+            .Select(i => new CreateLeaseFileRequest($"/f{i}", "")).ToList();
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Create_rejects_files_totaling_over_the_byte_cap()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        // 1 MiB + 1 byte across two files.
+        var half = new string('A', 512 * 1024 + 1);
+        var files = new List<CreateLeaseFileRequest>
+        {
+            new("/a", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(half))),
+            new("/b", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(half))),
+        };
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Theory]
+    [InlineData("relative/path")]
+    [InlineData("/has/../parent")]
+    [InlineData("/has\\backslash")]
+    [InlineData("")]
+    public async Task Create_rejects_invalid_file_paths(string path)
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var files = new List<CreateLeaseFileRequest> { new(path, "") };
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+        Assert.Empty(fx.Relay.CreateCalls);
+    }
+
+    [Fact]
+    public async Task Create_rejects_a_file_path_over_256_chars()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var longPath = "/" + new string('a', 256); // 257 chars
+        var files = new List<CreateLeaseFileRequest> { new(longPath, "") };
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task Create_rejects_duplicate_file_paths()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var files = new List<CreateLeaseFileRequest>
+        {
+            new("/etc/a", ""),
+            new("/etc/a", ""),
+        };
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
+    }
+
+    [Fact]
+    public async Task Create_rejects_invalid_base64_content()
+    {
+        var fx = new Fixture();
+        await fx.SeedImageAsync();
+        var files = new List<CreateLeaseFileRequest>
+        {
+            new("/etc/a", "not-base64!!"),
+        };
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(files: files)));
+
+        Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
     }
 
     /// <summary>
