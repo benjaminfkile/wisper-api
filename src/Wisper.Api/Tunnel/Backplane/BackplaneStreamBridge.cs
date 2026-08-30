@@ -134,7 +134,7 @@ internal static class BackplaneStreamBridge
         });
     }
 
-    /// <summary>
+    /// <summary>Bridge a shell stream across the backplane for a remote instance.</summary>
     public static async Task RunShellBridgeAsync(
         ITunnelBackplane backplane, string prefix, string correlationId, ITunnelShell shell, ILogger logger)
     {
