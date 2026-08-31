@@ -46,6 +46,10 @@ public sealed class TunnelRelay : ITunnelRelay
     // agent may still be mid-connect). Small enough to be responsive, coarse enough to not spin.
     private static readonly TimeSpan ReadinessPollInterval = TimeSpan.FromMilliseconds(25);
 
+    // Deadline for the best-effort abort-release a failed create fires after its frame went out. Detached
+    // from the caller's token on purpose: that token is often the very cancellation being cleaned up after.
+    private static readonly TimeSpan AbortReleaseTimeout = TimeSpan.FromSeconds(10);
+
     private TimeSpan Timeout => TimeSpan.FromMilliseconds(_options.CurrentValue.RelayRequestTimeoutMs);
 
     public async Task<LeaseResult> CreateLeaseAsync(string hostId, LeaseCreate spec, CancellationToken ct = default)
@@ -59,9 +63,11 @@ public sealed class TunnelRelay : ITunnelRelay
 
         var acceptedWaiter = RegisterRid(connection, rid);
         var readyWaiter = RegisterLease(connection, leaseId);
+        var frameSent = false;
         try
         {
             await connection.SendControlAsync(frame, ct);
+            frameSent = true;
 
             var acceptedPayload = await AwaitResponseAsync(acceptedWaiter.Task, ct);
             var accepted = Deserialize<LeaseAccepted>(acceptedPayload);
@@ -75,10 +81,47 @@ public sealed class TunnelRelay : ITunnelRelay
 
             return new LeaseResult(leaseId, accepted.WispContractId, accepted.Status);
         }
+        catch (Exception ex) when (frameSent)
+        {
+            // The lease.create frame reached the host, so the container may be provisioning (or already
+            // live) even though this call is failing -- a consumer abort, the relay deadline, a malformed
+            // response. Fire a best-effort lease.release for the minted id so the host does not keep a
+            // contract the manager is walking away from: the agent relays the release to wisp regardless
+            // of manager-side lease state, and wisp releases an in-progress/unknown contract idempotently.
+            await TrySendAbortReleaseAsync(connection, leaseId, ex);
+            throw;
+        }
         finally
         {
             _ridWaiters.TryRemove((connection, rid), out _);
             _leaseWaiters.TryRemove((connection, leaseId), out _);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort teardown for a create that failed AFTER its <c>lease.create</c> frame went out: sends
+    /// a <c>lease.release</c> for the minted lease id under a short detached deadline
+    /// (<see cref="AbortReleaseTimeout"/>), registering no waiter -- the <c>lease.released</c> reply, if
+    /// any, is dropped as a late response. Never throws: the caller is about to rethrow the original
+    /// failure and nothing here may mask it.
+    /// </summary>
+    private async Task TrySendAbortReleaseAsync(TunnelConnection connection, string leaseId, Exception cause)
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(AbortReleaseTimeout);
+            await connection.SendControlAsync(
+                new LeaseRelease { Rid = connection.NextRid(), LeaseId = leaseId }, cts.Token);
+
+            _logger.LogWarning(
+                cause,
+                "relay: create aborted after frame; sent best-effort release for {LeaseId}", leaseId);
+        }
+        catch (Exception sendFailure)
+        {
+            _logger.LogWarning(
+                sendFailure,
+                "relay: create aborted after frame; best-effort release for {LeaseId} failed", leaseId);
         }
     }
 

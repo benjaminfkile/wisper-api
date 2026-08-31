@@ -70,6 +70,10 @@ public sealed class FakeTunnelRelay : ITunnelRelay
 
     public Task ReleaseAsync(string hostId, string leaseId, CancellationToken ct = default)
     {
+        // Mirrors the real relay, whose sends honor the token: a release fired under an already-cancelled
+        // token never reaches the host, so teardown paths must hand this call a live (detached) token.
+        ct.ThrowIfCancellationRequested();
+
         ReleaseCalls.Add((hostId, leaseId));
         if (ReleaseError is not null)
         {

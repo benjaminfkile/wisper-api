@@ -1687,6 +1687,152 @@ public class LeaseServiceTests
         Assert.Equal(ApiErrorCode.ValidationError, ex.Code);
     }
 
+    [Fact]
+    public async Task Create_teardown_still_releases_the_contract_when_the_callers_token_is_already_cancelled()
+    {
+        // A consumer abort can be the very failure being cleaned up after: the hold throws while the
+        // caller's token is already cancelled. The teardown must run on its own detached token -- honoring
+        // the dead caller token would cancel the lease.release instantly and leak the container on the
+        // host -- and the original failure (not a cancellation) must surface.
+        using var abort = new CancellationTokenSource();
+        var fx = new Fixture
+        {
+            WalletGate = new AbortingHoldWalletGate(
+                abort, new ApiException(ApiErrorCode.InsufficientFunds, "wallet drained during abort")),
+        };
+        await fx.SeedImageAsync(price: 5);
+
+        var ex = await Assert.ThrowsAsync<ApiException>(() =>
+            fx.Service().CreateAsync(fx.ConsumerId, fx.Request(), abort.Token));
+        Assert.Equal(ApiErrorCode.InsufficientFunds, ex.Code);
+
+        // The fake relay throws on a cancelled release token, so a recorded call proves the detached one.
+        var (releaseHostId, releaseLeaseId) = Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.Equal(fx.Host!.Id.ToString(), releaseHostId);
+        Assert.Equal(fx.Relay.LastLeaseId, releaseLeaseId);
+
+        // The row is still marked failed, exactly like the uncancelled teardown path.
+        Assert.True(TunnelLeaseId.TryParse(fx.Relay.LastLeaseId, out var leaseGuid));
+        var stored = await fx.Leases.GetByIdAsync(leaseGuid);
+        Assert.NotNull(stored);
+        Assert.Equal(LeaseStatus.Failed, stored!.Status);
+        Assert.Equal(LeaseEndReason.PaymentFailed, stored.EndReason);
+    }
+
+    [Fact]
+    public async Task Create_tears_down_the_contract_when_the_lease_row_insert_fails()
+    {
+        // The row insert lands AFTER the container is provisioned on the host: a failure there must run
+        // the same best-effort teardown (release the downstream contract) and rethrow, not walk away.
+        var fx = new Fixture();
+        await fx.SeedImageAsync(price: 5);
+        var service = new LeaseService(
+            new FailingCreateLeaseRepository(fx.Leases), fx.Hosts, fx.Images, fx.Relay, fx.Capabilities,
+            fx.WalletGate, fx.Meter(), new PlatformPolicyService(fx.Policies, fx.Clock), fx.DegradedStore,
+            fx.Clock);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.CreateAsync(fx.ConsumerId, fx.Request()));
+
+        // Exactly one create reached the host and its contract was released by the same lease id; no row
+        // exists (the insert failed), so there is nothing to flip and nothing is left active.
+        Assert.Single(fx.Relay.CreateCalls);
+        var (releaseHostId, releaseLeaseId) = Assert.Single(fx.Relay.ReleaseCalls);
+        Assert.Equal(fx.Host!.Id.ToString(), releaseHostId);
+        Assert.Equal(fx.Relay.LastLeaseId, releaseLeaseId);
+        Assert.Empty(await fx.Leases.ListByConsumerAsync(fx.ConsumerId));
+    }
+
+    /// <summary>
+    /// A gate that authorizes the hold, then cancels the given source and throws when the hold is placed --
+    /// modelling a consumer abort landing exactly as the hold fails, so the create's teardown runs while
+    /// the caller's token is already cancelled.
+    /// </summary>
+    private sealed class AbortingHoldWalletGate : ILeaseWalletGate
+    {
+        private readonly CancellationTokenSource _toCancel;
+        private readonly Exception _failure;
+
+        public AbortingHoldWalletGate(CancellationTokenSource toCancel, Exception failure)
+        {
+            _toCancel = toCancel;
+            _failure = failure;
+        }
+
+        public Task<WalletGateDecision> AuthorizeHoldAsync(
+            Guid consumerUserId, long holdCents, string currency, CancellationToken ct = default) =>
+            Task.FromResult(WalletGateDecision.Allow());
+
+        public Task<Guid?> PlaceHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default)
+        {
+            _toCancel.Cancel();
+            throw _failure;
+        }
+
+        public Task ReleaseHoldAsync(Guid leaseId, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<RevivalHoldOutcome> PlaceRevivalHoldAsync(
+            Guid consumerUserId, Guid leaseId, long holdCents, string currency, CancellationToken ct = default) =>
+            throw _failure;
+    }
+
+    /// <summary>
+    /// Wraps the in-memory lease repository and fails the row INSERT only -- the create-path persistence
+    /// failure that lands after the container is already provisioned on the host. Everything else
+    /// delegates, so the teardown's best-effort status flip still runs against the real (empty) store.
+    /// </summary>
+    private sealed class FailingCreateLeaseRepository : ILeaseRepository
+    {
+        private readonly InMemoryLeaseRepository _inner;
+
+        public FailingCreateLeaseRepository(InMemoryLeaseRepository inner) => _inner = inner;
+
+        public Task<Lease> CreateAsync(Lease lease, CancellationToken ct = default) =>
+            throw new InvalidOperationException("lease row insert failed");
+
+        public Task<Lease?> GetByIdAsync(Guid id, CancellationToken ct = default) => _inner.GetByIdAsync(id, ct);
+
+        public Task<IReadOnlyList<Lease>> ListByConsumerAsync(Guid consumerUserId, CancellationToken ct = default) =>
+            _inner.ListByConsumerAsync(consumerUserId, ct);
+
+        public Task<IReadOnlyList<Lease>> ListActiveByHostAsync(Guid hostId, CancellationToken ct = default) =>
+            _inner.ListActiveByHostAsync(hostId, ct);
+
+        public Task<int> CountActiveByHostAsync(Guid hostId, CancellationToken ct = default) =>
+            _inner.CountActiveByHostAsync(hostId, ct);
+
+        public Task<IReadOnlyList<Lease>> ListActiveAsync(CancellationToken ct = default) =>
+            _inner.ListActiveAsync(ct);
+
+        public Task<bool> HasLeaseForImageAsync(Guid hostImageId, CancellationToken ct = default) =>
+            _inner.HasLeaseForImageAsync(hostImageId, ct);
+
+        public Task<IReadOnlyList<Lease>> ListSuspendedOlderThanAsync(
+            DateTimeOffset suspendedOnOrBefore, CancellationToken ct = default) =>
+            _inner.ListSuspendedOlderThanAsync(suspendedOnOrBefore, ct);
+
+        public Task<IReadOnlyList<Lease>> ListNonTerminalAsync(CancellationToken ct = default) =>
+            _inner.ListNonTerminalAsync(ct);
+
+        public Task<Lease> UpdateAsync(Lease lease, CancellationToken ct = default) => _inner.UpdateAsync(lease, ct);
+
+        public Task<Lease?> TransitionStateAsync(
+            Guid id,
+            LeaseStatus status,
+            LeaseEndReason? endReason = null,
+            DateTimeOffset? startedAt = null,
+            DateTimeOffset? lastMeteredAt = null,
+            long? billableSeconds = null,
+            DateTimeOffset? endedAt = null,
+            DateTimeOffset? suspendedAt = null,
+            LeaseStatus? expectedCurrentStatus = null,
+            CancellationToken ct = default) =>
+            _inner.TransitionStateAsync(
+                id, status, endReason, startedAt, lastMeteredAt, billableSeconds, endedAt, suspendedAt,
+                expectedCurrentStatus, ct);
+    }
+
     /// <summary>
     /// A permissive gate that records whether it was asked to authorize/place a hold -- used to prove the
     /// per-host fast-fail (task #571) refuses BEFORE the wallet gate is consulted (no authorize, no hold).

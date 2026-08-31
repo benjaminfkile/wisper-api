@@ -192,63 +192,74 @@ public sealed class LeaseService : ILeaseService
         var result = await _relay.CreateLeaseAsync(host.Id.ToString(), spec, ct);
 
         // The relay awaits lease.ready before returning (docs/TUNNEL.md §5), so the container is up: the
-        // lease is active with the meter started. Wisper owns the id space, so the relay-issued
-        // lease_<guid> id is this row's primary key (see TunnelLeaseId).
-        if (!TunnelLeaseId.TryParse(result.LeaseId, out var leaseId))
-        {
-            throw new ApiException(ApiErrorCode.Internal, "The relay returned a malformed lease id.");
-        }
-
-        // Persist the lease row BEFORE earmarking the hold (task #540). The hold's ledger transaction (and
-        // its entries) carry this lease_id under a FK → leases.id (docs/DATA_MODEL.md §7); posting it before
-        // the row exists violates ledger_transactions_lease_id_fkey against the real SQL store, 500s the
-        // create, and leaks the host contract. hold_txn_id starts null (a valid state for the reverse FK
-        // leases.hold_txn_id → ledger_transactions.id) and is stamped once the hold posts below. The balance/
-        // caps authorization ran above, before any tunnel frame, so the 402 gate is unaffected -- only the
-        // hold *posting* moves after persistence, not the *authorization check*.
+        // lease is active with the meter started. From here until the hold is posted, ANY failure -- a
+        // malformed relay id, a row-insert error or a caller cancellation, a hold that would not post --
+        // leaves that live container behind: the catch below tears the downstream contract down and
+        // rethrows, so no orphan rides out its TTL on host capacity (docs/TUNNEL.md §8). A failure of the
+        // relay call itself is deliberately NOT handled here: the relay fires its own best-effort
+        // abort-release when the frame already went out, so a release from this layer would be a double.
         var now = _time.GetUtcNow();
-        var lease = new Lease
-        {
-            Id = leaseId,
-            HoldTxnId = null,
-            ConsumerUserId = consumerUserId,
-            HostId = host.Id,
-            HostImageId = image.Id,
-            ImageRef = image.ImageRef,
-            Network = network,
-            Isolation = isolation,
-            // Stamp the RESOLVED provisioned profile on the row so read/list surfaces (and the consumer, even
-            // after the fact) see exactly what was booked, never an unknown size (task #578): the offer's sized
-            // profile when it pinned one, else the host's advertised per-lease cap, else null (only when the host
-            // advertises no cap either -- e.g. offline). The lease.create frame above is UNCHANGED (it still omits
-            // what the offer left null so wisp's own defaults keep applying) -- this is bookkeeping, not provisioning.
-            Cpus = resolvedResources.CpusForStamp,
-            MemoryMb = resolvedResources.MemoryMb,
-            Gpus = image.Gpus,
-            TtlSeconds = ttlSeconds,
-            PriceCentsPerMin = image.PriceCentsPerMin,
-            Currency = Usd,
-            Status = LeaseStatus.Active,
-            WispContractId = result.WispContractId,
-            CreatedAt = now,
-            StartedAt = now,
-            LastMeteredAt = now,
-            BillableSeconds = 0,
-        };
-        var stored = await _leases.CreateAsync(lease, ct);
-
-        // Earmark the hold now the lease ROW exists (docs/PAYMENTS.md §4): wallet → lease_holds. The meter
-        // debits it per tick; the remainder is released at lease end. A free image places no hold. If the
-        // hold fails here -- the wallet drained in the AuthorizeHold→PlaceHold race (→ 402), or any ledger
-        // error -- the container is already provisioned on the host: tear that downstream contract down and
-        // mark the lease failed so no zombie contract rides out its TTL (task #540, docs/TUNNEL.md §8).
+        var leaseId = Guid.Empty;
+        Lease stored;
         Guid? holdTxnId;
         try
         {
+            // Wisper owns the id space, so the relay-issued lease_<guid> id is this row's primary key
+            // (see TunnelLeaseId).
+            if (!TunnelLeaseId.TryParse(result.LeaseId, out leaseId))
+            {
+                throw new ApiException(ApiErrorCode.Internal, "The relay returned a malformed lease id.");
+            }
+
+            // Persist the lease row BEFORE earmarking the hold (task #540). The hold's ledger transaction (and
+            // its entries) carry this lease_id under a FK → leases.id (docs/DATA_MODEL.md §7); posting it before
+            // the row exists violates ledger_transactions_lease_id_fkey against the real SQL store, 500s the
+            // create, and leaks the host contract. hold_txn_id starts null (a valid state for the reverse FK
+            // leases.hold_txn_id → ledger_transactions.id) and is stamped once the hold posts below. The balance/
+            // caps authorization ran above, before any tunnel frame, so the 402 gate is unaffected -- only the
+            // hold *posting* moves after persistence, not the *authorization check*.
+            var lease = new Lease
+            {
+                Id = leaseId,
+                HoldTxnId = null,
+                ConsumerUserId = consumerUserId,
+                HostId = host.Id,
+                HostImageId = image.Id,
+                ImageRef = image.ImageRef,
+                Network = network,
+                Isolation = isolation,
+                // Stamp the RESOLVED provisioned profile on the row so read/list surfaces (and the consumer, even
+                // after the fact) see exactly what was booked, never an unknown size (task #578): the offer's sized
+                // profile when it pinned one, else the host's advertised per-lease cap, else null (only when the host
+                // advertises no cap either -- e.g. offline). The lease.create frame above is UNCHANGED (it still omits
+                // what the offer left null so wisp's own defaults keep applying) -- this is bookkeeping, not provisioning.
+                Cpus = resolvedResources.CpusForStamp,
+                MemoryMb = resolvedResources.MemoryMb,
+                Gpus = image.Gpus,
+                TtlSeconds = ttlSeconds,
+                PriceCentsPerMin = image.PriceCentsPerMin,
+                Currency = Usd,
+                Status = LeaseStatus.Active,
+                WispContractId = result.WispContractId,
+                CreatedAt = now,
+                StartedAt = now,
+                LastMeteredAt = now,
+                BillableSeconds = 0,
+            };
+            stored = await _leases.CreateAsync(lease, ct);
+
+            // Earmark the hold now the lease ROW exists (docs/PAYMENTS.md §4): wallet → lease_holds. The meter
+            // debits it per tick; the remainder is released at lease end. A free image places no hold. If the
+            // hold fails here -- the wallet drained in the AuthorizeHold→PlaceHold race (→ 402), or any ledger
+            // error -- the container is already provisioned on the host: the catch below tears that downstream
+            // contract down and marks the lease failed (task #540, docs/TUNNEL.md §8).
             holdTxnId = await _walletGate.PlaceHoldAsync(consumerUserId, leaseId, holdCents, Usd, ct);
         }
-        catch
+        catch (Exception)
         {
+            // When the relay id was malformed or the row insert failed, no row exists yet: the teardown's
+            // status flip is best-effort and swallows its own failure, so passing the parsed-or-empty id
+            // is safe (releasing the host contract is the part that matters).
             await TearDownFailedCreateAsync(host.Id, result.LeaseId, leaseId, now, ct);
             throw;
         }
@@ -265,21 +276,28 @@ public sealed class LeaseService : ILeaseService
     }
 
     /// <summary>
-    /// Undoes a create that provisioned the container on the host but could not complete (the wallet hold
-    /// failed to post). It tears the downstream contract down over the tunnel -- the same <c>lease.release</c>
+    /// Undoes a create that provisioned the container on the host but could not complete (a malformed relay
+    /// id, a lease-row insert failure, a wallet hold that failed to post, or a caller abort landing in that
+    /// window). It tears the downstream contract down over the tunnel -- the same <c>lease.release</c>
     /// teardown <see cref="ReleaseAsync"/> uses -- so it does not ride out its TTL as a zombie contract
-    /// (task #540, docs/TUNNEL.md §8), and marks the persisted lease row <c>failed</c>. Both steps are
-    /// best-effort: a host that is already gone (<c>host_offline</c>) means the container is gone too, and a
-    /// teardown error must never mask the original failure the caller is about to see re-thrown.
+    /// (task #540, docs/TUNNEL.md §8), and marks the persisted lease row <c>failed</c> (a swallowed no-op
+    /// when no row was inserted yet). Both steps are best-effort and run under their own short detached
+    /// deadline: the caller's token is often the very cancellation that failed the create, and honoring it
+    /// here would cancel the teardown instantly and leak the host contract. A teardown error must never
+    /// mask the original failure the caller is about to see re-thrown.
     /// </summary>
     private async Task TearDownFailedCreateAsync(
         Guid hostId, string tunnelLeaseId, Guid leaseId, DateTimeOffset now, CancellationToken ct)
     {
+        // Deliberately detached from the incoming ct (see the doc comment above).
+        _ = ct;
+        using var teardownCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
         try
         {
-            await _relay.ReleaseAsync(hostId.ToString(), tunnelLeaseId, ct);
+            await _relay.ReleaseAsync(hostId.ToString(), tunnelLeaseId, teardownCts.Token);
         }
-        catch (ApiException)
+        catch (Exception)
         {
             // Best-effort: the container is either torn down or already unreachable. Either way the create
             // still fails; don't let a teardown error replace the real cause on its way up.
@@ -288,11 +306,12 @@ public sealed class LeaseService : ILeaseService
         try
         {
             await _leases.TransitionStateAsync(
-                leaseId, LeaseStatus.Failed, endReason: LeaseEndReason.PaymentFailed, endedAt: now, ct: ct);
+                leaseId, LeaseStatus.Failed, endReason: LeaseEndReason.PaymentFailed, endedAt: now,
+                ct: teardownCts.Token);
         }
         catch (Exception)
         {
-            // Marking the row failed is best-effort cleanup too; the original hold exception is the one that
+            // Marking the row failed is best-effort cleanup too; the original exception is the one that
             // matters, so a failure to flip the status here must not shadow it.
         }
     }
